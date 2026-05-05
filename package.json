@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "userland": "tsx cli/src/index.ts",
-    "test": "npm run validate:catalog && npm run validate:manifests && npm run validate:skills && npm run validate:links && npm run validate:cli && vitest run",
+    "cli:test": "vitest run cli/tests",
+    "test": "npm run validate:catalog && npm run validate:manifests && npm run validate:skills && npm run validate:links && npm run validate:cli && npm run cli:test && vitest run examples scripts",
     "typecheck": "tsc --noEmit",
     "validate:catalog": "tsx scripts/validate-catalog.ts",
     "validate:cli": "tsx scripts/validate-cli.ts",

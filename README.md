@@ -36,6 +36,8 @@ Outputs:
 5. Validate before publishing.
 
 ```sh
+npm run typecheck
+npm run cli:test
 npm test
 npm run validate:catalog
 npm run validate:manifests
@@ -45,6 +47,8 @@ npm run validate:skills
 ## Repository policy
 
 This repo is canonical for user-facing examples, repo-scoped Codex skills, and the launch public CLI source. The main Userland monorepo may keep smaller platform test fixtures, but docs catalogs and agent workflows should point here.
+
+During this phase, `cli/` is the public CLI source of truth. CLI changes should land here with `npm run typecheck`, `npm run cli:test`, and `npm test` passing, then the main Userland docs should be updated in the same release window. Do not document `npx @userland/cli` until the package is actually published.
 
 ## CLI
 
