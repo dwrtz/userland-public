@@ -50,3 +50,9 @@ npm run validate:manifests
 - Do not create undeclared resources at runtime.
 - Do not publish files under `_userland/`.
 
+## References
+
+- Agent context: https://docs.userland.fun/llms.txt
+- CLI docs: https://docs.userland.fun/reference/cli
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Public CLI source: https://github.com/dwrtz/userland-public/tree/main/cli

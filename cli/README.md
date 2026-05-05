@@ -2,6 +2,12 @@
 
 This directory is the public source path for the Userland CLI while npm publishing is deferred.
 
+Docs:
+
+- https://docs.userland.fun/llms.txt
+- https://docs.userland.fun/reference/cli
+- https://docs.userland.fun/guides/troubleshooting
+
 Run from the repo root:
 
 ```sh
@@ -14,4 +20,3 @@ USERLAND_API_KEY=... npm run userland -- apps events <app-id>
 ```
 
 Do not commit API keys or app secrets.
-

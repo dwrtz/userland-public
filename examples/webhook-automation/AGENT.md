@@ -27,3 +27,17 @@ Safety:
 - Do not verify webhook signatures in frontend code.
 - Do not log raw secrets or sensitive webhook payloads.
 
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Jobs: https://docs.userland.fun/guides/jobs
+- Webhooks: https://docs.userland.fun/guides/webhooks

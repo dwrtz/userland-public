@@ -55,3 +55,9 @@ USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
 - Do not invent infrastructure config.
 - Use documented Userland APIs and runtime `ctx` methods.
 
+## References
+
+- Agent context: https://docs.userland.fun/llms.txt
+- CLI docs: https://docs.userland.fun/reference/cli
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Public CLI source: https://github.com/dwrtz/userland-public/tree/main/cli

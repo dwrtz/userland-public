@@ -38,3 +38,16 @@ curl -X POST <origin>/api/bookings \
 
 The first booking returns `201`. A second booking for the same slot returns `409`.
 
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Data: https://docs.userland.fun/guides/data

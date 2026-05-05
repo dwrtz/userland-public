@@ -28,3 +28,16 @@ Safety:
 - Do not return secret values or complete key prefixes.
 - Do not log prompts if they may contain private user data.
 
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Secrets: https://docs.userland.fun/guides/secrets

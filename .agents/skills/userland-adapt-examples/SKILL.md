@@ -52,3 +52,9 @@ USERLAND_API_KEY=... npm run userland -- apps publish examples/<new-example-slug
 - Do not publish until unused resources are removed.
 - Keep provenance clear when adapting an example.
 
+## References
+
+- Agent context: https://docs.userland.fun/llms.txt
+- CLI docs: https://docs.userland.fun/reference/cli
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Public CLI source: https://github.com/dwrtz/userland-public/tree/main/cli

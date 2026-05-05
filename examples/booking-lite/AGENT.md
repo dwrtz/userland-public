@@ -29,3 +29,16 @@ Safety:
 - Do not create a booking outside the transaction.
 - Do not expose private booking details from public list routes.
 
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Data: https://docs.userland.fun/guides/data

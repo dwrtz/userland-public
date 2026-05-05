@@ -53,3 +53,9 @@ USERLAND_API_KEY=... npm run userland -- apps rollback <app-id> <release-id>
 - Do not guess undocumented event meanings.
 - Roll back before broad rewrites when production is broken.
 
+## References
+
+- Agent context: https://docs.userland.fun/llms.txt
+- CLI docs: https://docs.userland.fun/reference/cli
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Public CLI source: https://github.com/dwrtz/userland-public/tree/main/cli

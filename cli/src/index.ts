@@ -497,11 +497,30 @@ function usage(exitCode: number): never {
 
 Aliases:
   userland publish <dir> [--app <app-id>] [--message <message>]
-  userland releases <app-id>`);
+  userland releases <app-id>
+
+Docs:
+  https://docs.userland.fun/reference/cli
+  https://docs.userland.fun/guides/troubleshooting`);
   process.exit(exitCode);
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  console.error(`Docs: ${docsUrlForError(message)}`);
   process.exit(1);
 });
+
+function docsUrlForError(message: string): string {
+  if (message.includes("USERLAND_API_KEY")) {
+    return "https://docs.userland.fun/reference/cli";
+  }
+  if (message.includes("secrets") || message.includes("pending_secrets")) {
+    return "https://docs.userland.fun/guides/secrets";
+  }
+  if (message.includes("rollback")) {
+    return "https://docs.userland.fun/guides/rollback";
+  }
+  return "https://docs.userland.fun/guides/troubleshooting";
+}

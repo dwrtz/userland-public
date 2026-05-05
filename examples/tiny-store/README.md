@@ -27,3 +27,18 @@ USERLAND_API_KEY=... npm run userland -- apps secrets set <app-id> CHECKOUT_WEBH
 USERLAND_API_KEY=... npm run userland -- apps publish examples/tiny-store
 ```
 
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Secrets: https://docs.userland.fun/guides/secrets
+- Jobs: https://docs.userland.fun/guides/jobs
+- Webhooks: https://docs.userland.fun/guides/webhooks

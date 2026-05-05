@@ -50,3 +50,9 @@ npm run validate:manifests
 - Do not use undocumented `ctx` fields.
 - Do not depend on raw infrastructure APIs.
 
+## References
+
+- Agent context: https://docs.userland.fun/llms.txt
+- CLI docs: https://docs.userland.fun/reference/cli
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Public CLI source: https://github.com/dwrtz/userland-public/tree/main/cli
