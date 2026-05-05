@@ -42,6 +42,10 @@ npm run validate:manifests
 npm run validate:skills
 ```
 
+## Repository policy
+
+This repo is canonical for user-facing examples, repo-scoped Codex skills, and the launch public CLI source. The main Userland monorepo may keep smaller platform test fixtures, but docs catalogs and agent workflows should point here.
+
 ## CLI
 
 The public CLI source lives in `cli/`. Until `@userland/cli` is published to npm, run it from source:
@@ -58,4 +62,3 @@ USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
 - Do not publish files under `_userland/`.
 - Do not invent platform internals or raw infrastructure config.
 - Use app origins like `https://<app_id>.apps.userland.fun/`.
-
