@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Userland Blog CMS</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Userland Blog CMS</h1>
+        <p>Publish posts with app-scoped auth, durable data, and media files.</p>
+      </header>
+      <section id="posts" aria-live="polite"></section>
+      <form id="editor">
+        <input name="title" placeholder="Title" required>
+        <textarea name="body" placeholder="Body" required></textarea>
+        <input name="image_url" placeholder="Image URL">
+        <button type="submit">Create draft</button>
+      </form>
+    </main>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

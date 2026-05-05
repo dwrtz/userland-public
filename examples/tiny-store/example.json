@@ -1,0 +1,10 @@
+{
+  "slug": "tiny-store",
+  "title": "Tiny Store",
+  "summary": "Small storefront with products, orders, checkout secrets, jobs, and webhooks.",
+  "path": "examples/tiny-store",
+  "capabilities": ["server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback"],
+  "difficulty": "advanced",
+  "userland_api_version": "v0"
+}
+

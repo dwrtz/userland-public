@@ -1,0 +1,38 @@
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #202124;
+  background: #fafafa;
+}
+
+main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
+header {
+  margin-bottom: 28px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 2rem;
+}
+
+p {
+  color: #5f6368;
+}
+
+article {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid #d8dde3;
+  border-radius: 8px;
+  background: #fff;
+}
+
+h2 {
+  margin: 0 0 6px;
+  font-size: 1.1rem;
+}

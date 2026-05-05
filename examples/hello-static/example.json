@@ -1,0 +1,10 @@
+{
+  "slug": "hello-static",
+  "title": "Hello Static",
+  "summary": "Small static app with no server runtime or managed resources.",
+  "path": "examples/hello-static",
+  "capabilities": ["static"],
+  "difficulty": "beginner",
+  "userland_api_version": "v0"
+}
+

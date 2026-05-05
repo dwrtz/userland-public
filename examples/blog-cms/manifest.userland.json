@@ -1,0 +1,57 @@
+{
+  "app": {
+    "name": "Blog CMS",
+    "summary": "Admin-authored blog with app users, posts, and media uploads.",
+    "visibility": "public",
+    "tags": ["cms", "blog"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["admin"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "posts": {
+          "fields": {
+            "title": "string",
+            "body": "richtext",
+            "status": {
+              "type": "enum",
+              "values": ["draft", "published"]
+            },
+            "image_url": "string",
+            "published_at": "datetime"
+          },
+          "indexes": [
+            {
+              "name": "by_status",
+              "fields": ["status"]
+            }
+          ],
+          "access": {
+            "read": "public",
+            "write": "role:admin"
+          }
+        }
+      }
+    },
+    "files": {
+      "stores": {
+        "media": {
+          "public": true,
+          "max_file_size_bytes": 5242880,
+          "allowed_content_types": ["image/jpeg", "image/png", "image/webp", "text/plain"]
+        }
+      }
+    }
+  },
+  "message": "Initial blog CMS example"
+}
+

@@ -1,0 +1,63 @@
+{
+  "app": {
+    "name": "Webhook Automation",
+    "summary": "Receive generic HMAC webhooks and process them through a Userland job.",
+    "visibility": "public",
+    "tags": ["webhooks", "jobs"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "data": {
+      "collections": {
+        "automation-events": {
+          "fields": {
+            "external_id": "string",
+            "status": {
+              "type": "enum",
+              "values": ["received", "processed"]
+            },
+            "payload": "json"
+          },
+          "indexes": [
+            {
+              "name": "by_external_id",
+              "fields": ["external_id"],
+              "unique": true
+            },
+            {
+              "name": "by_status",
+              "fields": ["status"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    },
+    "secrets": {
+      "required": ["AUTOMATION_WEBHOOK_SECRET"]
+    },
+    "jobs": {
+      "process-automation-event": {
+        "trigger": "manual",
+        "max_attempts": 3
+      }
+    },
+    "webhooks": {
+      "automation": {
+        "provider": "generic_hmac",
+        "secret": "AUTOMATION_WEBHOOK_SECRET",
+        "deliver_to": "job",
+        "job": "process-automation-event"
+      }
+    }
+  },
+  "message": "Initial webhook automation example"
+}
+

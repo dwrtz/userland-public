@@ -1,0 +1,69 @@
+{
+  "version": 0,
+  "userland_api_version": "v0",
+  "examples": [
+    {
+      "slug": "hello-static",
+      "title": "Hello Static",
+      "summary": "Small static app with no server runtime or managed resources.",
+      "path": "examples/hello-static",
+      "capabilities": ["static"],
+      "difficulty": "beginner",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "blog-cms",
+      "title": "Blog CMS",
+      "summary": "Admin-authored blog with posts and media uploads.",
+      "path": "examples/blog-cms",
+      "capabilities": ["server", "auth", "data", "files", "rollback"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "server-notes",
+      "title": "Server Notes",
+      "summary": "Dynamic notes app with server routes, durable data, and runtime logs.",
+      "path": "examples/server-notes",
+      "capabilities": ["server", "data"],
+      "difficulty": "beginner",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "tiny-store",
+      "title": "Tiny Store",
+      "summary": "Small storefront with products, orders, checkout secrets, jobs, and webhooks.",
+      "path": "examples/tiny-store",
+      "capabilities": ["server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback"],
+      "difficulty": "advanced",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "webhook-automation",
+      "title": "Webhook Automation",
+      "summary": "Generic HMAC webhook that queues a manual job and records automation events.",
+      "path": "examples/webhook-automation",
+      "capabilities": ["server", "data", "jobs", "webhooks"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "ai-secret-tool",
+      "title": "AI Secret Tool",
+      "summary": "Server-only secret access pattern for calling a model provider without exposing keys.",
+      "path": "examples/ai-secret-tool",
+      "capabilities": ["server", "secrets"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0"
+    },
+    {
+      "slug": "booking-lite",
+      "title": "Booking Lite",
+      "summary": "Slot booking app that claims availability inside a Userland data transaction.",
+      "path": "examples/booking-lite",
+      "capabilities": ["server", "data", "transactions"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0"
+    }
+  ]
+}

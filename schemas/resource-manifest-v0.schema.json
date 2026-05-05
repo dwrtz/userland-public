@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.userland.fun/schemas/resource-manifest-v0.schema.json",
+  "title": "Userland directory manifest v0",
+  "description": "The manifest.userland.json file consumed by the Userland CLI when publishing a local directory.",
+  "type": "object",
+  "required": [
+    "app",
+    "runtime"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "app": {
+      "$ref": "#/$defs/AppManifest"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeManifest"
+    },
+    "resources": {
+      "$ref": "#/$defs/ResourceManifest"
+    }
+  },
+  "$defs": {
+    "AppManifest": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "summary": {
+          "type": "string"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "public",
+            "private"
+          ],
+          "default": "public"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "_userland",
+                "system",
+                "auth",
+                "session",
+                "sessions",
+                "secrets",
+                "runtime"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "RuntimeManifest": {
+      "type": "object",
+      "required": [
+        "static_root"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "static_root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*\\\\)(?!_userland(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$"
+        },
+        "server_entry": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*\\\\)(?!_userland(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$"
+        },
+        "fallback": {
+          "type": "string",
+          "enum": [
+            "server",
+            "index.html",
+            "404"
+          ],
+          "default": "404"
+        }
+      }
+    },
+    "ResourceManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/AuthSpec"
+        },
+        "data": {
+          "$ref": "#/$defs/DataSpec"
+        },
+        "files": {
+          "$ref": "#/$defs/FilesSpec"
+        },
+        "secrets": {
+          "$ref": "#/$defs/SecretSpec"
+        },
+        "jobs": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "_userland",
+                "system",
+                "auth",
+                "session",
+                "sessions",
+                "secrets",
+                "runtime"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/JobSpec"
+          }
+        },
+        "webhooks": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "_userland",
+                "system",
+                "auth",
+                "session",
+                "sessions",
+                "secrets",
+                "runtime"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/WebhookSpec"
+          }
+        }
+      }
+    },
+    "AuthSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "app_users"
+          ],
+          "default": "none"
+        },
+        "roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "system",
+                "userland",
+                "platform"
+              ]
+            }
+          }
+        },
+        "public_signup": {
+          "type": "boolean"
+        },
+        "email_verification": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DataSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "collections": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "_userland",
+                "system",
+                "auth",
+                "session",
+                "sessions",
+                "secrets",
+                "runtime"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/DataCollectionSpec"
+          }
+        }
+      }
+    },
+    "DataCollectionSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "not": {
+              "enum": [
+                "id",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "data"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/DataFieldSpec"
+          }
+        },
+        "indexes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DataIndexSpec"
+          }
+        },
+        "access": {
+          "$ref": "#/$defs/DataAccessSpec"
+        }
+      }
+    },
+    "DataFieldSpec": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "datetime",
+            "json",
+            "richtext",
+            "enum",
+            "reference"
+          ]
+        },
+        {
+          "$ref": "#/$defs/DataFieldObjectSpec"
+        }
+      ]
+    },
+    "DataFieldObjectSpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "values"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "enum"
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "collection"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "reference"
+            },
+            "collection": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "not": {
+                "enum": [
+                  "_userland",
+                  "system",
+                  "auth",
+                  "session",
+                  "sessions",
+                  "secrets",
+                  "runtime"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "string",
+                "integer",
+                "number",
+                "boolean",
+                "datetime",
+                "json",
+                "richtext"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "DataIndexSpec": {
+      "type": "object",
+      "required": [
+        "name",
+        "fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "not": {
+            "enum": [
+              "id",
+              "created_at",
+              "updated_at",
+              "deleted_at",
+              "data"
+            ]
+          }
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "not": {
+              "enum": [
+                "id",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "data"
+              ]
+            }
+          }
+        },
+        "unique": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DataAccessSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": {
+          "type": "string",
+          "anyOf": [
+            {
+              "enum": [
+                "server_only",
+                "authenticated",
+                "owner",
+                "public"
+              ]
+            },
+            {
+              "pattern": "^role:[a-z][a-z0-9-]{0,63}$"
+            }
+          ]
+        },
+        "write": {
+          "type": "string",
+          "anyOf": [
+            {
+              "enum": [
+                "server_only",
+                "authenticated",
+                "owner",
+                "public"
+              ]
+            },
+            {
+              "pattern": "^role:[a-z][a-z0-9-]{0,63}$"
+            }
+          ]
+        }
+      }
+    },
+    "FilesSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stores": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "not": {
+              "enum": [
+                "_userland",
+                "system",
+                "auth",
+                "session",
+                "sessions",
+                "secrets",
+                "runtime"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/FileStoreSpec"
+          }
+        }
+      }
+    },
+    "FileStoreSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public": {
+          "type": "boolean"
+        },
+        "max_file_size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowed_content_types": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+(?:\\s*;\\s*[!#$%&'*+\\-.^_`|~0-9A-Za-z]+=(?:\\\"[^\\\"]*\\\"|[!#$%&'*+\\-.^_`|~0-9A-Za-z]+))*$"
+          }
+        }
+      }
+    },
+    "SecretSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$"
+          }
+        }
+      }
+    },
+    "JobSpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "trigger": {
+              "const": "manual",
+              "default": "manual"
+            },
+            "max_attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 3
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "trigger",
+            "schedule"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "trigger": {
+              "const": "schedule"
+            },
+            "schedule": {
+              "type": "string",
+              "enum": [
+                "every_15_minutes",
+                "hourly",
+                "daily"
+              ]
+            },
+            "max_attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 3
+            }
+          }
+        }
+      ]
+    },
+    "WebhookSpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "provider",
+            "deliver_to"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "const": "none"
+            },
+            "secret": {
+              "type": "string",
+              "pattern": "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$"
+            },
+            "deliver_to": {
+              "const": "server"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "provider",
+            "secret",
+            "deliver_to"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "generic_hmac",
+                "github"
+              ]
+            },
+            "secret": {
+              "type": "string",
+              "pattern": "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$"
+            },
+            "deliver_to": {
+              "const": "server"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "provider",
+            "deliver_to",
+            "job"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "none",
+                "generic_hmac",
+                "github"
+              ]
+            },
+            "secret": {
+              "type": "string",
+              "pattern": "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$"
+            },
+            "deliver_to": {
+              "const": "job"
+            },
+            "job": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "not": {
+                "enum": [
+                  "_userland",
+                  "system",
+                  "auth",
+                  "session",
+                  "sessions",
+                  "secrets",
+                  "runtime"
+                ]
+              }
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "provider",
+            "deliver_to"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "none",
+                "generic_hmac",
+                "github"
+              ]
+            },
+            "secret": {
+              "type": "string",
+              "pattern": "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$"
+            },
+            "deliver_to": {
+              "type": "string",
+              "pattern": "^job:[a-z][a-z0-9-]{0,63}$"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

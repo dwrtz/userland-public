@@ -1,0 +1,38 @@
+{
+  "version": 0,
+  "distribution": "repo-scoped",
+  "skills_path": ".agents/skills",
+  "skills": [
+    {
+      "name": "userland-build-app",
+      "path": ".agents/skills/userland-build-app",
+      "description": "Userland app build workflow from idea to valid bundle."
+    },
+    {
+      "name": "userland-manifest-resources",
+      "path": ".agents/skills/userland-manifest-resources",
+      "description": "Userland manifest resources for auth, data, files, secrets, jobs, and webhooks."
+    },
+    {
+      "name": "userland-runtime-code",
+      "path": ".agents/skills/userland-runtime-code",
+      "description": "Userland runtime ctx server code for routes, data, auth, secrets, files, jobs, and logs."
+    },
+    {
+      "name": "userland-publish-operate",
+      "path": ".agents/skills/userland-publish-operate",
+      "description": "Userland app publish, secrets, events, releases, and rollback operations."
+    },
+    {
+      "name": "userland-debug-migrate",
+      "path": ".agents/skills/userland-debug-migrate",
+      "description": "Userland activation, runtime, resource migration, job, webhook, and rollback debugging."
+    },
+    {
+      "name": "userland-adapt-examples",
+      "path": ".agents/skills/userland-adapt-examples",
+      "description": "Userland examples adaptation workflow for cloning patterns into a new app."
+    }
+  ]
+}
+

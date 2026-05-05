@@ -1,0 +1,20 @@
+{
+  "app": {
+    "name": "AI Secret Tool",
+    "summary": "Server-only model-provider secret pattern for Userland apps.",
+    "visibility": "public",
+    "tags": ["ai", "secrets"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "secrets": {
+      "required": ["MODEL_API_KEY"]
+    }
+  },
+  "message": "Initial AI secret tool example"
+}
+

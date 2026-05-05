@@ -1,0 +1,41 @@
+{
+  "app": {
+    "name": "Server Notes",
+    "summary": "A small notes app backed by Userland data resources.",
+    "visibility": "public",
+    "tags": ["notes", "data"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "data": {
+      "collections": {
+        "notes": {
+          "fields": {
+            "title": "string",
+            "body": "richtext",
+            "status": {
+              "type": "enum",
+              "values": ["open", "archived"]
+            }
+          },
+          "indexes": [
+            {
+              "name": "by_status",
+              "fields": ["status"]
+            }
+          ],
+          "access": {
+            "read": "public",
+            "write": "server_only"
+          }
+        }
+      }
+    }
+  },
+  "message": "Initial server notes example"
+}
+

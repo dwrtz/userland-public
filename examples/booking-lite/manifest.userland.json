@@ -1,0 +1,64 @@
+{
+  "app": {
+    "name": "Booking Lite",
+    "summary": "Claim available booking slots with Userland data transactions.",
+    "visibility": "public",
+    "tags": ["booking", "data"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "data": {
+      "collections": {
+        "slots": {
+          "fields": {
+            "title": "string",
+            "starts_at": "datetime",
+            "status": {
+              "type": "enum",
+              "values": ["available", "booked"]
+            },
+            "booked_by": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_status",
+              "fields": ["status", "starts_at"]
+            }
+          ],
+          "access": {
+            "read": "public",
+            "write": "server_only"
+          }
+        },
+        "bookings": {
+          "fields": {
+            "slot_id": "string",
+            "name": "string",
+            "email": "string",
+            "status": {
+              "type": "enum",
+              "values": ["confirmed", "cancelled"]
+            }
+          },
+          "indexes": [
+            {
+              "name": "by_slot",
+              "fields": ["slot_id"],
+              "unique": true
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    }
+  },
+  "message": "Initial booking-lite example"
+}
+

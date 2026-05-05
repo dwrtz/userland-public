@@ -1,0 +1,121 @@
+{
+  "app": {
+    "name": "Tiny Store",
+    "summary": "A small storefront with products, orders, checkout secrets, jobs, and webhooks.",
+    "visibility": "public",
+    "tags": ["commerce", "store"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["admin", "customer"],
+      "public_signup": true
+    },
+    "data": {
+      "collections": {
+        "products": {
+          "fields": {
+            "name": "string",
+            "slug": "string",
+            "description": "richtext",
+            "price_cents": "integer",
+            "currency": "string",
+            "inventory_count": "integer",
+            "image_id": "string",
+            "status": {
+              "type": "enum",
+              "values": ["draft", "active", "archived"]
+            }
+          },
+          "indexes": [
+            {
+              "name": "by_slug",
+              "fields": ["slug"],
+              "unique": true
+            },
+            {
+              "name": "active_products",
+              "fields": ["status", "slug"]
+            }
+          ],
+          "access": {
+            "read": "public",
+            "write": "role:admin"
+          }
+        },
+        "orders": {
+          "fields": {
+            "app_user_id": "string",
+            "email": "string",
+            "status": {
+              "type": "enum",
+              "values": ["draft", "checkout_pending", "paid", "cancelled"]
+            },
+            "line_items": "json",
+            "total_cents": "integer",
+            "currency": "string",
+            "checkout_session_id": "string",
+            "paid_at": "datetime"
+          },
+          "indexes": [
+            {
+              "name": "by_checkout_session",
+              "fields": ["checkout_session_id"],
+              "unique": true
+            },
+            {
+              "name": "by_status",
+              "fields": ["status"]
+            },
+            {
+              "name": "by_user",
+              "fields": ["app_user_id"]
+            }
+          ],
+          "access": {
+            "read": "owner",
+            "write": "server_only"
+          }
+        }
+      }
+    },
+    "files": {
+      "stores": {
+        "product-images": {
+          "public": true,
+          "max_file_size_bytes": 10485760,
+          "allowed_content_types": ["image/jpeg", "image/png", "image/webp", "text/plain"]
+        }
+      }
+    },
+    "secrets": {
+      "required": ["CHECKOUT_SECRET_KEY", "CHECKOUT_WEBHOOK_SECRET"]
+    },
+    "jobs": {
+      "handle-checkout-event": {
+        "trigger": "manual",
+        "max_attempts": 5
+      },
+      "expire-abandoned-orders": {
+        "trigger": "schedule",
+        "schedule": "hourly",
+        "max_attempts": 3
+      }
+    },
+    "webhooks": {
+      "checkout": {
+        "provider": "generic_hmac",
+        "secret": "CHECKOUT_WEBHOOK_SECRET",
+        "deliver_to": "job",
+        "job": "handle-checkout-event"
+      }
+    }
+  },
+  "message": "Initial tiny store example"
+}
+

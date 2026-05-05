@@ -1,0 +1,10 @@
+{
+  "slug": "booking-lite",
+  "title": "Booking Lite",
+  "summary": "Slot booking app that claims availability inside a Userland data transaction.",
+  "path": "examples/booking-lite",
+  "capabilities": ["server", "data", "transactions"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0"
+}
+

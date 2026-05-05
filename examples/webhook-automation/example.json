@@ -1,0 +1,10 @@
+{
+  "slug": "webhook-automation",
+  "title": "Webhook Automation",
+  "summary": "Generic HMAC webhook that queues a manual job and records automation events.",
+  "path": "examples/webhook-automation",
+  "capabilities": ["server", "data", "jobs", "webhooks"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0"
+}
+

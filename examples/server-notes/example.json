@@ -1,0 +1,10 @@
+{
+  "slug": "server-notes",
+  "title": "Server Notes",
+  "summary": "Dynamic notes app with server routes, durable data, and runtime logs.",
+  "path": "examples/server-notes",
+  "capabilities": ["server", "data"],
+  "difficulty": "beginner",
+  "userland_api_version": "v0"
+}
+

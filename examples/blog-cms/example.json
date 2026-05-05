@@ -1,0 +1,10 @@
+{
+  "slug": "blog-cms",
+  "title": "Blog CMS",
+  "summary": "Admin-authored blog with posts and media uploads.",
+  "path": "examples/blog-cms",
+  "capabilities": ["server", "auth", "data", "files", "rollback"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0"
+}
+

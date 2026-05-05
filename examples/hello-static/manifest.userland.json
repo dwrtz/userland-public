@@ -1,0 +1,15 @@
+{
+  "app": {
+    "name": "Hello Static",
+    "summary": "A tiny static Userland app.",
+    "visibility": "public",
+    "tags": ["static", "hello"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "fallback": "index.html"
+  },
+  "resources": {},
+  "message": "Initial hello-static example"
+}
+

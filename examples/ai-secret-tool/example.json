@@ -1,0 +1,10 @@
+{
+  "slug": "ai-secret-tool",
+  "title": "AI Secret Tool",
+  "summary": "Server-only secret access pattern for calling a model provider without exposing keys.",
+  "path": "examples/ai-secret-tool",
+  "capabilities": ["server", "secrets"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0"
+}
+
