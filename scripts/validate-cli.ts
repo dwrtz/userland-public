@@ -2,6 +2,14 @@ import { promises as fs } from "node:fs";
 
 const cliSource = await fs.readFile("cli/src/index.ts", "utf8");
 const cliReadme = await fs.readFile("cli/README.md", "utf8");
+const cliPackage = JSON.parse(await fs.readFile("cli/package.json", "utf8")) as {
+  bin?: Record<string, string>;
+  files?: string[];
+  name?: string;
+  private?: boolean;
+  publishConfig?: { access?: string };
+  scripts?: Record<string, string>;
+};
 
 const requiredSourcePatterns = [
   'subcommand === "publish"',
@@ -32,12 +40,14 @@ const requiredReadmeSnippets = [
   "npm run userland -- apps secrets set",
   "npm run userland -- apps events",
   "OS keychain",
+  "npm install -g @userland.fun/cli",
   "https://docs.userland.fun/reference/cli"
 ];
 
 const failures = [
   ...missing("cli/src/index.ts", cliSource, requiredSourcePatterns),
-  ...missing("cli/README.md", cliReadme, requiredReadmeSnippets)
+  ...missing("cli/README.md", cliReadme, requiredReadmeSnippets),
+  ...validatePackage()
 ];
 
 if (failures.length > 0) {
@@ -46,4 +56,27 @@ if (failures.length > 0) {
 
 function missing(filePath: string, contents: string, snippets: string[]): string[] {
   return snippets.filter((snippet) => !contents.includes(snippet)).map((snippet) => `${filePath} is missing ${JSON.stringify(snippet)}`);
+}
+
+function validatePackage(): string[] {
+  const errors: string[] = [];
+  if (cliPackage.name !== "@userland.fun/cli") {
+    errors.push("cli/package.json must publish as @userland.fun/cli");
+  }
+  if (cliPackage.private === true) {
+    errors.push("cli/package.json must not be private");
+  }
+  if (cliPackage.bin?.userland !== "dist/index.js") {
+    errors.push("cli/package.json bin.userland must point to dist/index.js");
+  }
+  if (!cliPackage.files?.includes("dist")) {
+    errors.push("cli/package.json files must include dist");
+  }
+  if (cliPackage.publishConfig?.access !== "public") {
+    errors.push("cli/package.json publishConfig.access must be public");
+  }
+  if (!cliPackage.scripts?.prepack?.includes("build")) {
+    errors.push("cli/package.json must build before packing");
+  }
+  return errors;
 }

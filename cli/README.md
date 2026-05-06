@@ -1,6 +1,6 @@
 # Userland CLI
 
-This directory is the public source path for the Userland CLI while npm publishing is deferred.
+This directory is the source for the public `@userland.fun/cli` npm package.
 
 Docs:
 
@@ -8,7 +8,28 @@ Docs:
 - https://docs.userland.fun/reference/cli
 - https://docs.userland.fun/guides/troubleshooting
 
-Run from the repo root:
+Install globally:
+
+```sh
+npm install -g @userland.fun/cli
+```
+
+Then run:
+
+```sh
+userland signup --username <username>
+userland login --username <username>
+userland auth status
+userland auth save-key --username <username> --api-key <api-key>
+userland apps publish examples/<example-slug>
+userland apps list
+userland apps releases <app-id>
+userland apps rollback <app-id> <release-id>
+userland apps secrets set <app-id> <NAME> --value <value>
+userland apps events <app-id>
+```
+
+From this repo, the same commands can be run from source:
 
 ```sh
 npm run userland -- signup --username <username>
@@ -27,6 +48,13 @@ npm run userland -- apps events <app-id>
 
 ## Validation
 
+Build and inspect the publish tarball:
+
+```sh
+npm run cli:build
+npm run cli:pack
+```
+
 Run command-level CLI tests against a mocked API:
 
 ```sh
@@ -42,7 +70,7 @@ npm test
 
 ## Sync and release policy
 
-For launch, this `cli/` directory is the public CLI source of truth for agents. Keep `@userland/cli` private until an npm release is intentionally cut. When changing the CLI:
+For launch, this `cli/` directory is the public CLI source of truth for agents and publishes as `@userland.fun/cli`. When changing the CLI:
 
 1. Update `cli/src/index.ts`, this README, and `https://docs.userland.fun/reference/cli` together.
 2. Add or update mocked command tests in `cli/tests`.
@@ -51,8 +79,8 @@ For launch, this `cli/` directory is the public CLI source of truth for agents. 
 
 Compatibility:
 
-| CLI path | API version | Distribution |
+| CLI package | API version | Distribution |
 |---|---|---|
-| `userland-public/cli` | Userland API v0 | Run from source with `npm run userland` |
+| `@userland.fun/cli` | Userland API v0 | `npm install -g @userland.fun/cli` |
 
 Do not commit API keys or app secrets.

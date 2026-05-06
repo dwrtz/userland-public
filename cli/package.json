@@ -1,10 +1,33 @@
 {
-  "name": "@userland/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@userland.fun/cli",
+  "version": "0.1.0",
+  "description": "Userland command-line tools for publishing and operating apps.",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "userland": "src/index.ts"
+    "userland": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "cd .. && npm run cli:build",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dwrtz/userland-public.git",
+    "directory": "cli"
+  },
+  "homepage": "https://docs.userland.fun/reference/cli",
+  "bugs": {
+    "url": "https://github.com/dwrtz/userland-public/issues"
   }
 }
-

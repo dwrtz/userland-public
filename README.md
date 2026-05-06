@@ -48,11 +48,24 @@ npm run validate:skills
 
 This repo is canonical for user-facing examples, repo-scoped Codex skills, and the launch public CLI source. The main Userland monorepo may keep smaller platform test fixtures, but docs catalogs and agent workflows should point here.
 
-During this phase, `cli/` is the public CLI source of truth. CLI changes should land here with `npm run typecheck`, `npm run cli:test`, and `npm test` passing, then the main Userland docs should be updated in the same release window. Do not document `npx @userland/cli` until the package is actually published.
+During this phase, `cli/` is the public CLI source of truth. CLI changes should land here with `npm run typecheck`, `npm run cli:test`, and `npm test` passing, then the main Userland docs should be updated in the same release window.
 
 ## CLI
 
-The public CLI source lives in `cli/`. Until `@userland/cli` is published to npm, run it from source:
+Install the public CLI globally:
+
+```sh
+npm install -g @userland.fun/cli
+```
+
+Then run:
+
+```sh
+userland signup --username <username>
+userland apps publish examples/<example-slug>
+```
+
+From this repo, run it from source:
 
 ```sh
 npm run userland -- signup --username <username>
