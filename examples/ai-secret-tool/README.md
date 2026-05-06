@@ -7,13 +7,13 @@ This example uses a mock model call by default. Replace `callMockModel` with a r
 ## Required secret
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps secrets set <app-id> MODEL_API_KEY --value <value>
+npm run userland -- apps secrets set <app-id> MODEL_API_KEY --value <value>
 ```
 
 ## Publish
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/ai-secret-tool
+npm run userland -- apps publish examples/ai-secret-tool
 ```
 
 The frontend must call `/api/run`; it should never receive or store `MODEL_API_KEY`.

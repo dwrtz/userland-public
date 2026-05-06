@@ -6,3 +6,4 @@
 - Add docs link validation for every example README and AGENT note.
 - Add CLI and skill links back to the Userland docs and troubleshooting guide.
 - Add mocked command-level CLI tests and document the launch CLI sync policy.
+- Add CLI signup, login, credential status, local API key storage in `~/.userland/credentials.json`, and OS keychain storage for account username/password.

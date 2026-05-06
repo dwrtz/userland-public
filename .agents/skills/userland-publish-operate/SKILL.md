@@ -12,7 +12,7 @@ Use this skill when publishing, updating, inspecting, or rolling back a Userland
 ## Inputs
 
 - Valid app bundle directory.
-- `USERLAND_API_KEY` in the environment.
+- `USERLAND_API_KEY` in the environment or an API key saved by the CLI.
 - Optional `app_id` for updates.
 - Required app secret values.
 
@@ -32,17 +32,18 @@ Use this skill when publishing, updating, inspecting, or rolling back a Userland
 ## Commands
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
-USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug> --app <app-id>
-USERLAND_API_KEY=... npm run userland -- apps secrets set <app-id> <NAME> --value <value>
-USERLAND_API_KEY=... npm run userland -- apps releases <app-id>
-USERLAND_API_KEY=... npm run userland -- apps events <app-id>
-USERLAND_API_KEY=... npm run userland -- apps rollback <app-id> <release-id>
+npm run userland -- auth status
+npm run userland -- apps publish examples/<example-slug>
+npm run userland -- apps publish examples/<example-slug> --app <app-id>
+npm run userland -- apps secrets set <app-id> <NAME> --value <value>
+npm run userland -- apps releases <app-id>
+npm run userland -- apps events <app-id>
+npm run userland -- apps rollback <app-id> <release-id>
 ```
 
 ## Validation checklist
 
-- `USERLAND_API_KEY` is present only in the process environment.
+- Authentication is available from `USERLAND_API_KEY` or saved CLI credentials.
 - Required secrets are set.
 - Activation status is reported.
 - Rollback release id is recorded.
@@ -51,6 +52,7 @@ USERLAND_API_KEY=... npm run userland -- apps rollback <app-id> <release-id>
 
 - Do not print API keys or secret values.
 - Do not commit `.env` files.
+- Do not commit `~/.userland` credential files.
 - Do not publish app aliases.
 - Use app origins for validation.
 

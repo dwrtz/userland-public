@@ -30,14 +30,15 @@ Use this skill when turning an app idea into a Userland bundle.
 4. Add static UI files under `public/`.
 5. Add `server/index.js` only when dynamic behavior is required.
 6. Validate the manifest and referenced files.
-7. Publish only after the user has supplied `USERLAND_API_KEY` through the environment.
+7. Publish only after `USERLAND_API_KEY` is available in the environment or the CLI has saved an API key.
 
 ## Commands
 
 ```sh
 npm run validate:catalog
 npm run validate:manifests
-USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
+npm run userland -- auth status
+npm run userland -- apps publish examples/<example-slug>
 ```
 
 ## Validation checklist
@@ -50,7 +51,7 @@ USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
 
 ## Safety rules
 
-- Never expose `USERLAND_API_KEY`.
+- Never expose `USERLAND_API_KEY` or saved CLI credentials.
 - Never expose app secrets to frontend code.
 - Do not invent infrastructure config.
 - Use documented Userland APIs and runtime `ctx` methods.

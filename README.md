@@ -17,7 +17,7 @@ Goal: choose an example, adapt it into a valid Userland app bundle, validate it,
 Inputs:
 
 - App idea and desired capabilities.
-- `USERLAND_API_KEY` in the environment for publishing.
+- `USERLAND_API_KEY` in the environment, or an API key saved with `npm run userland -- signup` or `npm run userland -- login`.
 - Optional target `app_id` for updates.
 
 Outputs:
@@ -55,8 +55,11 @@ During this phase, `cli/` is the public CLI source of truth. CLI changes should 
 The public CLI source lives in `cli/`. Until `@userland/cli` is published to npm, run it from source:
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/<example-slug>
+npm run userland -- signup --username <username>
+npm run userland -- apps publish examples/<example-slug>
 ```
+
+The CLI keeps API keys in `~/.userland/credentials.json` and stores account username/password in the OS keychain.
 
 ## Safety rules
 

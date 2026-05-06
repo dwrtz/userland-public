@@ -35,7 +35,8 @@ Use this skill when copying a Userland example into a new app.
 ```sh
 npm run validate:catalog
 npm run validate:manifests
-USERLAND_API_KEY=... npm run userland -- apps publish examples/<new-example-slug>
+npm run userland -- auth status
+npm run userland -- apps publish examples/<new-example-slug>
 ```
 
 ## Validation checklist

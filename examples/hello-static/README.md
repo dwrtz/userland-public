@@ -7,7 +7,7 @@ Use this example when the app only needs static HTML, CSS, JavaScript, and asset
 ## Publish
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/hello-static
+npm run userland -- apps publish examples/hello-static
 ```
 
 Expected output includes `app_id`, `origin`, `release_id`, and activation status.

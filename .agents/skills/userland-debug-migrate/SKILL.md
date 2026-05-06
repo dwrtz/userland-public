@@ -34,9 +34,10 @@ Use this skill when activation, runtime behavior, resources, jobs, webhooks, or 
 ## Commands
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps events <app-id> --limit 50
-USERLAND_API_KEY=... npm run userland -- apps releases <app-id>
-USERLAND_API_KEY=... npm run userland -- apps rollback <app-id> <release-id>
+npm run userland -- auth status
+npm run userland -- apps events <app-id> --limit 50
+npm run userland -- apps releases <app-id>
+npm run userland -- apps rollback <app-id> <release-id>
 ```
 
 ## Validation checklist

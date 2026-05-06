@@ -10,7 +10,7 @@ Relevant skills:
 ## Publish
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/server-notes
+npm run userland -- apps publish examples/server-notes
 ```
 
 ## Verify

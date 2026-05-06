@@ -10,17 +10,28 @@ const requiredSourcePatterns = [
   'subcommand === "rollback"',
   'subcommand === "secrets" && rest[0] === "set"',
   'subcommand === "events"',
+  'subcommand === "signup"',
+  'subcommand === "login"',
+  'subcommand === "status"',
+  'subcommand === "save-key"',
+  'command === "signup"',
+  'command === "login"',
   'command === "publish"',
   'command === "releases" || command === "versions"'
 ];
 
 const requiredReadmeSnippets = [
+  "npm run userland -- signup",
+  "npm run userland -- login",
+  "npm run userland -- auth status",
+  "npm run userland -- auth save-key",
   "npm run userland -- apps publish",
   "npm run userland -- apps list",
   "npm run userland -- apps releases",
   "npm run userland -- apps rollback",
   "npm run userland -- apps secrets set",
   "npm run userland -- apps events",
+  "OS keychain",
   "https://docs.userland.fun/reference/cli"
 ];
 

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 
 const DEFAULT_API_BASE_URL = "https://api.userland.fun";
+const KEYCHAIN_SERVICE = "fun.userland.cli";
+const KEYCHAIN_ACCOUNT = "default";
 
 interface CliOptions {
   app?: string;
@@ -18,6 +23,36 @@ interface EventsOptions {
   severity?: string;
   releaseId?: string;
   limit?: string;
+}
+
+interface AuthOptions {
+  apiKey?: string;
+  email?: string;
+  password?: string;
+  save?: boolean;
+  username?: string;
+}
+
+interface CredentialsFile {
+  api_base_url?: string;
+  api_key?: string;
+  updated_at?: string;
+}
+
+interface AccountCredentials {
+  password?: string;
+  username?: string;
+}
+
+interface AccountResponse {
+  username: string;
+  api_key: string;
+  warning: string;
+}
+
+interface TokenResponse {
+  api_key: string;
+  warning: string;
 }
 
 interface PublishResponse {
@@ -81,6 +116,21 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "auth") {
+    await authCommand(args);
+    return;
+  }
+
+  if (command === "signup") {
+    await signupCommand(args);
+    return;
+  }
+
+  if (command === "login") {
+    await loginCommand(args);
+    return;
+  }
+
   if (command === "publish") {
     await publishCommand(args);
     return;
@@ -121,6 +171,108 @@ async function appsCommand(args: string[]): Promise<void> {
     return;
   }
   usage(1);
+}
+
+async function authCommand(args: string[]): Promise<void> {
+  const [subcommand, ...rest] = args;
+  if (subcommand === "signup") {
+    await signupCommand(rest);
+    return;
+  }
+  if (subcommand === "login") {
+    await loginCommand(rest);
+    return;
+  }
+  if (subcommand === "status") {
+    await authStatusCommand();
+    return;
+  }
+  if (subcommand === "save-key") {
+    await saveKeyCommand(rest);
+    return;
+  }
+  usage(1);
+}
+
+async function signupCommand(args: string[]): Promise<void> {
+  const options = parseAuthOptions(args);
+  const username = options.username ?? (await promptRequired("Username: "));
+  const password = options.password ?? (await promptPassword("Password: "));
+  const body: Record<string, string> = { username, password };
+  if (options.email) {
+    body.email = options.email;
+  }
+
+  const response = await unauthenticatedApiFetch<AccountResponse>("/v0/accounts", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+
+  if (options.save !== false) {
+    await saveAccountCredentials({ username: response.username, password });
+    const filePath = await saveCredentials({
+      api_key: response.api_key,
+      api_base_url: await apiBaseUrl()
+    });
+    console.log(`Created Userland account ${response.username}`);
+    console.log(`Saved API key to ${filePath}`);
+    console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
+    return;
+  }
+
+  console.log(`Created Userland account ${response.username}`);
+  console.log(`api_key=${response.api_key}`);
+}
+
+async function loginCommand(args: string[]): Promise<void> {
+  const options = parseAuthOptions(args);
+  const storedAccount = await readAccountCredentials();
+  const username = options.username ?? storedAccount?.username ?? (await promptRequired("Username: "));
+  const password = options.password ?? storedAccount?.password ?? (await promptPassword("Password: "));
+  const response = await unauthenticatedApiFetch<TokenResponse>("/v0/auth/token", {
+    method: "POST",
+    body: JSON.stringify({ username, password })
+  });
+
+  if (options.save !== false) {
+    await saveAccountCredentials({ username, password });
+    const filePath = await saveCredentials({
+      api_key: response.api_key,
+      api_base_url: await apiBaseUrl()
+    });
+    console.log(`Saved API key to ${filePath}`);
+    console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
+    return;
+  }
+
+  console.log(`api_key=${response.api_key}`);
+}
+
+async function authStatusCommand(): Promise<void> {
+  const credentials = await readCredentials();
+  const account = await readAccountCredentials();
+  const filePath = credentialsPath();
+  const apiKeySource = process.env.USERLAND_API_KEY ? "env" : credentials?.api_key ? "file" : "missing";
+  console.log(`api_base_url=${await apiBaseUrl(credentials)}`);
+  console.log(`api_key=${apiKeySource}`);
+  console.log(`credentials_file=${filePath}`);
+  console.log(`account=${account ? "keychain" : "missing"}`);
+  if (account?.username) {
+    console.log(`username=${account.username}`);
+  }
+}
+
+async function saveKeyCommand(args: string[]): Promise<void> {
+  const options = parseAuthOptions(args);
+  const username = options.username ?? (await promptRequired("Username: "));
+  const apiKey = options.apiKey ?? (await promptRequired("API key: "));
+  await saveAccountCredentials({ username, password: options.password });
+  const filePath = await saveCredentials({
+    api_key: apiKey,
+    api_base_url: await apiBaseUrl()
+  });
+  console.log(`Saved API key to ${filePath}`);
+  console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
 }
 
 async function publishCommand(args: string[]): Promise<void> {
@@ -358,16 +510,30 @@ async function walk(dir: string): Promise<string[]> {
 }
 
 async function apiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
-  const apiKey = process.env.USERLAND_API_KEY;
+  const credentials = await readCredentials();
+  const apiKey = process.env.USERLAND_API_KEY ?? credentials?.api_key;
   if (!apiKey) {
-    throw new Error("USERLAND_API_KEY is required.");
+    throw new Error("USERLAND_API_KEY is required. Run `userland signup` or `userland login` to save credentials.");
   }
 
-  const baseUrl = process.env.USERLAND_API_BASE_URL ?? DEFAULT_API_BASE_URL;
-  const response = await fetch(`${baseUrl.replace(/\/$/u, "")}${apiPath}`, {
+  const baseUrl = await apiBaseUrl(credentials);
+  return await requestJson<T>(baseUrl, apiPath, {
     ...init,
     headers: {
       authorization: `Bearer ${apiKey}`,
+      ...init.headers
+    }
+  });
+}
+
+async function unauthenticatedApiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
+  return await requestJson<T>(await apiBaseUrl(), apiPath, init);
+}
+
+async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestInit): Promise<T> {
+  const response = await fetch(`${baseUrl.replace(/\/$/u, "")}${apiPath}`, {
+    ...init,
+    headers: {
       "content-type": "application/json",
       ...init.headers
     }
@@ -383,6 +549,347 @@ async function apiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
+async function apiBaseUrl(credentials?: CredentialsFile): Promise<string> {
+  return process.env.USERLAND_API_BASE_URL ?? credentials?.api_base_url ?? (await readCredentials())?.api_base_url ?? DEFAULT_API_BASE_URL;
+}
+
+function credentialsPath(): string {
+  return process.env.USERLAND_CREDENTIALS_FILE ?? path.join(os.homedir(), ".userland", "credentials.json");
+}
+
+async function readCredentials(): Promise<CredentialsFile | undefined> {
+  const filePath = credentialsPath();
+  const contents = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!contents) {
+    return undefined;
+  }
+
+  const parsed: unknown = JSON.parse(contents);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Credentials file must contain a JSON object: ${filePath}`);
+  }
+  const credentials = parsed as CredentialsFile;
+  return {
+    api_base_url: stringValue(credentials.api_base_url),
+    api_key: stringValue(credentials.api_key),
+    updated_at: stringValue(credentials.updated_at)
+  };
+}
+
+async function saveCredentials(update: CredentialsFile): Promise<string> {
+  const filePath = credentialsPath();
+  const existing = (await readCredentials()) ?? {};
+  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as CredentialsFile;
+  const credentials: CredentialsFile = {
+    ...existing,
+    ...sanitizedUpdate,
+    updated_at: new Date().toISOString()
+  };
+
+  const dir = path.dirname(filePath);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.chmod(dir, 0o700).catch(() => undefined);
+  await fs.writeFile(filePath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(filePath, 0o600).catch(() => undefined);
+  return filePath;
+}
+
+async function readAccountCredentials(): Promise<AccountCredentials | undefined> {
+  const raw = await keychainGetSecret().catch((error: unknown) => {
+    if (error instanceof KeychainUnavailableError) {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Stored Userland account credentials are malformed.");
+  }
+
+  const credentials = parsed as AccountCredentials;
+  const username = stringValue(credentials.username);
+  const password = stringValue(credentials.password);
+  return username || password ? { username, password } : undefined;
+}
+
+async function saveAccountCredentials(update: AccountCredentials): Promise<void> {
+  const existing = (await readAccountCredentials()) ?? {};
+  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as AccountCredentials;
+  const credentials: AccountCredentials = {
+    ...existing,
+    ...sanitizedUpdate
+  };
+  if (!credentials.username && !credentials.password) {
+    return;
+  }
+  await keychainSetSecret(JSON.stringify(credentials));
+}
+
+function accountCredentialStoreLabel(): string {
+  return process.env.USERLAND_KEYCHAIN_FILE ? "test keychain" : "OS keychain";
+}
+
+class KeychainUnavailableError extends Error {}
+
+async function keychainGetSecret(): Promise<string | undefined> {
+  const testKeychainFile = process.env.USERLAND_KEYCHAIN_FILE;
+  if (testKeychainFile) {
+    return await fileKeychainGet(testKeychainFile);
+  }
+
+  if (process.platform === "darwin") {
+    const result = await runCommand("security", ["find-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w"]);
+    if (result.code === 44) {
+      return undefined;
+    }
+    assertCommandOk("security", result);
+    return result.stdout.trimEnd();
+  }
+
+  if (process.platform === "linux") {
+    const result = await runCommand("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE, "account", KEYCHAIN_ACCOUNT]);
+    if (result.code === 1) {
+      return undefined;
+    }
+    assertCommandOk("secret-tool", result);
+    return result.stdout.trimEnd();
+  }
+
+  if (process.platform === "win32") {
+    const result = await runPowerShell(windowsCredentialReadScript());
+    if (result.code === 2) {
+      return undefined;
+    }
+    assertCommandOk("powershell", result);
+    return result.stdout.trimEnd();
+  }
+
+  throw new KeychainUnavailableError(`OS keychain is not supported on ${process.platform}.`);
+}
+
+async function keychainSetSecret(secret: string): Promise<void> {
+  const testKeychainFile = process.env.USERLAND_KEYCHAIN_FILE;
+  if (testKeychainFile) {
+    await fileKeychainSet(testKeychainFile, secret);
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    assertCommandOk(
+      "security",
+      await runCommand("security", ["add-generic-password", "-U", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w", secret])
+    );
+    return;
+  }
+
+  if (process.platform === "linux") {
+    assertCommandOk(
+      "secret-tool",
+      await runCommand("secret-tool", ["store", "--label", "Userland CLI", "service", KEYCHAIN_SERVICE, "account", KEYCHAIN_ACCOUNT], secret)
+    );
+    return;
+  }
+
+  if (process.platform === "win32") {
+    assertCommandOk("powershell", await runPowerShell(windowsCredentialWriteScript(), secret));
+    return;
+  }
+
+  throw new KeychainUnavailableError(`OS keychain is not supported on ${process.platform}.`);
+}
+
+async function fileKeychainGet(filePath: string): Promise<string | undefined> {
+  const contents = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!contents) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(contents) as Record<string, string>;
+  return parsed[`${KEYCHAIN_SERVICE}:${KEYCHAIN_ACCOUNT}`];
+}
+
+async function fileKeychainSet(filePath: string, secret: string): Promise<void> {
+  const existing = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return "{}";
+    }
+    throw error;
+  });
+  const parsed = JSON.parse(existing) as Record<string, string>;
+  parsed[`${KEYCHAIN_SERVICE}:${KEYCHAIN_ACCOUNT}`] = secret;
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await fs.writeFile(filePath, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(filePath, 0o600).catch(() => undefined);
+}
+
+interface CommandResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+async function runCommand(command: string, args: string[], stdin?: string, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env: env ? { ...process.env, ...env } : process.env, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        reject(new KeychainUnavailableError(`${command} is required for OS keychain access.`));
+        return;
+      }
+      reject(error);
+    });
+    child.on("close", (code) => {
+      resolve({
+        code,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      });
+    });
+    child.stdin.end(stdin ?? "");
+  });
+}
+
+async function runPowerShell(script: string, stdin?: string): Promise<CommandResult> {
+  const env = stdin === undefined ? undefined : { USERLAND_KEYCHAIN_SECRET: stdin };
+  return await runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], scriptWithInput(script), env);
+}
+
+function scriptWithInput(script: string): string {
+  return `$ErrorActionPreference = "Stop"\n${script}`;
+}
+
+function assertCommandOk(command: string, result: CommandResult): void {
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code ?? "unknown"}`;
+    throw new Error(`${command} failed while accessing the OS keychain: ${detail}`);
+  }
+}
+
+function windowsCredentialWriteScript(): string {
+  return `
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class UserlandCredential {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct Credential {
+    public UInt32 Flags;
+    public UInt32 Type;
+    public string TargetName;
+    public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public UInt32 CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public UInt32 Persist;
+    public UInt32 AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias;
+    public string UserName;
+  }
+
+  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool CredWrite(ref Credential credential, UInt32 flags);
+
+  public static void Write(string target, string username, string secret) {
+    byte[] bytes = Encoding.Unicode.GetBytes(secret);
+    IntPtr blob = Marshal.AllocCoTaskMem(bytes.Length);
+    try {
+      Marshal.Copy(bytes, 0, blob, bytes.Length);
+      Credential credential = new Credential();
+      credential.Type = 1;
+      credential.TargetName = target;
+      credential.UserName = username;
+      credential.CredentialBlob = blob;
+      credential.CredentialBlobSize = (UInt32)bytes.Length;
+      credential.Persist = 2;
+      if (!CredWrite(ref credential, 0)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+    } finally {
+      Marshal.FreeCoTaskMem(blob);
+    }
+  }
+}
+"@
+$secret = [Environment]::GetEnvironmentVariable("USERLAND_KEYCHAIN_SECRET")
+[UserlandCredential]::Write(${JSON.stringify(KEYCHAIN_SERVICE)}, ${JSON.stringify(KEYCHAIN_ACCOUNT)}, $secret)
+`;
+}
+
+function windowsCredentialReadScript(): string {
+  return `
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class UserlandCredential {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct Credential {
+    public UInt32 Flags;
+    public UInt32 Type;
+    public string TargetName;
+    public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public UInt32 CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public UInt32 Persist;
+    public UInt32 AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias;
+    public string UserName;
+  }
+
+  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool CredRead(string target, UInt32 type, UInt32 reservedFlag, out IntPtr credentialPtr);
+
+  [DllImport("Advapi32.dll", SetLastError = true)]
+  private static extern void CredFree(IntPtr buffer);
+
+  public static string Read(string target) {
+    IntPtr credentialPtr;
+    if (!CredRead(target, 1, 0, out credentialPtr)) {
+      int error = Marshal.GetLastWin32Error();
+      if (error == 1168) {
+        Environment.Exit(2);
+      }
+      throw new Win32Exception(error);
+    }
+
+    try {
+      Credential credential = (Credential)Marshal.PtrToStructure(credentialPtr, typeof(Credential));
+      return Marshal.PtrToStringUni(credential.CredentialBlob, (int)credential.CredentialBlobSize / 2);
+    } finally {
+      CredFree(credentialPtr);
+    }
+  }
+}
+"@
+[Console]::Out.Write([UserlandCredential]::Read(${JSON.stringify(KEYCHAIN_SERVICE)}))
+`;
+}
+
 function parseOptions(args: string[]): CliOptions {
   const options: CliOptions = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -391,6 +898,27 @@ function parseOptions(args: string[]): CliOptions {
       options.app = args[++index];
     } else if (arg === "--message") {
       options.message = args[++index];
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseAuthOptions(args: string[]): AuthOptions {
+  const options: AuthOptions = { save: true };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--username") {
+      options.username = args[++index];
+    } else if (arg === "--password") {
+      options.password = args[++index];
+    } else if (arg === "--email") {
+      options.email = args[++index];
+    } else if (arg === "--api-key") {
+      options.apiKey = args[++index];
+    } else if (arg === "--no-save") {
+      options.save = false;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -441,6 +969,68 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+async function promptRequired(prompt: string): Promise<string> {
+  const value = await promptLine(prompt);
+  if (!value) {
+    throw new Error(`${prompt.replace(/:\s*$/u, "")} is required.`);
+  }
+  return value;
+}
+
+async function promptLine(prompt: string): Promise<string> {
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await readline.question(prompt)).trim();
+  } finally {
+    readline.close();
+  }
+}
+
+async function promptPassword(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return await promptRequired(prompt);
+  }
+
+  process.stdout.write(prompt);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding("utf8");
+
+  return await new Promise<string>((resolve, reject) => {
+    let value = "";
+    const cleanup = (): void => {
+      process.stdin.setRawMode(false);
+      process.stdin.off("data", onData);
+    };
+    const onData = (chunk: string): void => {
+      for (const char of chunk) {
+        if (char === "\u0003") {
+          cleanup();
+          process.stdout.write("\n");
+          reject(new Error("Interrupted."));
+          return;
+        }
+        if (char === "\r" || char === "\n" || char === "\u0004") {
+          cleanup();
+          process.stdout.write("\n");
+          if (!value) {
+            reject(new Error("Password is required."));
+            return;
+          }
+          resolve(value);
+          return;
+        }
+        if (char === "\u007f") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += char;
+      }
+    };
+    process.stdin.on("data", onData);
+  });
+}
+
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
@@ -488,6 +1078,10 @@ function errorMessage(body: unknown): string | undefined {
 
 function usage(exitCode: number): never {
   console.error(`Usage:
+  userland signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
+  userland login [--username <username>] [--password <password>] [--no-save]
+  userland auth status
+  userland auth save-key --username <username> --api-key <api-key> [--password <password>]
   userland apps publish <dir> [--app <app-id>] [--message <message>]
   userland apps list
   userland apps releases <app-id>
@@ -496,8 +1090,14 @@ function usage(exitCode: number): never {
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>]
 
 Aliases:
+  userland auth signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
+  userland auth login [--username <username>] [--password <password>] [--no-save]
   userland publish <dir> [--app <app-id>] [--message <message>]
   userland releases <app-id>
+
+Credentials:
+  Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.
+  Account username and password are stored in the OS keychain.
 
 Docs:
   https://docs.userland.fun/reference/cli
@@ -513,7 +1113,7 @@ main().catch((error: unknown) => {
 });
 
 function docsUrlForError(message: string): string {
-  if (message.includes("USERLAND_API_KEY")) {
+  if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
     return "https://docs.userland.fun/reference/cli";
   }
   if (message.includes("secrets") || message.includes("pending_secrets")) {

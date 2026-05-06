@@ -17,14 +17,14 @@ Small storefront with products, orders, checkout secrets, jobs, and webhooks.
 Set these before exercising checkout routes:
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps secrets set <app-id> CHECKOUT_SECRET_KEY --value <value>
-USERLAND_API_KEY=... npm run userland -- apps secrets set <app-id> CHECKOUT_WEBHOOK_SECRET --value <value>
+npm run userland -- apps secrets set <app-id> CHECKOUT_SECRET_KEY --value <value>
+npm run userland -- apps secrets set <app-id> CHECKOUT_WEBHOOK_SECRET --value <value>
 ```
 
 ## Publish
 
 ```sh
-USERLAND_API_KEY=... npm run userland -- apps publish examples/tiny-store
+npm run userland -- apps publish examples/tiny-store
 ```
 
 ## Userland docs
