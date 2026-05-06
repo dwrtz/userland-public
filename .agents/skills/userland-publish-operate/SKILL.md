@@ -12,6 +12,7 @@ Use this skill when publishing, updating, inspecting, or rolling back a Userland
 ## Inputs
 
 - Valid app bundle directory.
+- Userland CLI installed as `@userland.fun/cli`.
 - `USERLAND_API_KEY` in the environment or an API key saved by the CLI.
 - Optional `app_id` for updates.
 - Required app secret values.
@@ -32,13 +33,13 @@ Use this skill when publishing, updating, inspecting, or rolling back a Userland
 ## Commands
 
 ```sh
-npm run userland -- auth status
-npm run userland -- apps publish examples/<example-slug>
-npm run userland -- apps publish examples/<example-slug> --app <app-id>
-npm run userland -- apps secrets set <app-id> <NAME> --value <value>
-npm run userland -- apps releases <app-id>
-npm run userland -- apps events <app-id>
-npm run userland -- apps rollback <app-id> <release-id>
+userland auth status
+userland apps publish examples/<example-slug>
+userland apps publish examples/<example-slug> --app <app-id>
+userland apps secrets set <app-id> <NAME> --value <value>
+userland apps releases <app-id>
+userland apps events <app-id>
+userland apps rollback <app-id> <release-id>
 ```
 
 ## Validation checklist

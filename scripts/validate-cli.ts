@@ -29,6 +29,16 @@ const requiredSourcePatterns = [
 ];
 
 const requiredReadmeSnippets = [
+  "userland signup",
+  "userland login",
+  "userland auth status",
+  "userland auth save-key",
+  "userland apps publish",
+  "userland apps list",
+  "userland apps releases",
+  "userland apps rollback",
+  "userland apps secrets set",
+  "userland apps events",
   "npm run userland -- signup",
   "npm run userland -- login",
   "npm run userland -- auth status",

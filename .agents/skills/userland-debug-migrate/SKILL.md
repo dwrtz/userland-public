@@ -15,6 +15,7 @@ Use this skill when activation, runtime behavior, resources, jobs, webhooks, or 
 - Activation status and reasons.
 - Events from the API or CLI.
 - Current and proposed manifests.
+- Userland CLI installed as `@userland.fun/cli`.
 
 ## Outputs
 
@@ -34,10 +35,10 @@ Use this skill when activation, runtime behavior, resources, jobs, webhooks, or 
 ## Commands
 
 ```sh
-npm run userland -- auth status
-npm run userland -- apps events <app-id> --limit 50
-npm run userland -- apps releases <app-id>
-npm run userland -- apps rollback <app-id> <release-id>
+userland auth status
+userland apps events <app-id> --limit 50
+userland apps releases <app-id>
+userland apps rollback <app-id> <release-id>
 ```
 
 ## Validation checklist

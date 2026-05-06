@@ -14,6 +14,7 @@ Use this skill when turning an app idea into a Userland bundle.
 - App idea, target audience, and required capabilities.
 - Existing repo or empty directory.
 - Optional example selected from `catalog.json`.
+- Userland CLI installed as `@userland.fun/cli` when publishing is requested.
 
 ## Outputs
 
@@ -37,8 +38,8 @@ Use this skill when turning an app idea into a Userland bundle.
 ```sh
 npm run validate:catalog
 npm run validate:manifests
-npm run userland -- auth status
-npm run userland -- apps publish examples/<example-slug>
+userland auth status
+userland apps publish examples/<example-slug>
 ```
 
 ## Validation checklist

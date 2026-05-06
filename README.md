@@ -17,7 +17,7 @@ Goal: choose an example, adapt it into a valid Userland app bundle, validate it,
 Inputs:
 
 - App idea and desired capabilities.
-- `USERLAND_API_KEY` in the environment, or an API key saved with `npm run userland -- signup` or `npm run userland -- login`.
+- `USERLAND_API_KEY` in the environment, or an API key saved with `userland signup` or `userland login`.
 - Optional target `app_id` for updates.
 
 Outputs:

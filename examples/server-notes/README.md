@@ -10,7 +10,7 @@ Relevant skills:
 ## Publish
 
 ```sh
-npm run userland -- apps publish examples/server-notes
+userland apps publish examples/server-notes
 ```
 
 ## Verify

@@ -14,6 +14,7 @@ Use this skill when copying a Userland example into a new app.
 - Target app idea.
 - Chosen example from `catalog.json`.
 - Desired changes from the user.
+- Userland CLI installed as `@userland.fun/cli` when publishing is requested.
 
 ## Outputs
 
@@ -35,8 +36,8 @@ Use this skill when copying a Userland example into a new app.
 ```sh
 npm run validate:catalog
 npm run validate:manifests
-npm run userland -- auth status
-npm run userland -- apps publish examples/<new-example-slug>
+userland auth status
+userland apps publish examples/<new-example-slug>
 ```
 
 ## Validation checklist

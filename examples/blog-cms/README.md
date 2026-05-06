@@ -12,7 +12,7 @@ Admin-authored blog with app users, durable post data, public post pages, and me
 ## Publish
 
 ```sh
-npm run userland -- apps publish examples/blog-cms
+userland apps publish examples/blog-cms
 ```
 
 After publishing, create or invite an admin user according to the auth docs before using protected write routes.

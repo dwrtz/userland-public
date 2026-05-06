@@ -5,13 +5,13 @@ Generic HMAC webhook pattern that delivers signed webhook payloads to a manual U
 ## Required secret
 
 ```sh
-npm run userland -- apps secrets set <app-id> AUTOMATION_WEBHOOK_SECRET --value <value>
+userland apps secrets set <app-id> AUTOMATION_WEBHOOK_SECRET --value <value>
 ```
 
 ## Publish
 
 ```sh
-npm run userland -- apps publish examples/webhook-automation
+userland apps publish examples/webhook-automation
 ```
 
 ## Mock webhook flow

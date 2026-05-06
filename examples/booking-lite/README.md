@@ -11,7 +11,7 @@ Slot booking app that claims availability inside a Userland data transaction.
 ## Publish
 
 ```sh
-npm run userland -- apps publish examples/booking-lite
+userland apps publish examples/booking-lite
 ```
 
 ## Verify
