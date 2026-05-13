@@ -1,6 +1,6 @@
 {
   "name": "@userland.fun/cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Userland command-line tools for publishing and operating apps.",
   "license": "MIT",
   "type": "module",

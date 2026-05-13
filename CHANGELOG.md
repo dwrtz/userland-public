@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-05-13
+
+- Improve CLI output for entitlement and plan-limit publish errors.
+- Document plan requirements for paid-tier examples.
+
 ## 0.1.2 - 2026-05-13
 
 - Fix top-level `--help` to exit successfully and print usage to stdout.
