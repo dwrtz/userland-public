@@ -18,6 +18,7 @@ Inputs:
 
 - App idea and desired capabilities.
 - `USERLAND_API_KEY` in the environment, or an API key saved with `userland signup` or `userland login`.
+- Optional `USERLAND_ACCOUNT_ID` or saved CLI account selection for team/client workspaces.
 - Optional target `app_id` for updates.
 
 Outputs:
@@ -63,6 +64,9 @@ Then run:
 ```sh
 userland signup --username <username>
 userland apps publish examples/<example-slug>
+userland accounts list
+userland accounts use <account-id>
+USERLAND_ACCOUNT_ID=<account-id> userland apps list
 ```
 
 From this repo, run it from source:
@@ -70,9 +74,10 @@ From this repo, run it from source:
 ```sh
 npm run userland -- signup --username <username>
 npm run userland -- apps publish examples/<example-slug>
+npm run userland -- apps publish examples/<example-slug> --account <account-id>
 ```
 
-The CLI keeps API keys in `~/.userland/credentials.json` and stores account username/password in the OS keychain.
+The CLI keeps API keys and optional selected `account_id` in `~/.userland/credentials.json` and stores account username/password in the OS keychain. Most single-user flows do not need account selection; use it when publishing into a team or client account.
 
 ## Safety rules
 

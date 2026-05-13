@@ -10,15 +10,18 @@ const KEYCHAIN_SERVICE = "fun.userland.cli";
 const KEYCHAIN_ACCOUNT = "default";
 
 interface CliOptions {
+  account?: string;
   app?: string;
   message?: string;
 }
 
 interface SecretSetOptions {
+  account?: string;
   value?: string;
 }
 
 interface EventsOptions {
+  account?: string;
   type?: string;
   severity?: string;
   releaseId?: string;
@@ -34,10 +37,15 @@ interface AuthOptions {
 }
 
 interface CredentialsFile {
+  account_id?: string;
   api_base_url?: string;
   api_key?: string;
   updated_at?: string;
 }
+
+type CredentialsUpdate = Omit<CredentialsFile, "account_id"> & {
+  account_id?: string | null;
+};
 
 interface AccountCredentials {
   password?: string;
@@ -47,12 +55,25 @@ interface AccountCredentials {
 interface AccountResponse {
   username: string;
   api_key: string;
+  account_id?: string;
   warning: string;
 }
 
 interface TokenResponse {
   api_key: string;
+  account_id?: string;
   warning: string;
+}
+
+interface AccountsResponse {
+  accounts: Array<{
+    id: string;
+    account_id: string;
+    name: string;
+    owner_user_id: string;
+    role: string;
+  }>;
+  default_account_id: string;
 }
 
 interface PublishResponse {
@@ -121,6 +142,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "accounts") {
+    await accountsCommand(args);
+    return;
+  }
+
   if (command === "signup") {
     await signupCommand(args);
     return;
@@ -151,7 +177,7 @@ async function appsCommand(args: string[]): Promise<void> {
     return;
   }
   if (subcommand === "list") {
-    await listAppsCommand();
+    await listAppsCommand(rest);
     return;
   }
   if (subcommand === "releases") {
@@ -194,6 +220,19 @@ async function authCommand(args: string[]): Promise<void> {
   usage(1);
 }
 
+async function accountsCommand(args: string[]): Promise<void> {
+  const [subcommand, ...rest] = args;
+  if (subcommand === "list") {
+    await listAccountsCommand();
+    return;
+  }
+  if (subcommand === "use") {
+    await useAccountCommand(rest);
+    return;
+  }
+  usage(1);
+}
+
 async function signupCommand(args: string[]): Promise<void> {
   const options = parseAuthOptions(args);
   const username = options.username ?? (await promptRequired("Username: "));
@@ -212,7 +251,8 @@ async function signupCommand(args: string[]): Promise<void> {
     await saveAccountCredentials({ username: response.username, password });
     const filePath = await saveCredentials({
       api_key: response.api_key,
-      api_base_url: await apiBaseUrl()
+      api_base_url: await apiBaseUrl(),
+      account_id: response.account_id ?? null
     });
     console.log(`Created Userland account ${response.username}`);
     console.log(`Saved API key to ${filePath}`);
@@ -235,10 +275,13 @@ async function loginCommand(args: string[]): Promise<void> {
   });
 
   if (options.save !== false) {
+    const baseUrl = await apiBaseUrl();
+    const accountId = response.account_id ?? (await discoverDefaultAccountId(response.api_key, baseUrl).catch(() => undefined));
     await saveAccountCredentials({ username, password });
     const filePath = await saveCredentials({
       api_key: response.api_key,
-      api_base_url: await apiBaseUrl()
+      api_base_url: baseUrl,
+      account_id: accountId ?? null
     });
     console.log(`Saved API key to ${filePath}`);
     console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
@@ -253,10 +296,16 @@ async function authStatusCommand(): Promise<void> {
   const account = await readAccountCredentials();
   const filePath = credentialsPath();
   const apiKeySource = process.env.USERLAND_API_KEY ? "env" : credentials?.api_key ? "file" : "missing";
+  const selectedAccountId = process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
+  const accountSource = process.env.USERLAND_ACCOUNT_ID ? "env" : credentials?.account_id ? "file" : apiKeySource === "missing" ? "missing" : "default";
   console.log(`api_base_url=${await apiBaseUrl(credentials)}`);
   console.log(`api_key=${apiKeySource}`);
   console.log(`credentials_file=${filePath}`);
-  console.log(`account=${account ? "keychain" : "missing"}`);
+  console.log(`account=${accountSource}`);
+  if (selectedAccountId) {
+    console.log(`account_id=${selectedAccountId}`);
+  }
+  console.log(`account_login=${account ? "keychain" : "missing"}`);
   if (account?.username) {
     console.log(`username=${account.username}`);
   }
@@ -269,10 +318,32 @@ async function saveKeyCommand(args: string[]): Promise<void> {
   await saveAccountCredentials({ username, password: options.password });
   const filePath = await saveCredentials({
     api_key: apiKey,
-    api_base_url: await apiBaseUrl()
+    api_base_url: await apiBaseUrl(),
+    account_id: null
   });
   console.log(`Saved API key to ${filePath}`);
   console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
+}
+
+async function listAccountsCommand(): Promise<void> {
+  const response = await apiFetch<AccountsResponse>("/v0/accounts", {
+    method: "GET"
+  });
+
+  for (const account of response.accounts) {
+    console.log(`${account.account_id}\t${account.role}\t${account.name}`);
+  }
+  console.log(`default_account_id=${response.default_account_id}`);
+}
+
+async function useAccountCommand(args: string[]): Promise<void> {
+  const accountId = args[0];
+  if (!accountId) {
+    usage(1);
+  }
+  const filePath = await saveCredentials({ account_id: accountId });
+  console.log(`selected_account_id=${accountId}`);
+  console.log(`credentials_file=${filePath}`);
 }
 
 async function publishCommand(args: string[]): Promise<void> {
@@ -286,7 +357,7 @@ async function publishCommand(args: string[]): Promise<void> {
   const response = await apiFetch<PublishResponse>(options.app ? `/v0/apps/${options.app}` : "/v0/apps", {
     method: "PUT",
     body: JSON.stringify(body)
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   console.log(`Published ${response.origin}`);
   console.log(`app_id=${response.app_id}`);
@@ -298,10 +369,11 @@ async function publishCommand(args: string[]): Promise<void> {
   }
 }
 
-async function listAppsCommand(): Promise<void> {
+async function listAppsCommand(args: string[] = []): Promise<void> {
+  const options = parseAccountOptions(args);
   const response = await apiFetch<AppsResponse>("/v0/apps", {
     method: "GET"
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   for (const app of response.apps) {
     console.log(`${app.app_id}\t${app.live_release_id ?? ""}\t${app.updated_at}\t${app.name}\t${app.origin}`);
@@ -313,10 +385,11 @@ async function releasesCommand(args: string[]): Promise<void> {
   if (!appId) {
     usage(1);
   }
+  const options = parseAccountOptions(args.slice(1));
 
   const response = await apiFetch<VersionResponse>(`/v0/apps/${appId}/releases`, {
     method: "GET"
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   for (const release of response.releases) {
     const live = release.is_live ? " live" : "";
@@ -329,11 +402,12 @@ async function rollbackCommand(args: string[]): Promise<void> {
   if (!appId || !releaseId) {
     usage(1);
   }
+  const options = parseAccountOptions(args.slice(2));
 
   const response = await apiFetch<RollbackResponse>(`/v0/apps/${appId}/rollback`, {
     method: "POST",
     body: JSON.stringify({ release_id: releaseId })
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   console.log(`Rolled back ${response.origin}`);
   console.log(`app_id=${response.app_id}`);
@@ -356,7 +430,7 @@ async function setSecretCommand(args: string[]): Promise<void> {
   const response = await apiFetch<{ name: string; present: boolean; updated_at: string }>(`/v0/apps/${appId}/secrets/${name}`, {
     method: "PUT",
     body: JSON.stringify({ value })
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   console.log(`secret=${response.name}`);
   console.log(`present=${response.present}`);
@@ -377,7 +451,7 @@ async function eventsCommand(args: string[]): Promise<void> {
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await apiFetch<EventsResponse>(`/v0/apps/${appId}/events${suffix}`, {
     method: "GET"
-  });
+  }, { accountId: options.account, accountScoped: true });
 
   for (const event of response.events) {
     console.log(`${event.created_at}\t${event.severity}\t${event.type}\t${event.release_id ?? ""}\t${event.message}`);
@@ -509,7 +583,7 @@ async function walk(dir: string): Promise<string[]> {
   return files.flat();
 }
 
-async function apiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
+async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accountId?: string; accountScoped?: boolean } = {}): Promise<T> {
   const credentials = await readCredentials();
   const apiKey = process.env.USERLAND_API_KEY ?? credentials?.api_key;
   if (!apiKey) {
@@ -517,17 +591,36 @@ async function apiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
   }
 
   const baseUrl = await apiBaseUrl(credentials);
+  const accountId = options.accountScoped ? selectedAccountId(options.accountId, credentials) : undefined;
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${apiKey}`,
+    ...(init.headers as Record<string, string> | undefined)
+  };
+  if (accountId) {
+    headers["x-userland-account-id"] = accountId;
+  }
   return await requestJson<T>(baseUrl, apiPath, {
     ...init,
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      ...init.headers
-    }
+    headers
   });
 }
 
 async function unauthenticatedApiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
   return await requestJson<T>(await apiBaseUrl(), apiPath, init);
+}
+
+async function discoverDefaultAccountId(apiKey: string, baseUrl: string): Promise<string | undefined> {
+  const response = await requestJson<AccountsResponse>(baseUrl, "/v0/accounts", {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${apiKey}`
+    }
+  });
+  return response.default_account_id;
+}
+
+function selectedAccountId(explicitAccountId: string | undefined, credentials: CredentialsFile | undefined): string | undefined {
+  return explicitAccountId ?? process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
 }
 
 async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestInit): Promise<T> {
@@ -575,21 +668,25 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
   }
   const credentials = parsed as CredentialsFile;
   return {
+    account_id: stringValue(credentials.account_id),
     api_base_url: stringValue(credentials.api_base_url),
     api_key: stringValue(credentials.api_key),
     updated_at: stringValue(credentials.updated_at)
   };
 }
 
-async function saveCredentials(update: CredentialsFile): Promise<string> {
+async function saveCredentials(update: CredentialsUpdate): Promise<string> {
   const filePath = credentialsPath();
   const existing = (await readCredentials()) ?? {};
-  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as CredentialsFile;
+  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined && value !== null)) as CredentialsFile;
   const credentials: CredentialsFile = {
     ...existing,
     ...sanitizedUpdate,
     updated_at: new Date().toISOString()
   };
+  if (update.account_id === null) {
+    delete credentials.account_id;
+  }
 
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
@@ -898,6 +995,8 @@ function parseOptions(args: string[]): CliOptions {
       options.app = args[++index];
     } else if (arg === "--message") {
       options.message = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -932,6 +1031,8 @@ function parseSecretSetOptions(args: string[]): SecretSetOptions {
     const arg = args[index];
     if (arg === "--value") {
       options.value = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -951,6 +1052,21 @@ function parseEventsOptions(args: string[]): EventsOptions {
       options.releaseId = args[++index];
     } else if (arg === "--limit") {
       options.limit = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseAccountOptions(args: string[]): { account?: string } {
+  const options: { account?: string } = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--account") {
+      options.account = args[++index];
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1082,21 +1198,24 @@ function usage(exitCode: number): never {
   userland login [--username <username>] [--password <password>] [--no-save]
   userland auth status
   userland auth save-key --username <username> --api-key <api-key> [--password <password>]
-  userland apps publish <dir> [--app <app-id>] [--message <message>]
-  userland apps list
-  userland apps releases <app-id>
-  userland apps rollback <app-id> <release-id>
-  userland apps secrets set <app-id> <NAME> [--value <value>]
-  userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>]
+  userland accounts list
+  userland accounts use <account-id>
+  userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
+  userland apps list [--account <account-id>]
+  userland apps releases <app-id> [--account <account-id>]
+  userland apps rollback <app-id> <release-id> [--account <account-id>]
+  userland apps secrets set <app-id> <NAME> [--value <value>] [--account <account-id>]
+  userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
 
 Aliases:
   userland auth signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
   userland auth login [--username <username>] [--password <password>] [--no-save]
-  userland publish <dir> [--app <app-id>] [--message <message>]
-  userland releases <app-id>
+  userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
+  userland releases <app-id> [--account <account-id>]
 
 Credentials:
   Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.
+  App commands use --account, then USERLAND_ACCOUNT_ID, then saved account_id when set.
   Account username and password are stored in the OS keychain.
 
 Docs:

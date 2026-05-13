@@ -8,3 +8,4 @@
 - Add mocked command-level CLI tests and document the launch CLI sync policy.
 - Add CLI signup, login, credential status, local API key storage in `~/.userland/credentials.json`, and OS keychain storage for account username/password.
 - Prepare the CLI for public npm distribution as `@userland.fun/cli`.
+- Add optional CLI account selection with `USERLAND_ACCOUNT_ID`, `--account`, `accounts list`, and `accounts use`.
