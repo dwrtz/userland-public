@@ -376,6 +376,48 @@ describe("public CLI", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("API 403: forbidden: Your account role cannot perform this operation.");
   });
+
+  test("prints entitlement details from 402 API errors", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps": {
+        __status: 402,
+        error: {
+          code: "entitlement_required",
+          message: "This app manifest uses features or limits outside the account plan.",
+          details: {
+            plan_key: "free",
+            required_plan_key: "business",
+            violations: [
+              {
+                kind: "manifest_feature",
+                feature_key: "private_apps",
+                manifest_path: "/app/visibility",
+                value: "private",
+                required_plan_key: "business"
+              },
+              {
+                kind: "manifest_limit",
+                limit_key: "jobs.schedule.allowed",
+                manifest_path: "/resources/jobs/*/schedule",
+                value: 1,
+                allowed: ["daily"],
+                required_plan_key: "business"
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    const result = await runCli(["apps", "publish", "examples/hello-static"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("API 402: entitlement_required: This app manifest uses features or limits outside the account plan.");
+    expect(result.stderr).toContain("Required plan: business");
+    expect(result.stderr).toContain("- /app/visibility feature=private_apps value=private requires=business");
+    expect(result.stderr).toContain("- /resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
+    expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/errors");
+  });
 });
 
 async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: string): Promise<void> {

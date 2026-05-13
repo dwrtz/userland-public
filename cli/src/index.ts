@@ -1187,13 +1187,85 @@ function errorMessage(body: unknown): string | undefined {
     return undefined;
   }
 
-  const typedError = error as { code?: unknown; message?: unknown };
+  const typedError = error as { code?: unknown; message?: unknown; details?: unknown };
   const message = typeof typedError.message === "string" ? typedError.message : undefined;
   const code = typeof typedError.code === "string" ? typedError.code : undefined;
-  if (code && message) {
-    return `${code}: ${message}`;
+  const detail = entitlementDetailMessage(typedError.details);
+  const base = code && message ? `${code}: ${message}` : message ?? code;
+  return [base, detail].filter(Boolean).join("\n");
+}
+
+function entitlementDetailMessage(details: unknown): string | undefined {
+  if (!isPlainObject(details)) {
+    return undefined;
   }
-  return message ?? code;
+
+  const requiredPlan = stringValue(details.required_plan_key);
+  const violations = Array.isArray(details.violations) ? details.violations.map(formatEntitlementViolation).filter(Boolean) : [];
+  const limit = stringValue(details.limit_key);
+  const allowed = details.allowed;
+  const value = details.value;
+  const lines: string[] = [];
+
+  if (requiredPlan) {
+    lines.push(`Required plan: ${requiredPlan}`);
+  }
+
+  if (violations.length > 0) {
+    lines.push("Violations:");
+    lines.push(...violations.map((violation) => `- ${violation}`));
+  } else if (limit) {
+    lines.push(`Limit: ${limit}${value !== undefined ? ` value=${String(value)}` : ""}${allowed !== undefined ? ` allowed=${formatAllowed(allowed)}` : ""}`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+function formatEntitlementViolation(value: unknown): string | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  const path = stringValue(value.manifest_path);
+  const feature = stringValue(value.feature_key);
+  const limit = stringValue(value.limit_key);
+  const requiredPlan = stringValue(value.required_plan_key);
+  const actualValue = value.value;
+  const allowed = value.allowed;
+  const parts = [
+    path,
+    feature ? `feature=${feature}` : undefined,
+    limit ? `limit=${limit}` : undefined,
+    actualValue !== undefined ? `value=${Array.isArray(actualValue) ? actualValue.join(",") : String(actualValue)}` : undefined,
+    allowed !== undefined ? `allowed=${formatAllowed(allowed)}` : undefined,
+    requiredPlan ? `requires=${requiredPlan}` : undefined
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+function formatAllowed(value: unknown): string {
+  return Array.isArray(value) ? value.join(",") : String(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function docsUrlForError(message: string): string {
+  if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded")) {
+    return "https://docs.userland.fun/reference/errors";
+  }
+  if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
+    return "https://docs.userland.fun/reference/cli";
+  }
+  if (message.includes("secrets") || message.includes("pending_secrets")) {
+    return "https://docs.userland.fun/guides/secrets";
+  }
+  if (message.includes("rollback")) {
+    return "https://docs.userland.fun/guides/rollback";
+  }
+  return "https://docs.userland.fun/guides/troubleshooting";
 }
 
 function isHelpCommand(command: string | undefined): boolean {
@@ -1244,16 +1316,3 @@ main().catch((error: unknown) => {
   console.error(`Docs: ${docsUrlForError(message)}`);
   process.exit(1);
 });
-
-function docsUrlForError(message: string): string {
-  if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
-    return "https://docs.userland.fun/reference/cli";
-  }
-  if (message.includes("secrets") || message.includes("pending_secrets")) {
-    return "https://docs.userland.fun/guides/secrets";
-  }
-  if (message.includes("rollback")) {
-    return "https://docs.userland.fun/guides/rollback";
-  }
-  return "https://docs.userland.fun/guides/troubleshooting";
-}

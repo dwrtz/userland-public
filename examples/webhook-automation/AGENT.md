@@ -2,6 +2,8 @@
 
 Goal: adapt a webhook-to-job automation pattern.
 
+Plan requirement: this example requires a Starter account plan or higher because it declares a generic HMAC webhook.
+
 Inputs:
 
 - Webhook provider payload shape.
