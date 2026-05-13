@@ -43,6 +43,10 @@ interface CredentialsFile {
   updated_at?: string;
 }
 
+type CredentialsUpdate = Omit<CredentialsFile, "account_id"> & {
+  account_id?: string | null;
+};
+
 interface AccountCredentials {
   password?: string;
   username?: string;
@@ -248,7 +252,7 @@ async function signupCommand(args: string[]): Promise<void> {
     const filePath = await saveCredentials({
       api_key: response.api_key,
       api_base_url: await apiBaseUrl(),
-      account_id: response.account_id
+      account_id: response.account_id ?? null
     });
     console.log(`Created Userland account ${response.username}`);
     console.log(`Saved API key to ${filePath}`);
@@ -277,7 +281,7 @@ async function loginCommand(args: string[]): Promise<void> {
     const filePath = await saveCredentials({
       api_key: response.api_key,
       api_base_url: baseUrl,
-      account_id: accountId
+      account_id: accountId ?? null
     });
     console.log(`Saved API key to ${filePath}`);
     console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
@@ -314,7 +318,8 @@ async function saveKeyCommand(args: string[]): Promise<void> {
   await saveAccountCredentials({ username, password: options.password });
   const filePath = await saveCredentials({
     api_key: apiKey,
-    api_base_url: await apiBaseUrl()
+    api_base_url: await apiBaseUrl(),
+    account_id: null
   });
   console.log(`Saved API key to ${filePath}`);
   console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
@@ -670,15 +675,18 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
   };
 }
 
-async function saveCredentials(update: CredentialsFile): Promise<string> {
+async function saveCredentials(update: CredentialsUpdate): Promise<string> {
   const filePath = credentialsPath();
   const existing = (await readCredentials()) ?? {};
-  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as CredentialsFile;
+  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined && value !== null)) as CredentialsFile;
   const credentials: CredentialsFile = {
     ...existing,
     ...sanitizedUpdate,
     updated_at: new Date().toISOString()
   };
+  if (update.account_id === null) {
+    delete credentials.account_id;
+  }
 
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });

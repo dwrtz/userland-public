@@ -293,6 +293,7 @@ describe("public CLI", () => {
     expect(saved).toMatchObject({
       api_key: "manual_api_key"
     });
+    expect(saved).not.toHaveProperty("account_id");
     expect(saved).not.toHaveProperty("username");
     expect(saved).not.toHaveProperty("password");
     expect(await readStoredAccount(keychainFile)).toMatchObject({
@@ -319,6 +320,8 @@ describe("public CLI", () => {
     });
     const credentialsFile = await temporaryCredentialsFile();
     const keychainFile = `${credentialsFile}.keychain.json`;
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_base_url: api.baseUrl, account_id: "acct_stale" }));
 
     const signup = await runCli(["signup", "--username", "legacy", "--password", "secret-password"], api.baseUrl, {
       apiKey: null,
@@ -329,6 +332,8 @@ describe("public CLI", () => {
     let saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
     expect(saved.api_key).toBe("legacy_signup_key");
     expect(saved).not.toHaveProperty("account_id");
+
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_base_url: api.baseUrl, account_id: "acct_stale" }));
 
     const login = await runCli(["login", "--username", "legacy", "--password", "secret-password"], api.baseUrl, {
       apiKey: null,
