@@ -2,6 +2,10 @@
 
 Small storefront with products, orders, checkout secrets, jobs, and webhooks.
 
+## Plan requirement
+
+This example requires a Business account plan. It declares public app-user signup, multiple required secrets, an hourly scheduled job, and a generic HMAC webhook.
+
 ## Capabilities
 
 - Server runtime routes.

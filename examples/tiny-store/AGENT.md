@@ -2,6 +2,8 @@
 
 Goal: adapt a commerce-like app with data, files, secrets, jobs, and webhooks.
 
+Plan requirement: this example requires a Business account plan because it declares public app-user signup, multiple required secrets, an hourly scheduled job, and a generic HMAC webhook.
+
 Inputs:
 
 - Product model.

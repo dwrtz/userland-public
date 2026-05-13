@@ -2,6 +2,10 @@
 
 Generic HMAC webhook pattern that delivers signed webhook payloads to a manual Userland job.
 
+## Plan requirement
+
+This example requires a Starter account plan or higher because it declares a generic HMAC webhook.
+
 ## Required secret
 
 ```sh
