@@ -24,6 +24,23 @@ describe("public CLI", () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  test("prints top-level help successfully", async () => {
+    const result = await runCli(["--help"], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("userland apps publish");
+    expect(result.stderr).toBe("");
+  });
+
+  test("prints usage errors to stderr", async () => {
+    const result = await runCli([], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Usage:");
+  });
+
   test("publishes hello-static to the configured API", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {

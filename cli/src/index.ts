@@ -132,6 +132,10 @@ interface EventsResponse {
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
 
+  if (isHelpCommand(command)) {
+    usage(0);
+  }
+
   if (command === "apps") {
     await appsCommand(args);
     return;
@@ -1192,8 +1196,13 @@ function errorMessage(body: unknown): string | undefined {
   return message ?? code;
 }
 
+function isHelpCommand(command: string | undefined): boolean {
+  return command === "--help" || command === "-h" || command === "help";
+}
+
 function usage(exitCode: number): never {
-  console.error(`Usage:
+  const message = `Usage:
+  userland [--help]
   userland signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
   userland login [--username <username>] [--password <password>] [--no-save]
   userland auth status
@@ -1220,7 +1229,12 @@ Credentials:
 
 Docs:
   https://docs.userland.fun/reference/cli
-  https://docs.userland.fun/guides/troubleshooting`);
+  https://docs.userland.fun/guides/troubleshooting`;
+  if (exitCode === 0) {
+    console.log(message);
+  } else {
+    console.error(message);
+  }
   process.exit(exitCode);
 }
 

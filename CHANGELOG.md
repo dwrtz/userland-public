@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-05-13
+
+- Fix top-level `--help` to exit successfully and print usage to stdout.
+
 ## 0.1.1 - 2026-05-13
 
 - Add optional CLI account selection with `USERLAND_ACCOUNT_ID`, `--account`, `accounts list`, and `accounts use`.
