@@ -21,8 +21,12 @@ userland signup --username <username>
 userland login --username <username>
 userland auth status
 userland auth save-key --username <username> --api-key <api-key>
+userland accounts list
+userland accounts use <account-id>
 userland apps publish examples/<example-slug>
+userland apps publish examples/<example-slug> --account <account-id>
 userland apps list
+USERLAND_ACCOUNT_ID=<account-id> userland apps list
 userland apps releases <app-id>
 userland apps rollback <app-id> <release-id>
 userland apps secrets set <app-id> <NAME> --value <value>
@@ -36,8 +40,12 @@ npm run userland -- signup --username <username>
 npm run userland -- login --username <username>
 npm run userland -- auth status
 npm run userland -- auth save-key --username <username> --api-key <api-key>
+npm run userland -- accounts list
+npm run userland -- accounts use <account-id>
 npm run userland -- apps publish examples/<example-slug>
+npm run userland -- apps publish examples/<example-slug> --account <account-id>
 npm run userland -- apps list
+npm run userland -- apps list --account <account-id>
 npm run userland -- apps releases <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
 npm run userland -- apps secrets set <app-id> <NAME> --value <value>
@@ -45,6 +53,8 @@ npm run userland -- apps events <app-id>
 ```
 
 `signup`, `login`, and `auth save-key` save the API key to `~/.userland/credentials.json` with `0600` permissions. Account username and password are stored in the OS keychain: macOS Keychain, Windows Credential Manager, or Linux Secret Service through `secret-tool`. App commands prefer `USERLAND_API_KEY` when it is set, then fall back to the saved API key.
+
+Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team, client, and agency workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
 
 ## Validation
 
