@@ -28,6 +28,21 @@ interface EventsOptions {
   limit?: string;
 }
 
+interface ReasonOptions {
+  account?: string;
+  reason?: string;
+}
+
+interface DowngradePreviewOptions {
+  account?: string;
+  to?: string;
+}
+
+interface RouteDisableOptions {
+  reason?: string;
+  status?: string;
+}
+
 interface AuthOptions {
   apiKey?: string;
   email?: string;
@@ -129,6 +144,86 @@ interface EventsResponse {
   cursor: string | null;
 }
 
+interface AccountStatusResponse {
+  account_id: string;
+  plan_key?: string;
+  billing_access_state: string;
+  grace_ends_at: string | null;
+  account_flags?: string[];
+  active_flags?: string[];
+  suspended?: boolean;
+  restricted?: boolean;
+  reasons?: string[];
+  warnings?: Array<{ code?: string; message?: string }>;
+  route_counts?: Record<string, number>;
+  usage?: Record<string, number>;
+  limits?: Record<string, number | null>;
+}
+
+interface AccountLimitsResponse {
+  account_id: string;
+  plan_key: string;
+  features: Record<string, boolean>;
+  manifest_limits: Record<string, unknown>;
+  deployment_limits: Record<string, number | null>;
+  runtime_limits: Record<string, number | null>;
+  release_limits: Record<string, number | null>;
+  usage_limits: Record<string, number | null>;
+  usage: Record<string, number>;
+  usage_period?: { period_start?: string; period_end?: string };
+  route_counts?: Record<string, number>;
+  compatibility_warnings?: Array<{ code?: string; message?: string }>;
+}
+
+interface DowngradePreviewResponse {
+  account_id: string;
+  current_plan_key: string;
+  target_plan_key: string;
+  compatible: boolean;
+  violations: Array<Record<string, unknown>>;
+  actions: Array<Record<string, unknown>>;
+}
+
+interface AppStatusResponse {
+  app_id: string;
+  account_id: string | null;
+  billing_access_state?: string;
+  account_flags?: string[];
+  app_flags?: string[];
+  suspended?: boolean;
+  takedown?: boolean;
+  can_serve_canonical?: boolean;
+  can_mutate?: boolean;
+  reasons?: string[];
+  routes?: RouteRecord[];
+  operational_state?: Record<string, unknown> | null;
+}
+
+interface RouteRecord {
+  route_id: string;
+  account_id?: string;
+  app_id?: string;
+  route_type: string;
+  hostname: string;
+  slug: string | null;
+  status: string;
+  reason: string | null;
+  verification?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+}
+
+interface RoutesResponse {
+  app_id: string;
+  routes: RouteRecord[];
+}
+
+interface RouteResponse {
+  app_id: string;
+  route: RouteRecord;
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
 
@@ -148,6 +243,11 @@ async function main(): Promise<void> {
 
   if (command === "accounts") {
     await accountsCommand(args);
+    return;
+  }
+
+  if (command === "ops") {
+    await opsCommand(args);
     return;
   }
 
@@ -200,6 +300,22 @@ async function appsCommand(args: string[]): Promise<void> {
     await eventsCommand(rest);
     return;
   }
+  if (subcommand === "status") {
+    await appStatusCommand(rest);
+    return;
+  }
+  if (subcommand === "routes" && rest[0] === "list") {
+    await routesListCommand(rest.slice(1));
+    return;
+  }
+  if (subcommand === "slugs") {
+    await appSlugsCommand(rest);
+    return;
+  }
+  if (subcommand === "domains") {
+    await appDomainsCommand(rest);
+    return;
+  }
   usage(1);
 }
 
@@ -232,6 +348,74 @@ async function accountsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "use") {
     await useAccountCommand(rest);
+    return;
+  }
+  if (subcommand === "status") {
+    await accountStatusCommand(rest);
+    return;
+  }
+  if (subcommand === "limits") {
+    await accountLimitsCommand(rest);
+    return;
+  }
+  if (subcommand === "downgrade" && rest[0] === "preview") {
+    await downgradePreviewCommand(rest.slice(1));
+    return;
+  }
+  usage(1);
+}
+
+async function opsCommand(args: string[]): Promise<void> {
+  const [scope, subcommand, id, actionOrFlag, ...rest] = args;
+  if (scope === "accounts" && subcommand === "status" && id) {
+    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/accounts/${encodeURIComponent(id)}/status`, { method: "GET" }));
+    return;
+  }
+  if (scope === "accounts" && subcommand === "flag" && id && actionOrFlag) {
+    await printObject(await opsFlagCommand("accounts", id, actionOrFlag, rest, false));
+    return;
+  }
+  if (scope === "accounts" && subcommand === "clear" && id && actionOrFlag) {
+    await printObject(await opsFlagCommand("accounts", id, actionOrFlag, rest, true));
+    return;
+  }
+  if (scope === "apps" && subcommand === "status" && id) {
+    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/apps/${encodeURIComponent(id)}/status`, { method: "GET" }));
+    return;
+  }
+  if (scope === "apps" && subcommand === "flag" && id && actionOrFlag) {
+    await printObject(await opsFlagCommand("apps", id, actionOrFlag, rest, false));
+    return;
+  }
+  if (scope === "apps" && subcommand === "clear" && id && actionOrFlag) {
+    await printObject(await opsFlagCommand("apps", id, actionOrFlag, rest, true));
+    return;
+  }
+  if (scope === "apps" && subcommand === "takedown" && id) {
+    const options = parseReasonOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
+    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/apps/${encodeURIComponent(id)}/takedown`, {
+      method: "POST",
+      body: JSON.stringify(bodyWithReason(options))
+    }));
+    return;
+  }
+  if (scope === "routes" && subcommand === "disable" && id) {
+    const options = parseRouteDisableOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
+    if (!options.status) {
+      usage(1);
+    }
+    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/routes/${encodeURIComponent(id)}/disable`, {
+      method: "POST",
+      body: JSON.stringify({ status: options.status, ...bodyWithReason(options) })
+    }));
+    return;
+  }
+  if (scope === "routes" && subcommand === "enable" && id) {
+    const options = parseReasonOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
+    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/routes/${encodeURIComponent(id)}/enable`, {
+      method: "POST",
+      body: JSON.stringify(bodyWithReason(options))
+    }));
     return;
   }
   usage(1);
@@ -350,6 +534,68 @@ async function useAccountCommand(args: string[]): Promise<void> {
   console.log(`credentials_file=${filePath}`);
 }
 
+async function accountStatusCommand(args: string[]): Promise<void> {
+  const options = parseAccountOptions(args);
+  const accountId = await resolveAccountId(options.account);
+  const response = await apiFetch<AccountStatusResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/status`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true });
+
+  console.log(`account_id=${response.account_id}`);
+  if (response.plan_key) console.log(`plan_key=${response.plan_key}`);
+  console.log(`billing_access_state=${response.billing_access_state}`);
+  console.log(`grace_ends_at=${response.grace_ends_at ?? ""}`);
+  if (response.suspended !== undefined) console.log(`suspended=${response.suspended}`);
+  if (response.restricted !== undefined) console.log(`restricted=${response.restricted}`);
+  printList("account_flags", response.account_flags ?? response.active_flags);
+  printList("reasons", response.reasons);
+  printWarnings(response.warnings);
+}
+
+async function accountLimitsCommand(args: string[]): Promise<void> {
+  const options = parseAccountOptions(args);
+  const accountId = await resolveAccountId(options.account);
+  const response = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/limits`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true });
+
+  console.log(`account_id=${response.account_id}`);
+  console.log(`plan_key=${response.plan_key}`);
+  if (response.usage_period?.period_start) console.log(`usage_period_start=${response.usage_period.period_start}`);
+  if (response.usage_period?.period_end) console.log(`usage_period_end=${response.usage_period.period_end}`);
+  printKeyValues("feature", response.features);
+  printKeyValues("deployment_limit", response.deployment_limits);
+  printKeyValues("runtime_limit", response.runtime_limits);
+  printKeyValues("release_limit", response.release_limits);
+  printKeyValues("usage_limit", response.usage_limits);
+  printKeyValues("usage", response.usage);
+  if (response.route_counts) printKeyValues("route_count", response.route_counts);
+  printWarnings(response.compatibility_warnings);
+}
+
+async function downgradePreviewCommand(args: string[]): Promise<void> {
+  const options = parseDowngradePreviewOptions(args);
+  if (!options.to) {
+    usage(1);
+  }
+  const accountId = await resolveAccountId(options.account);
+  const params = new URLSearchParams({ plan: options.to });
+  const response = await apiFetch<DowngradePreviewResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/downgrade-preview?${params.toString()}`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true });
+
+  console.log(`account_id=${response.account_id}`);
+  console.log(`current_plan_key=${response.current_plan_key}`);
+  console.log(`target_plan_key=${response.target_plan_key}`);
+  console.log(`compatible=${response.compatible}`);
+  for (const violation of response.violations) {
+    console.log(`violation=${formatFields(violation)}`);
+  }
+  for (const action of response.actions) {
+    console.log(`action=${formatFields(action)}`);
+  }
+}
+
 async function publishCommand(args: string[]): Promise<void> {
   const dir = args[0];
   const options = parseOptions(args.slice(1));
@@ -463,6 +709,196 @@ async function eventsCommand(args: string[]): Promise<void> {
   if (response.cursor) {
     console.log(`cursor=${response.cursor}`);
   }
+}
+
+async function appStatusCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (!appId) {
+    usage(1);
+  }
+  const options = parseAccountOptions(args.slice(1));
+  const response = await apiFetch<AppStatusResponse>(`/v0/apps/${encodeURIComponent(appId)}`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true });
+  const state = objectValue((response as unknown as Record<string, unknown>).operational_state) ?? {};
+
+  console.log(`app_id=${response.app_id}`);
+  if (response.account_id) console.log(`account_id=${response.account_id}`);
+  if (stringValue(state.billing_access_state) ?? response.billing_access_state) console.log(`billing_access_state=${stringValue(state.billing_access_state) ?? response.billing_access_state}`);
+  printOptionalBoolean("suspended", state.suspended ?? response.suspended);
+  printOptionalBoolean("takedown", state.takedown ?? response.takedown);
+  printOptionalBoolean("restricted", state.restricted);
+  printOptionalBoolean("can_serve_canonical", state.can_serve_canonical ?? response.can_serve_canonical);
+  printOptionalBoolean("can_mutate", state.can_mutate ?? response.can_mutate);
+  printList("account_flags", stringArrayValue(state.account_flags) ?? response.account_flags);
+  printList("app_flags", stringArrayValue(state.app_flags) ?? response.app_flags);
+  printList("reasons", stringArrayValue(state.reasons) ?? response.reasons);
+  if (response.routes) {
+    for (const route of response.routes) {
+      printRoute(route);
+    }
+  }
+}
+
+async function routesListCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (!appId) {
+    usage(1);
+  }
+  const options = parseAccountOptions(args.slice(1));
+  const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/routes`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true });
+  printRoutes(response.routes);
+}
+
+async function appSlugsCommand(args: string[]): Promise<void> {
+  const [action, appId, slug, ...optionArgs] = args;
+  if (action === "list" && appId) {
+    const options = parseAccountOptions([slug, ...optionArgs].filter((value): value is string => value !== undefined));
+    const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs`, {
+      method: "GET"
+    }, { accountId: options.account, accountScoped: true });
+    printRoutes(response.routes);
+    return;
+  }
+  if (action === "add" && appId && slug) {
+    const options = parseAccountOptions(optionArgs);
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs`, {
+      method: "POST",
+      body: JSON.stringify({ slug })
+    }, { accountId: options.account, accountScoped: true });
+    printRoute(response.route);
+    return;
+  }
+  if (action === "remove" && appId && slug) {
+    const options = parseAccountOptions(optionArgs);
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs/${encodeURIComponent(slug)}`, {
+      method: "DELETE"
+    }, { accountId: options.account, accountScoped: true });
+    printRoute(response.route);
+    return;
+  }
+  usage(1);
+}
+
+async function appDomainsCommand(args: string[]): Promise<void> {
+  const [action, appId, hostname, ...optionArgs] = args;
+  if (action === "list" && appId) {
+    const options = parseAccountOptions([hostname, ...optionArgs].filter((value): value is string => value !== undefined));
+    const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains`, {
+      method: "GET"
+    }, { accountId: options.account, accountScoped: true });
+    printRoutes(response.routes);
+    return;
+  }
+  if (action === "add" && appId && hostname) {
+    const options = parseAccountOptions(optionArgs);
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains`, {
+      method: "POST",
+      body: JSON.stringify({ hostname })
+    }, { accountId: options.account, accountScoped: true });
+    printRoute(response.route);
+    return;
+  }
+  if (action === "verify" && appId && hostname) {
+    const options = parseAccountOptions(optionArgs);
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains/${encodeURIComponent(hostname)}/verify`, {
+      method: "POST",
+      body: JSON.stringify({})
+    }, { accountId: options.account, accountScoped: true });
+    printRoute(response.route);
+    return;
+  }
+  if (action === "remove" && appId && hostname) {
+    const options = parseAccountOptions(optionArgs);
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains/${encodeURIComponent(hostname)}`, {
+      method: "DELETE"
+    }, { accountId: options.account, accountScoped: true });
+    printRoute(response.route);
+    return;
+  }
+  usage(1);
+}
+
+async function opsFlagCommand(scope: "accounts" | "apps", id: string, flag: string, args: string[], clear: boolean): Promise<Record<string, unknown>> {
+  const options = parseReasonOptions(args);
+  return await apiFetch<Record<string, unknown>>(`/v0/ops/${scope}/${encodeURIComponent(id)}/flags/${encodeURIComponent(flag)}${clear ? "/clear" : ""}`, {
+    method: "POST",
+    body: JSON.stringify(bodyWithReason(options))
+  });
+}
+
+async function resolveAccountId(explicitAccountId: string | undefined): Promise<string> {
+  const credentials = await readCredentials();
+  const accountId = selectedAccountId(explicitAccountId, credentials);
+  if (accountId) {
+    return accountId;
+  }
+  const response = await apiFetch<AccountsResponse>("/v0/accounts", { method: "GET" });
+  return response.default_account_id;
+}
+
+function printRoutes(routes: RouteRecord[]): void {
+  for (const route of routes) {
+    printRoute(route);
+  }
+}
+
+function printRoute(route: RouteRecord): void {
+  console.log([
+    route.route_id,
+    route.route_type,
+    route.status,
+    route.hostname,
+    route.slug ?? "",
+    route.reason ?? ""
+  ].join("\t"));
+  if (route.verification && Object.keys(route.verification).length > 0) {
+    console.log(`verification=${JSON.stringify(route.verification)}`);
+  }
+}
+
+async function printObject(value: Record<string, unknown>): Promise<void> {
+  for (const [key, entry] of Object.entries(value)) {
+    if (Array.isArray(entry)) {
+      for (const item of entry) {
+        console.log(`${key}=${isPlainObject(item) ? formatFields(item) : String(item)}`);
+      }
+    } else if (isPlainObject(entry)) {
+      console.log(`${key}=${JSON.stringify(entry)}`);
+    } else {
+      console.log(`${key}=${entry ?? ""}`);
+    }
+  }
+}
+
+function printKeyValues(prefix: string, values: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(values).sort(([left], [right]) => left.localeCompare(right))) {
+    console.log(`${prefix}=${key} value=${value ?? "unlimited"}`);
+  }
+}
+
+function printList(label: string, values: string[] | undefined): void {
+  if (values && values.length > 0) {
+    console.log(`${label}=${values.join(",")}`);
+  }
+}
+
+function printWarnings(warnings: Array<{ code?: string; message?: string }> | undefined): void {
+  for (const warning of warnings ?? []) {
+    console.log(`warning=${formatFields(warning as Record<string, unknown>)}`);
+  }
+}
+
+function printOptionalBoolean(label: string, value: unknown): void {
+  if (typeof value === "boolean") {
+    console.log(`${label}=${value}`);
+  }
+}
+
+function bodyWithReason(options: { reason?: string }): Record<string, string> {
+  return options.reason ? { reason: options.reason } : {};
 }
 
 async function readPublishDirectory(rootDir: string, options: CliOptions): Promise<Record<string, unknown>> {
@@ -1065,6 +1501,51 @@ function parseEventsOptions(args: string[]): EventsOptions {
   return options;
 }
 
+function parseDowngradePreviewOptions(args: string[]): DowngradePreviewOptions {
+  const options: DowngradePreviewOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--to") {
+      options.to = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseReasonOptions(args: string[]): ReasonOptions {
+  const options: ReasonOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--reason") {
+      options.reason = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseRouteDisableOptions(args: string[]): RouteDisableOptions {
+  const options: RouteDisableOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--status") {
+      options.status = args[++index];
+    } else if (arg === "--reason") {
+      options.reason = args[++index];
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function parseAccountOptions(args: string[]): { account?: string } {
   const options: { account?: string } = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -1159,6 +1640,30 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function stringArrayValue(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
+}
+
+function formatFields(value: Record<string, unknown>): string {
+  return Object.entries(value)
+    .filter(([, entry]) => entry !== undefined && entry !== null)
+    .map(([key, entry]) => `${key}=${formatFieldValue(entry)}`)
+    .join(" ");
+}
+
+function formatFieldValue(value: unknown): string {
+  if (typeof value === "string") {
+    return /\s/u.test(value) ? JSON.stringify(value) : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(formatFieldValue).join(",");
+  }
+  if (isPlainObject(value)) {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
 function contentTypeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const types: Record<string, string> = {
@@ -1178,54 +1683,63 @@ function contentTypeForPath(filePath: string): string {
 }
 
 function errorMessage(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null || !("error" in body)) {
+  if (!isPlainObject(body) || !("error" in body)) {
     return undefined;
   }
 
-  const error = (body as { error?: unknown }).error;
-  if (typeof error !== "object" || error === null || !("message" in error)) {
+  const parsed = parseApiError(body);
+  if (!parsed.message && !parsed.code) {
     return undefined;
   }
-
-  const typedError = error as { code?: unknown; message?: unknown; details?: unknown };
-  const message = typeof typedError.message === "string" ? typedError.message : undefined;
-  const code = typeof typedError.code === "string" ? typedError.code : undefined;
-  const detail = entitlementDetailMessage(typedError.details);
-  const base = code && message ? `${code}: ${message}` : message ?? code;
-  return [base, detail].filter(Boolean).join("\n");
+  const lines = [parsed.message ?? parsed.code];
+  if (parsed.code) {
+    lines.push(`error=${parsed.code}`);
+  }
+  lines.push(...structuredDetailLines(parsed.details));
+  return lines.filter(Boolean).join("\n");
 }
 
-function entitlementDetailMessage(details: unknown): string | undefined {
+function parseApiError(body: Record<string, unknown>): { code?: string; message?: string; details?: unknown } {
+  const error = body.error;
+  if (typeof error === "string") {
+    return {
+      code: error,
+      message: stringValue(body.message),
+      details: body.details
+    };
+  }
+  if (!isPlainObject(error)) {
+    return {};
+  }
+  return {
+    code: stringValue(error.code),
+    message: stringValue(error.message),
+    details: error.details
+  };
+}
+
+function structuredDetailLines(details: unknown): string[] {
   if (!isPlainObject(details)) {
-    return undefined;
+    return [];
   }
 
-  const requiredPlan = stringValue(details.required_plan_key);
-  const violations = Array.isArray(details.violations) ? details.violations.map(formatEntitlementViolation).filter(Boolean) : [];
-  const limit = stringValue(details.limit_key);
-  const allowed = details.allowed;
-  const value = details.value;
   const lines: string[] = [];
-
-  if (requiredPlan) {
-    lines.push(`Required plan: ${requiredPlan}`);
+  for (const key of ["metric", "plan_key", "required_plan_key", "limit", "limit_key", "current", "increment", "value", "upgrade_required"]) {
+    if (details[key] !== undefined) {
+      lines.push(`${key}=${formatFieldValue(details[key])}`);
+    }
   }
 
-  if (violations.length > 0) {
-    lines.push("Violations:");
-    lines.push(...violations.map((violation) => `- ${violation}`));
-  } else if (limit) {
-    lines.push(`Limit: ${limit}${value !== undefined ? ` value=${String(value)}` : ""}${allowed !== undefined ? ` allowed=${formatAllowed(allowed)}` : ""}`);
+  const violations = Array.isArray(details.violations) ? details.violations : [];
+  for (const violation of violations) {
+    if (isPlainObject(violation)) {
+      lines.push(`violation=${formatViolation(violation)}`);
+    }
   }
-
-  return lines.length > 0 ? lines.join("\n") : undefined;
+  return lines;
 }
 
-function formatEntitlementViolation(value: unknown): string | undefined {
-  if (!isPlainObject(value)) {
-    return undefined;
-  }
-
+function formatViolation(value: Record<string, unknown>): string {
   const path = stringValue(value.manifest_path);
   const feature = stringValue(value.feature_key);
   const limit = stringValue(value.limit_key);
@@ -1241,7 +1755,7 @@ function formatEntitlementViolation(value: unknown): string | undefined {
     requiredPlan ? `requires=${requiredPlan}` : undefined
   ].filter(Boolean);
 
-  return parts.length > 0 ? parts.join(" ") : undefined;
+  return parts.length > 0 ? parts.join(" ") : formatFields(value);
 }
 
 function formatAllowed(value: unknown): string {
@@ -1253,7 +1767,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function docsUrlForError(message: string): string {
-  if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded")) {
+  if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded") || message.includes("quota_exceeded") || message.includes("downgrade_incompatible")) {
     return "https://docs.userland.fun/reference/errors";
   }
   if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
@@ -1281,12 +1795,33 @@ function usage(exitCode: number): never {
   userland auth save-key --username <username> --api-key <api-key> [--password <password>]
   userland accounts list
   userland accounts use <account-id>
+  userland accounts status [--account <account-id>]
+  userland accounts limits [--account <account-id>]
+  userland accounts downgrade preview --to <plan> [--account <account-id>]
   userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
   userland apps list [--account <account-id>]
+  userland apps status <app-id> [--account <account-id>]
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
   userland apps secrets set <app-id> <NAME> [--value <value>] [--account <account-id>]
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
+  userland apps routes list <app-id> [--account <account-id>]
+  userland apps slugs list <app-id> [--account <account-id>]
+  userland apps slugs add <app-id> <slug> [--account <account-id>]
+  userland apps slugs remove <app-id> <slug> [--account <account-id>]
+  userland apps domains list <app-id> [--account <account-id>]
+  userland apps domains add <app-id> <hostname> [--account <account-id>]
+  userland apps domains verify <app-id> <hostname> [--account <account-id>]
+  userland apps domains remove <app-id> <hostname> [--account <account-id>]
+  userland ops accounts status <account-id>
+  userland ops accounts flag <account-id> <flag> [--reason <text>]
+  userland ops accounts clear <account-id> <flag> [--reason <text>]
+  userland ops apps status <app-id>
+  userland ops apps flag <app-id> <flag> [--reason <text>]
+  userland ops apps clear <app-id> <flag> [--reason <text>]
+  userland ops apps takedown <app-id> [--reason <text>]
+  userland ops routes disable <route-id> --status <disabled_abuse|disabled_billing|disabled_downgrade> [--reason <text>]
+  userland ops routes enable <route-id> [--reason <text>]
 
 Aliases:
   userland auth signup [--username <username>] [--password <password>] [--email <email>] [--no-save]

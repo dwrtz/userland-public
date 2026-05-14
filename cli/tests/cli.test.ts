@@ -199,6 +199,147 @@ describe("public CLI", () => {
     expect(saved.account_id).toBe("acct_team");
   });
 
+  test("supports account status, limits, and downgrade preview commands", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts/acct_ops/status": {
+        account_id: "acct_ops",
+        plan_key: "business",
+        billing_access_state: "past_due_grace",
+        grace_ends_at: "2026-05-19T00:00:00.000Z",
+        account_flags: ["billing_restricted"],
+        restricted: true,
+        suspended: false,
+        reasons: ["billing:past_due_grace"],
+        warnings: [{ code: "billing_restricted", message: "Billing restrictions are active." }]
+      },
+      "GET /v0/accounts/acct_ops/limits": {
+        account_id: "acct_ops",
+        plan_key: "business",
+        features: { custom_domains: true },
+        manifest_limits: {},
+        deployment_limits: { "custom_domains.max": 5 },
+        runtime_limits: { "server.cpu_ms.max": 50 },
+        release_limits: { "release.file_count.max": 500 },
+        usage_limits: { "requests.monthly.max": 100000 },
+        usage: { "requests.monthly.max": 42 },
+        usage_period: { period_start: "2026-05-01T00:00:00.000Z", period_end: "2026-06-01T00:00:00.000Z" },
+        route_counts: { active_custom_domains: 1 },
+        compatibility_warnings: []
+      },
+      "GET /v0/accounts/acct_ops/downgrade-preview?plan=free": {
+        account_id: "acct_ops",
+        current_plan_key: "business",
+        target_plan_key: "free",
+        compatible: false,
+        violations: [{ type: "deployment_limit", key: "custom_domains.max", current: 1, allowed: 0, message: "Custom domains exceed Free." }],
+        actions: [{ action: "disable_route", route_id: "route_domain", reason: "Custom domains exceed Free." }]
+      }
+    });
+
+    const status = await runCli(["accounts", "status", "--account", "acct_ops"], api.baseUrl);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain("billing_access_state=past_due_grace");
+    expect(status.stdout).toContain("account_flags=billing_restricted");
+    expect(requests.at(-1)).toMatchObject({ method: "GET", url: "/v0/accounts/acct_ops/status", accountId: "acct_ops" });
+
+    const limits = await runCli(["accounts", "limits", "--account", "acct_ops"], api.baseUrl);
+    expect(limits.code).toBe(0);
+    expect(limits.stdout).toContain("deployment_limit=custom_domains.max value=5");
+    expect(limits.stdout).toContain("usage=requests.monthly.max value=42");
+
+    const preview = await runCli(["accounts", "downgrade", "preview", "--to", "free", "--account", "acct_ops"], api.baseUrl);
+    expect(preview.code).toBe(0);
+    expect(preview.stdout).toContain("compatible=false");
+    expect(preview.stdout).toContain("violation=type=deployment_limit key=custom_domains.max");
+  });
+
+  test("supports app status and route management commands", async () => {
+    const route = {
+      route_id: "route_slug",
+      account_id: "acct_ops",
+      app_id: "app_ops",
+      route_type: "slug",
+      hostname: "demo.apps.userland.fun",
+      slug: "demo",
+      status: "active",
+      reason: null,
+      verification: {},
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      deleted_at: null
+    };
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops": {
+        app_id: "app_ops",
+        account_id: "acct_ops",
+        name: "Ops",
+        origin: "https://app_ops.apps.userland.fun/",
+        live_release_id: "rel_live",
+        operational_state: {
+          billing_access_state: "active",
+          suspended: false,
+          takedown: false,
+          can_serve_canonical: true,
+          can_mutate: true,
+          account_flags: [],
+          app_flags: [],
+          reasons: []
+        }
+      },
+      "GET /v0/apps/app_ops/routes": { app_id: "app_ops", routes: [route] },
+      "GET /v0/apps/app_ops/slugs": { app_id: "app_ops", routes: [route] },
+      "POST /v0/apps/app_ops/slugs": { app_id: "app_ops", route },
+      "DELETE /v0/apps/app_ops/slugs/demo": { app_id: "app_ops", route: { ...route, status: "deleted" } },
+      "GET /v0/apps/app_ops/domains": { app_id: "app_ops", routes: [{ ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null }] },
+      "POST /v0/apps/app_ops/domains": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "pending_dns" } },
+      "POST /v0/apps/app_ops/domains/www.example.com/verify": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null } },
+      "DELETE /v0/apps/app_ops/domains/www.example.com": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "deleted" } }
+    });
+
+    await expectCommand(["apps", "status", "app_ops", "--account", "acct_ops"], api.baseUrl, "can_serve_canonical=true");
+    await expectCommand(["apps", "routes", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, "route_slug\tslug\tactive");
+    await expectCommand(["apps", "slugs", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, "demo.apps.userland.fun");
+    await expectCommand(["apps", "slugs", "add", "app_ops", "demo", "--account", "acct_ops"], api.baseUrl, "route_slug");
+    expect(requests.at(-1)?.body).toEqual({ slug: "demo" });
+    await expectCommand(["apps", "slugs", "remove", "app_ops", "demo", "--account", "acct_ops"], api.baseUrl, "deleted");
+    await expectCommand(["apps", "domains", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, "www.example.com");
+    await expectCommand(["apps", "domains", "add", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "pending_dns");
+    expect(requests.at(-1)?.body).toEqual({ hostname: "www.example.com" });
+    await expectCommand(["apps", "domains", "verify", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "active");
+    await expectCommand(["apps", "domains", "remove", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "deleted");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("POST /v0/apps/app_ops/domains/www.example.com/verify");
+    expect(requests.every((request) => request.accountId === "acct_ops")).toBe(true);
+  });
+
+  test("supports internal ops command routing", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/ops/accounts/acct_ops/status": { account_id: "acct_ops", billing_access_state: "active", account_flags: [] },
+      "POST /v0/ops/accounts/acct_ops/flags/suspended_abuse": { account_id: "acct_ops", flag: "suspended_abuse", active: true },
+      "POST /v0/ops/accounts/acct_ops/flags/suspended_abuse/clear": { account_id: "acct_ops", flag: "suspended_abuse", active: false },
+      "GET /v0/ops/apps/app_ops/status": { app_id: "app_ops", suspended: false },
+      "POST /v0/ops/apps/app_ops/flags/suspended_security": { app_id: "app_ops", flag: "suspended_security", active: true },
+      "POST /v0/ops/apps/app_ops/flags/suspended_security/clear": { app_id: "app_ops", flag: "suspended_security", active: false },
+      "POST /v0/ops/apps/app_ops/takedown": { app_id: "app_ops", flag: "takedown_legal", active: true },
+      "POST /v0/ops/routes/route_ops/disable": { route_id: "route_ops", status: "disabled_abuse" },
+      "POST /v0/ops/routes/route_ops/enable": { route_id: "route_ops", status: "active" }
+    });
+
+    await expectCommand(["ops", "accounts", "status", "acct_ops"], api.baseUrl, "account_id=acct_ops");
+    await expectCommand(["ops", "accounts", "flag", "acct_ops", "suspended_abuse", "--reason", "spam"], api.baseUrl, "active=true");
+    expect(requests.at(-1)?.body).toEqual({ reason: "spam" });
+    await expectCommand(["ops", "accounts", "clear", "acct_ops", "suspended_abuse"], api.baseUrl, "active=false");
+    await expectCommand(["ops", "apps", "status", "app_ops"], api.baseUrl, "suspended=false");
+    await expectCommand(["ops", "apps", "flag", "app_ops", "suspended_security"], api.baseUrl, "active=true");
+    await expectCommand(["ops", "apps", "clear", "app_ops", "suspended_security"], api.baseUrl, "active=false");
+    await expectCommand(["ops", "apps", "takedown", "app_ops", "--reason", "legal"], api.baseUrl, "flag=takedown_legal");
+    await expectCommand(["ops", "routes", "disable", "route_ops", "--status", "disabled_abuse", "--reason", "spam"], api.baseUrl, "status=disabled_abuse");
+    expect(requests.at(-1)?.body).toEqual({ status: "disabled_abuse", reason: "spam" });
+    await expectCommand(["ops", "routes", "enable", "route_ops"], api.baseUrl, "status=active");
+  });
+
   test("signs up, stores credentials, and uses the saved API key", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
@@ -374,7 +515,8 @@ describe("public CLI", () => {
 
     const result = await runCli(["apps", "list"], api.baseUrl);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("API 403: forbidden: Your account role cannot perform this operation.");
+    expect(result.stderr).toContain("API 403: Your account role cannot perform this operation.");
+    expect(result.stderr).toContain("error=forbidden");
   });
 
   test("prints entitlement details from 402 API errors", async () => {
@@ -412,10 +554,11 @@ describe("public CLI", () => {
 
     const result = await runCli(["apps", "publish", "examples/hello-static"], api.baseUrl);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("API 402: entitlement_required: This app manifest uses features or limits outside the account plan.");
-    expect(result.stderr).toContain("Required plan: business");
-    expect(result.stderr).toContain("- /app/visibility feature=private_apps value=private requires=business");
-    expect(result.stderr).toContain("- /resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
+    expect(result.stderr).toContain("API 402: This app manifest uses features or limits outside the account plan.");
+    expect(result.stderr).toContain("error=entitlement_required");
+    expect(result.stderr).toContain("required_plan_key=business");
+    expect(result.stderr).toContain("violation=/app/visibility feature=private_apps value=private requires=business");
+    expect(result.stderr).toContain("violation=/resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/errors");
   });
 });
