@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-05-15
+
+- Add CLI operations commands for app status, events, routes, secrets, limits, and rollback workflows.
+- Fix phase 8 CLI operations controls.
+
 ## 0.1.3 - 2026-05-13
 
 - Improve CLI output for entitlement and plan-limit publish errors.
