@@ -32,6 +32,7 @@ userland apps list
 USERLAND_ACCOUNT_ID=<account-id> userland apps list
 userland apps status <app-id>
 userland apps releases <app-id>
+userland versions <app-id>
 userland apps rollback <app-id> <release-id>
 userland apps secrets set <app-id> <NAME> --value <value>
 userland apps events <app-id>
@@ -59,6 +60,7 @@ npm run userland -- apps list
 npm run userland -- apps list --account <account-id>
 npm run userland -- apps status <app-id>
 npm run userland -- apps releases <app-id>
+npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
 npm run userland -- apps secrets set <app-id> <NAME> --value <value>
 npm run userland -- apps events <app-id>
@@ -80,6 +82,8 @@ userland accounts limits --account <account-id>
 userland accounts downgrade preview --to starter --account <account-id>
 userland apps status <app-id> --account <account-id>
 ```
+
+`accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts.
 
 Route management:
 

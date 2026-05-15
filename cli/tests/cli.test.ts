@@ -138,6 +138,7 @@ describe("public CLI", () => {
 
     await expectCommand(["apps", "list"], api.baseUrl, "app_ops");
     await expectCommand(["apps", "releases", "app_ops"], api.baseUrl, "rel_live live");
+    await expectCommand(["versions", "app_ops"], api.baseUrl, "rel_live live");
     await expectCommand(["apps", "events", "app_ops", "--severity", "error", "--limit", "2"], api.baseUrl, "runtime.error");
     await expectCommand(["apps", "rollback", "app_ops", "rel_prev"], api.baseUrl, "Rolled back https://app_ops.apps.userland.fun/");
     const secretResult = await runCli(["apps", "secrets", "set", "app_ops", "API_TOKEN", "--value", "super-secret"], api.baseUrl);
@@ -217,7 +218,7 @@ describe("public CLI", () => {
         account_id: "acct_ops",
         plan_key: "business",
         features: { custom_domains: true },
-        manifest_limits: {},
+        manifest_limits: { "jobs.declared.max": 10 },
         deployment_limits: { "custom_domains.max": 5 },
         runtime_limits: { "server.cpu_ms.max": 50 },
         release_limits: { "release.file_count.max": 500 },
@@ -245,6 +246,7 @@ describe("public CLI", () => {
 
     const limits = await runCli(["accounts", "limits", "--account", "acct_ops"], api.baseUrl);
     expect(limits.code).toBe(0);
+    expect(limits.stdout).toContain("manifest_limit=jobs.declared.max value=10");
     expect(limits.stdout).toContain("deployment_limit=custom_domains.max value=5");
     expect(limits.stdout).toContain("usage=requests.monthly.max value=42");
 
@@ -317,10 +319,10 @@ describe("public CLI", () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "GET /v0/ops/accounts/acct_ops/status": { account_id: "acct_ops", billing_access_state: "active", account_flags: [] },
-      "POST /v0/ops/accounts/acct_ops/flags/suspended_abuse": { account_id: "acct_ops", flag: "suspended_abuse", active: true },
+      "PUT /v0/ops/accounts/acct_ops/flags/suspended_abuse": { account_id: "acct_ops", flag: "suspended_abuse", active: true },
       "POST /v0/ops/accounts/acct_ops/flags/suspended_abuse/clear": { account_id: "acct_ops", flag: "suspended_abuse", active: false },
       "GET /v0/ops/apps/app_ops/status": { app_id: "app_ops", suspended: false },
-      "POST /v0/ops/apps/app_ops/flags/suspended_security": { app_id: "app_ops", flag: "suspended_security", active: true },
+      "PUT /v0/ops/apps/app_ops/flags/suspended_security": { app_id: "app_ops", flag: "suspended_security", active: true },
       "POST /v0/ops/apps/app_ops/flags/suspended_security/clear": { app_id: "app_ops", flag: "suspended_security", active: false },
       "POST /v0/ops/apps/app_ops/takedown": { app_id: "app_ops", flag: "takedown_legal", active: true },
       "POST /v0/ops/routes/route_ops/disable": { route_id: "route_ops", status: "disabled_abuse" },

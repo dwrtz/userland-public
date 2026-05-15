@@ -564,6 +564,7 @@ async function accountLimitsCommand(args: string[]): Promise<void> {
   if (response.usage_period?.period_start) console.log(`usage_period_start=${response.usage_period.period_start}`);
   if (response.usage_period?.period_end) console.log(`usage_period_end=${response.usage_period.period_end}`);
   printKeyValues("feature", response.features);
+  printKeyValues("manifest_limit", response.manifest_limits);
   printKeyValues("deployment_limit", response.deployment_limits);
   printKeyValues("runtime_limit", response.runtime_limits);
   printKeyValues("release_limit", response.release_limits);
@@ -824,7 +825,7 @@ async function appDomainsCommand(args: string[]): Promise<void> {
 async function opsFlagCommand(scope: "accounts" | "apps", id: string, flag: string, args: string[], clear: boolean): Promise<Record<string, unknown>> {
   const options = parseReasonOptions(args);
   return await apiFetch<Record<string, unknown>>(`/v0/ops/${scope}/${encodeURIComponent(id)}/flags/${encodeURIComponent(flag)}${clear ? "/clear" : ""}`, {
-    method: "POST",
+    method: clear ? "POST" : "PUT",
     body: JSON.stringify(bodyWithReason(options))
   });
 }
@@ -875,7 +876,7 @@ async function printObject(value: Record<string, unknown>): Promise<void> {
 
 function printKeyValues(prefix: string, values: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(values).sort(([left], [right]) => left.localeCompare(right))) {
-    console.log(`${prefix}=${key} value=${value ?? "unlimited"}`);
+    console.log(`${prefix}=${key} value=${value === null ? "unlimited" : formatFieldValue(value)}`);
   }
 }
 
@@ -1828,6 +1829,7 @@ Aliases:
   userland auth login [--username <username>] [--password <password>] [--no-save]
   userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
   userland releases <app-id> [--account <account-id>]
+  userland versions <app-id> [--account <account-id>]
 
 Credentials:
   Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.
