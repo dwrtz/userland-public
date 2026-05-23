@@ -17,6 +17,7 @@ interface RequestRecord {
 const servers: Array<{ close: () => Promise<void> }> = [];
 const tempDirs: string[] = [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const cliPackageJsonPath = path.join(repoRoot, "cli", "package.json");
 
 describe("public CLI", () => {
   afterEach(async () => {
@@ -344,6 +345,7 @@ describe("public CLI", () => {
 
   test("logs in with device flow, stores credentials, and uses the saved API key", async () => {
     const requests: RequestRecord[] = [];
+    const cliPackageVersion = await readCliPackageVersion();
     const api = await startMockApi(requests, {
       "POST /v0/auth/device/start": deviceStartResponse(),
       "POST /v0/auth/device/poll": [
@@ -387,7 +389,7 @@ describe("public CLI", () => {
       method: "POST",
       url: "/v0/auth/device/start",
       authorization: undefined,
-      body: { client: "userland-cli", client_version: "0.0.0", requested_capability: "api_key" }
+      body: { client: "userland-cli", client_version: cliPackageVersion, requested_capability: "api_key" }
     });
     expect(requests.filter((request) => request.url === "/v0/auth/device/poll")).toHaveLength(2);
 
@@ -641,6 +643,15 @@ async function temporaryCredentialsFile(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "userland-cli-"));
   tempDirs.push(dir);
   return path.join(dir, ".userland", "credentials.json");
+}
+
+async function readCliPackageVersion(): Promise<string> {
+  const packageJson = JSON.parse(await fs.readFile(cliPackageJsonPath, "utf8")) as { version?: unknown };
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("Missing CLI package version");
+  }
+
+  return packageJson.version;
 }
 
 function deviceStartResponse(): Record<string, unknown> {
