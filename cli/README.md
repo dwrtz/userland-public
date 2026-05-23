@@ -25,6 +25,10 @@ userland auth status
 userland auth save-key --api-key <api-key>
 userland auth logout
 userland auth logout --revoke
+userland auth api-keys list
+userland auth api-keys create --name "CI deploy key"
+userland auth api-keys rename <api-key-id> --name "Production deploy"
+userland auth api-keys revoke <api-key-id> --yes
 userland accounts list
 userland accounts use <account-id>
 userland accounts status --account <account-id>
@@ -57,6 +61,10 @@ npm run userland -- auth status
 npm run userland -- auth save-key --api-key <api-key>
 npm run userland -- auth logout
 npm run userland -- auth logout --revoke
+npm run userland -- auth api-keys list
+npm run userland -- auth api-keys create --name "CI deploy key"
+npm run userland -- auth api-keys rename <api-key-id> --name "Production deploy"
+npm run userland -- auth api-keys revoke <api-key-id> --yes
 npm run userland -- accounts list
 npm run userland -- accounts use <account-id>
 npm run userland -- accounts status --account <account-id>
@@ -81,6 +89,17 @@ npm run userland -- apps domains verify <app-id> <hostname>
 `login` starts a browser device-authorization flow. The CLI prints a verification URL and user code, opens the browser when possible, waits for approval, then saves the returned API key to `~/.userland/credentials.json` with `0600` permissions. `signup` is an alias for the same flow; if the email is new, account creation happens in the browser after email proof.
 
 The CLI does not store platform passwords. App commands prefer `USERLAND_API_KEY` when it is set, then fall back to the saved API key. `auth save-key` remains available for CI, support, and manually copied API keys.
+
+API key lifecycle commands use the same authenticated management endpoints as the browser console:
+
+```sh
+userland auth api-keys list
+userland auth api-keys create --name "CI deploy key"
+userland auth api-keys rename key_... --name "Production deploy"
+userland auth api-keys revoke key_... --yes
+```
+
+`auth api-keys list` prints metadata only. `auth api-keys create` prints the raw key exactly once and does not write it to `~/.userland/credentials.json`. `auth api-keys revoke` prompts in interactive terminals unless `--yes` is passed.
 
 Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team, client, and agency workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
 
