@@ -55,6 +55,11 @@ interface RouteDisableOptions {
   status?: string;
 }
 
+interface ApiKeyOptions {
+  name?: string;
+  yes?: boolean;
+}
+
 interface AuthOptions {
   account?: string;
   apiBaseUrl?: string;
@@ -109,6 +114,35 @@ interface ApiKeyRevokeResponse {
   ok: true;
   revoked: boolean;
   api_key_id: string;
+  key?: ApiKeySummary;
+}
+
+interface ApiKeySummary {
+  id: string;
+  api_key_id: string;
+  key_prefix: string;
+  name: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+interface ApiKeyListResponse {
+  api_keys: ApiKeySummary[];
+}
+
+interface ApiKeyCreateResponse {
+  api_key: string;
+  api_key_id: string;
+  key_prefix: string;
+  key: ApiKeySummary;
+  warning: string;
+}
+
+interface ApiKeyRenameResponse {
+  ok: true;
+  api_key_id: string;
+  key: ApiKeySummary;
 }
 
 interface AccountsResponse {
@@ -277,6 +311,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "api-keys") {
+    await apiKeysCommand(args);
+    return;
+  }
+
   if (command === "accounts") {
     await accountsCommand(args);
     return;
@@ -375,6 +414,31 @@ async function authCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "logout") {
     await logoutCommand(rest);
+    return;
+  }
+  if (subcommand === "api-keys") {
+    await apiKeysCommand(rest);
+    return;
+  }
+  usage(1);
+}
+
+async function apiKeysCommand(args: string[]): Promise<void> {
+  const [subcommand, keyId, ...rest] = args;
+  if (subcommand === "list") {
+    await apiKeysListCommand();
+    return;
+  }
+  if (subcommand === "create") {
+    await apiKeysCreateCommand([keyId, ...rest].filter((value): value is string => value !== undefined));
+    return;
+  }
+  if (subcommand === "rename" && keyId) {
+    await apiKeysRenameCommand(keyId, rest);
+    return;
+  }
+  if (subcommand === "revoke" && keyId) {
+    await apiKeysRevokeCommand(keyId, rest);
     return;
   }
   usage(1);
@@ -601,6 +665,86 @@ async function logoutCommand(args: string[]): Promise<void> {
   await fs.rm(filePath, { force: true });
   console.log("local_credentials=removed");
   console.log(`credentials_file=${filePath}`);
+}
+
+async function apiKeysListCommand(): Promise<void> {
+  const response = await apiFetch<ApiKeyListResponse>("/v0/auth/api-keys", {
+    method: "GET"
+  });
+
+  for (const key of response.api_keys) {
+    console.log([
+      key.api_key_id,
+      key.revoked_at ? "revoked" : "active",
+      key.created_at,
+      key.last_used_at ?? "never",
+      key.key_prefix,
+      key.name ?? ""
+    ].join("\t"));
+  }
+}
+
+async function apiKeysCreateCommand(args: string[]): Promise<void> {
+  const options = parseApiKeyOptions(args);
+  if (!options.name) {
+    throw new Error("--name is required.");
+  }
+
+  const response = await apiFetch<ApiKeyCreateResponse>("/v0/auth/api-keys", {
+    method: "POST",
+    body: JSON.stringify({ name: options.name })
+  });
+
+  console.log(`Created API key ${response.api_key_id}`);
+  console.log(`Name: ${response.key.name ?? ""}`);
+  console.log(`Prefix: ${response.key_prefix}`);
+  console.log("");
+  console.log("API key:");
+  console.log(response.api_key);
+  console.log("");
+  console.log(response.warning);
+}
+
+async function apiKeysRenameCommand(apiKeyId: string, args: string[]): Promise<void> {
+  const options = parseApiKeyOptions(args);
+  if (!options.name) {
+    throw new Error("--name is required.");
+  }
+
+  const response = await apiFetch<ApiKeyRenameResponse>(`/v0/auth/api-keys/${encodeURIComponent(apiKeyId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name: options.name })
+  });
+
+  console.log(`Renamed API key ${response.api_key_id}`);
+  console.log(`Name: ${response.key.name ?? ""}`);
+}
+
+async function apiKeysRevokeCommand(apiKeyId: string, args: string[]): Promise<void> {
+  const options = parseApiKeyOptions(args);
+  const credentials = await readCredentials();
+  if (credentials?.api_key_id === apiKeyId) {
+    console.log("This is the API key saved for the current CLI credentials. Subsequent saved-credential commands may fail.");
+  }
+  if (!options.yes) {
+    if (!process.stdin.isTTY) {
+      throw new Error("Pass --yes to revoke an API key non-interactively.");
+    }
+    const answer = await promptLine(`Revoke API key ${apiKeyId}? Type yes to continue: `);
+    if (answer.toLowerCase() !== "yes") {
+      console.log("revocation=cancelled");
+      return;
+    }
+  }
+
+  const response = await apiFetch<ApiKeyRevokeResponse>(`/v0/auth/api-keys/${encodeURIComponent(apiKeyId)}`, {
+    method: "DELETE"
+  });
+  if (response.revoked) {
+    console.log(`Revoked API key ${response.api_key_id}`);
+  } else {
+    console.log(`API key ${response.api_key_id} was already revoked.`);
+  }
 }
 
 async function listAccountsCommand(): Promise<void> {
@@ -1352,6 +1496,21 @@ function parseAuthOptions(args: string[]): AuthOptions {
   return options;
 }
 
+function parseApiKeyOptions(args: string[]): ApiKeyOptions {
+  const options: ApiKeyOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--name") {
+      options.name = args[++index];
+    } else if (arg === "--yes" || arg === "-y") {
+      options.yes = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function parseSecretSetOptions(args: string[]): SecretSetOptions {
   const options: SecretSetOptions = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -1641,6 +1800,10 @@ function usage(exitCode: number): never {
   userland auth status
   userland auth save-key --api-key <api-key> [--account <account-id>] [--api-base-url <url>] [--console-url <url>]
   userland auth logout [--revoke]
+  userland auth api-keys list
+  userland auth api-keys create --name <name>
+  userland auth api-keys rename <api-key-id> --name <name>
+  userland auth api-keys revoke <api-key-id> [--yes]
   userland accounts list
   userland accounts use <account-id>
   userland accounts status [--account <account-id>]
@@ -1674,6 +1837,7 @@ function usage(exitCode: number): never {
 Aliases:
   userland auth signup [--no-browser] [--email <email>] [--no-save]
   userland auth login [--no-browser] [--email <email>] [--no-save]
+  userland api-keys list|create|rename|revoke ...
   userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
   userland releases <app-id> [--account <account-id>]
   userland versions <app-id> [--account <account-id>]

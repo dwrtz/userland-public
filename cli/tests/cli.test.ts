@@ -212,6 +212,88 @@ describe("public CLI", () => {
     expect(saved.account_id).toBe("acct_team");
   });
 
+  test("manages API keys without saving created secrets", async () => {
+    const keySummary = {
+      id: "key_initial",
+      api_key_id: "key_initial",
+      key_prefix: "ap_live_init",
+      name: "Initial",
+      created_at: "2026-05-23T00:00:00.000Z",
+      last_used_at: null,
+      revoked_at: null
+    };
+    const createdSummary = {
+      id: "key_created",
+      api_key_id: "key_created",
+      key_prefix: "ap_live_crea",
+      name: "CI deploy key",
+      created_at: "2026-05-23T00:01:00.000Z",
+      last_used_at: null,
+      revoked_at: null
+    };
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/auth/api-keys": { api_keys: [keySummary] },
+      "POST /v0/auth/api-keys": {
+        api_key: "ap_live_created_secret",
+        api_key_id: "key_created",
+        key_prefix: "ap_live_crea",
+        key: createdSummary,
+        warning: "Store this API key now. It will not be shown again."
+      },
+      "PATCH /v0/auth/api-keys/key_created": {
+        ok: true,
+        api_key_id: "key_created",
+        key: { ...createdSummary, name: "Production deploy" }
+      },
+      "DELETE /v0/auth/api-keys/key_created": {
+        ok: true,
+        revoked: true,
+        api_key_id: "key_created",
+        key: { ...createdSummary, revoked_at: "2026-05-23T00:02:00.000Z" }
+      },
+      "DELETE /v0/auth/api-keys/key_revoked": {
+        ok: true,
+        revoked: false,
+        api_key_id: "key_revoked",
+        key: { ...createdSummary, id: "key_revoked", api_key_id: "key_revoked", revoked_at: "2026-05-23T00:02:00.000Z" }
+      }
+    });
+    const credentialsFile = await temporaryCredentialsFile();
+
+    const list = await runCli(["auth", "api-keys", "list"], api.baseUrl, { credentialsFile });
+    expect(list.code).toBe(0);
+    expect(list.stdout).toContain("key_initial\tactive\t2026-05-23T00:00:00.000Z\tnever\tap_live_init\tInitial");
+    expect(list.stdout).not.toContain("secret");
+    expect(requests.at(-1)).toMatchObject({ method: "GET", url: "/v0/auth/api-keys", authorization: "Bearer test_api_key" });
+
+    const aliasList = await runCli(["api-keys", "list"], api.baseUrl, { credentialsFile });
+    expect(aliasList.code).toBe(0);
+    expect(aliasList.stdout).toContain("key_initial");
+
+    const create = await runCli(["auth", "api-keys", "create", "--name", "CI deploy key"], api.baseUrl, { credentialsFile });
+    expect(create.code).toBe(0);
+    expect(create.stdout).toContain("Created API key key_created");
+    expect(create.stdout).toContain("API key:\nap_live_created_secret");
+    expect(create.stdout.match(/ap_live_created_secret/gu)).toHaveLength(1);
+    expect(requests.find((request) => request.url === "/v0/auth/api-keys" && request.method === "POST")?.body).toEqual({ name: "CI deploy key" });
+    await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const rename = await runCli(["auth", "api-keys", "rename", "key_created", "--name", "Production deploy"], api.baseUrl, { credentialsFile });
+    expect(rename.code).toBe(0);
+    expect(rename.stdout).toContain("Renamed API key key_created");
+    expect(rename.stdout).toContain("Name: Production deploy");
+    expect(requests.find((request) => request.url === "/v0/auth/api-keys/key_created" && request.method === "PATCH")?.body).toEqual({ name: "Production deploy" });
+
+    const revoke = await runCli(["auth", "api-keys", "revoke", "key_created", "--yes"], api.baseUrl, { credentialsFile });
+    expect(revoke.code).toBe(0);
+    expect(revoke.stdout).toContain("Revoked API key key_created");
+
+    const alreadyRevoked = await runCli(["auth", "api-keys", "revoke", "key_revoked", "--yes"], api.baseUrl, { credentialsFile });
+    expect(alreadyRevoked.code).toBe(0);
+    expect(alreadyRevoked.stdout).toContain("API key key_revoked was already revoked.");
+  });
+
   test("supports account status, limits, and downgrade preview commands", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
@@ -612,18 +694,17 @@ async function runCli(
   apiBaseUrl: string,
   options: { accountId?: string; apiKey?: string | null; credentialsFile?: string } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      USERLAND_API_BASE_URL: apiBaseUrl
+      USERLAND_API_BASE_URL: apiBaseUrl,
+      USERLAND_CREDENTIALS_FILE: credentialsFile
     };
     if (options.apiKey !== null) {
       env.USERLAND_API_KEY = options.apiKey ?? "test_api_key";
     } else {
       delete env.USERLAND_API_KEY;
-    }
-    if (options.credentialsFile) {
-      env.USERLAND_CREDENTIALS_FILE = options.credentialsFile;
     }
     if (options.accountId) {
       env.USERLAND_ACCOUNT_ID = options.accountId;

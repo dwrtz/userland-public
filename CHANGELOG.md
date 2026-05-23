@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-05-23
+
+- Add `userland auth api-keys list`, `create`, `rename`, and `revoke` commands.
+- Add top-level `userland api-keys ...` aliases.
+- Keep newly-created API keys out of saved credentials unless users explicitly save a key.
+
 ## 0.3.2 - 2026-05-23
 
 - Add `userland --version` for printing the installed CLI package version.
