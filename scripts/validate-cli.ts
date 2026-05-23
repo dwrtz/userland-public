@@ -24,6 +24,7 @@ const requiredSourcePatterns = [
   'subcommand === "login"',
   'subcommand === "status"',
   'subcommand === "save-key"',
+  'subcommand === "logout"',
   'command === "signup"',
   'command === "login"',
   'command === "publish"',
@@ -35,6 +36,7 @@ const requiredReadmeSnippets = [
   "userland login",
   "userland auth status",
   "userland auth save-key",
+  "userland auth logout",
   "userland accounts list",
   "userland accounts use",
   "userland apps publish",
@@ -49,6 +51,7 @@ const requiredReadmeSnippets = [
   "npm run userland -- login",
   "npm run userland -- auth status",
   "npm run userland -- auth save-key",
+  "npm run userland -- auth logout",
   "npm run userland -- accounts list",
   "npm run userland -- accounts use",
   "npm run userland -- apps publish",
@@ -57,7 +60,8 @@ const requiredReadmeSnippets = [
   "npm run userland -- apps rollback",
   "npm run userland -- apps secrets set",
   "npm run userland -- apps events",
-  "OS keychain",
+  "browser device-authorization flow",
+  "does not store platform passwords",
   "npm install -g @userland.fun/cli",
   "https://docs.userland.fun/reference/cli"
 ];

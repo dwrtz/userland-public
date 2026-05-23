@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replace CLI username/password signup and login with browser-approved device authorization.
+- Add `userland auth logout` for removing saved API-key credentials, with optional server revocation when the saved key id is known.
+
 ## 0.1.3 - 2026-05-13
 
 - Improve CLI output for entitlement and plan-limit publish errors.
