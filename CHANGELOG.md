@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 - 2026-05-23
+
+- Add `userland --version` for printing the installed CLI package version.
+
 ## 0.3.1 - 2026-05-23
 
 - Send the `@userland.fun/cli` package version in browser device-authorization requests.

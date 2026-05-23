@@ -17,6 +17,7 @@ npm install -g @userland.fun/cli
 Then run:
 
 ```sh
+userland --version
 userland login
 userland login --no-browser
 userland signup
@@ -48,6 +49,7 @@ userland apps domains verify <app-id> <hostname>
 From this repo, the same commands can be run from source:
 
 ```sh
+npm run userland -- --version
 npm run userland -- login
 npm run userland -- login --no-browser
 npm run userland -- signup
