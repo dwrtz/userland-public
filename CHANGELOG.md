@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-05-23
+
+- Replace CLI username/password signup and login with browser-approved device authorization.
+- Add `userland auth logout` for removing saved API-key credentials, with optional server revocation when the saved key id is known.
 
 ## 0.1.3 - 2026-05-13
 

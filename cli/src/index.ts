@@ -6,8 +6,8 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 
 const DEFAULT_API_BASE_URL = "https://api.userland.fun";
-const KEYCHAIN_SERVICE = "fun.userland.cli";
-const KEYCHAIN_ACCOUNT = "default";
+const DEFAULT_CONSOLE_BASE_URL = "https://console.userland.fun";
+const CLI_VERSION = "0.0.0";
 
 interface CliOptions {
   account?: string;
@@ -44,40 +44,59 @@ interface RouteDisableOptions {
 }
 
 interface AuthOptions {
+  account?: string;
+  apiBaseUrl?: string;
   apiKey?: string;
+  consoleUrl?: string;
   email?: string;
-  password?: string;
+  noBrowser?: boolean;
+  revoke?: boolean;
   save?: boolean;
-  username?: string;
 }
 
 interface CredentialsFile {
   account_id?: string;
   api_base_url?: string;
   api_key?: string;
+  api_key_id?: string;
+  console_url?: string;
   updated_at?: string;
-}
-
-type CredentialsUpdate = Omit<CredentialsFile, "account_id"> & {
-  account_id?: string | null;
-};
-
-interface AccountCredentials {
-  password?: string;
   username?: string;
 }
 
-interface AccountResponse {
-  username: string;
-  api_key: string;
-  account_id?: string;
-  warning: string;
+type CredentialsUpdate = {
+  [Key in keyof CredentialsFile]?: CredentialsFile[Key] | null;
+};
+
+interface DeviceStartResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
 }
 
-interface TokenResponse {
-  api_key: string;
-  account_id?: string;
-  warning: string;
+type DevicePollResponse =
+  | {
+      ok: true;
+      status: "approved";
+      api_key: string;
+      api_key_id?: string;
+      username?: string;
+      accounts?: AccountsResponse["accounts"];
+      default_account_id?: string;
+    }
+  | {
+      ok: false;
+      status: "authorization_pending" | "slow_down" | "denied" | "expired" | "consumed";
+      interval?: number;
+    };
+
+interface ApiKeyRevokeResponse {
+  ok: true;
+  revoked: boolean;
+  api_key_id: string;
 }
 
 interface AccountsResponse {
@@ -337,6 +356,10 @@ async function authCommand(args: string[]): Promise<void> {
     await saveKeyCommand(rest);
     return;
   }
+  if (subcommand === "logout") {
+    await logoutCommand(rest);
+    return;
+  }
   usage(1);
 }
 
@@ -423,94 +446,144 @@ async function opsCommand(args: string[]): Promise<void> {
 
 async function signupCommand(args: string[]): Promise<void> {
   const options = parseAuthOptions(args);
-  const username = options.username ?? (await promptRequired("Username: "));
-  const password = options.password ?? (await promptPassword("Password: "));
-  const body: Record<string, string> = { username, password };
-  if (options.email) {
-    body.email = options.email;
-  }
-
-  const response = await unauthenticatedApiFetch<AccountResponse>("/v0/accounts", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
-
-  if (options.save !== false) {
-    await saveAccountCredentials({ username: response.username, password });
-    const filePath = await saveCredentials({
-      api_key: response.api_key,
-      api_base_url: await apiBaseUrl(),
-      account_id: response.account_id ?? null
-    });
-    console.log(`Created Userland account ${response.username}`);
-    console.log(`Saved API key to ${filePath}`);
-    console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
-    return;
-  }
-
-  console.log(`Created Userland account ${response.username}`);
-  console.log(`api_key=${response.api_key}`);
+  await deviceLoginCommand(options, { signupAlias: true });
 }
 
 async function loginCommand(args: string[]): Promise<void> {
   const options = parseAuthOptions(args);
-  const storedAccount = await readAccountCredentials();
-  const username = options.username ?? storedAccount?.username ?? (await promptRequired("Username: "));
-  const password = options.password ?? storedAccount?.password ?? (await promptPassword("Password: "));
-  const response = await unauthenticatedApiFetch<TokenResponse>("/v0/auth/token", {
+  await deviceLoginCommand(options, { signupAlias: false });
+}
+
+async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: boolean }): Promise<void> {
+  const credentials = await readCredentials();
+  const baseUrl = await apiBaseUrl(credentials, options.apiBaseUrl);
+  const configuredConsoleUrl = await consoleBaseUrl(credentials, options.consoleUrl);
+  const start = await requestJson<DeviceStartResponse>(baseUrl, "/v0/auth/device/start", {
     method: "POST",
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({
+      client: "userland-cli",
+      client_version: CLI_VERSION,
+      requested_capability: "api_key"
+    })
   });
+  const verificationUrl = options.consoleUrl
+    ? `${configuredConsoleUrl.replace(/\/$/u, "")}/device?code=${encodeURIComponent(start.user_code)}`
+    : start.verification_uri_complete;
+  const consoleUrl = options.consoleUrl ?? consoleUrlFromVerification(start.verification_uri, configuredConsoleUrl);
+
+  if (context.signupAlias) {
+    console.log("Signup uses the same browser approval flow as login. New accounts are created in the browser after email proof.");
+  }
+  if (options.email) {
+    console.log(`email_hint=${options.email}`);
+  }
+  if (!options.noBrowser) {
+    const opened = await openBrowser(verificationUrl);
+    if (opened) {
+      console.log("Opened your browser for Userland authorization.");
+    }
+  }
+  console.log("Open this URL to sign in to Userland:");
+  console.log("");
+  console.log(verificationUrl);
+  console.log("");
+  console.log(`user_code=${start.user_code}`);
+  console.log("Waiting for approval...");
+
+  const response = await pollDeviceAuthorization(baseUrl, start);
 
   if (options.save !== false) {
-    const baseUrl = await apiBaseUrl();
-    const accountId = response.account_id ?? (await discoverDefaultAccountId(response.api_key, baseUrl).catch(() => undefined));
-    await saveAccountCredentials({ username, password });
     const filePath = await saveCredentials({
       api_key: response.api_key,
+      api_key_id: response.api_key_id ?? null,
       api_base_url: baseUrl,
-      account_id: accountId ?? null
+      console_url: consoleUrl,
+      username: response.username ?? null,
+      account_id: response.default_account_id ?? null
     });
     console.log(`Saved API key to ${filePath}`);
-    console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
+    if (response.username) {
+      console.log(`username=${response.username}`);
+    }
+    if (response.default_account_id) {
+      console.log(`selected_account_id=${response.default_account_id}`);
+    }
     return;
   }
 
   console.log(`api_key=${response.api_key}`);
+  if (response.api_key_id) {
+    console.log(`api_key_id=${response.api_key_id}`);
+  }
+  if (response.default_account_id) {
+    console.log(`selected_account_id=${response.default_account_id}`);
+  }
 }
 
 async function authStatusCommand(): Promise<void> {
   const credentials = await readCredentials();
-  const account = await readAccountCredentials();
   const filePath = credentialsPath();
   const apiKeySource = process.env.USERLAND_API_KEY ? "env" : credentials?.api_key ? "file" : "missing";
   const selectedAccountId = process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
   const accountSource = process.env.USERLAND_ACCOUNT_ID ? "env" : credentials?.account_id ? "file" : apiKeySource === "missing" ? "missing" : "default";
   console.log(`api_base_url=${await apiBaseUrl(credentials)}`);
+  console.log(`console_url=${await consoleBaseUrl(credentials)}`);
   console.log(`api_key=${apiKeySource}`);
   console.log(`credentials_file=${filePath}`);
+  if (apiKeySource === "file" && credentials?.api_key_id) {
+    console.log(`api_key_id=${credentials.api_key_id}`);
+  }
   console.log(`account=${accountSource}`);
   if (selectedAccountId) {
     console.log(`account_id=${selectedAccountId}`);
   }
-  console.log(`account_login=${account ? "keychain" : "missing"}`);
-  if (account?.username) {
-    console.log(`username=${account.username}`);
+  if (apiKeySource === "file" && credentials?.username) {
+    console.log(`username=${credentials.username}`);
   }
 }
 
 async function saveKeyCommand(args: string[]): Promise<void> {
   const options = parseAuthOptions(args);
-  const username = options.username ?? (await promptRequired("Username: "));
   const apiKey = options.apiKey ?? (await promptRequired("API key: "));
-  await saveAccountCredentials({ username, password: options.password });
+  const credentials = await readCredentials();
   const filePath = await saveCredentials({
     api_key: apiKey,
-    api_base_url: await apiBaseUrl(),
-    account_id: null
+    api_key_id: null,
+    api_base_url: await apiBaseUrl(credentials, options.apiBaseUrl),
+    console_url: await consoleBaseUrl(credentials, options.consoleUrl),
+    username: null,
+    account_id: options.account ?? null
   });
   console.log(`Saved API key to ${filePath}`);
-  console.log(`Saved account login to ${accountCredentialStoreLabel()}`);
+  if (options.account) {
+    console.log(`selected_account_id=${options.account}`);
+  }
+}
+
+async function logoutCommand(args: string[]): Promise<void> {
+  const options = parseAuthOptions(args);
+  const credentials = await readCredentials();
+  const filePath = credentialsPath();
+  if (options.revoke) {
+    if (credentials?.api_key && credentials.api_key_id) {
+      await requestJson<ApiKeyRevokeResponse>(
+        await apiBaseUrl(credentials, options.apiBaseUrl),
+        `/v0/auth/api-keys/${encodeURIComponent(credentials.api_key_id)}`,
+        {
+          method: "DELETE",
+          headers: {
+            authorization: `Bearer ${credentials.api_key}`
+          }
+        }
+      );
+      console.log(`revoked_api_key_id=${credentials.api_key_id}`);
+    } else {
+      console.log("revoke=skipped api_key_id_missing");
+    }
+  }
+  await fs.rm(filePath, { force: true });
+  console.log("local_credentials=removed");
+  console.log(`credentials_file=${filePath}`);
 }
 
 async function listAccountsCommand(): Promise<void> {
@@ -1046,22 +1119,60 @@ async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accoun
   });
 }
 
-async function unauthenticatedApiFetch<T>(apiPath: string, init: RequestInit): Promise<T> {
-  return await requestJson<T>(await apiBaseUrl(), apiPath, init);
-}
-
-async function discoverDefaultAccountId(apiKey: string, baseUrl: string): Promise<string | undefined> {
-  const response = await requestJson<AccountsResponse>(baseUrl, "/v0/accounts", {
-    method: "GET",
-    headers: {
-      authorization: `Bearer ${apiKey}`
-    }
-  });
-  return response.default_account_id;
-}
-
 function selectedAccountId(explicitAccountId: string | undefined, credentials: CredentialsFile | undefined): string | undefined {
   return explicitAccountId ?? process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
+}
+
+async function pollDeviceAuthorization(baseUrl: string, start: DeviceStartResponse): Promise<Extract<DevicePollResponse, { ok: true }>> {
+  let intervalSeconds = positiveNumber(start.interval, 5);
+  const deadline = Date.now() + positiveNumber(start.expires_in, 900) * 1000;
+
+  while (Date.now() <= deadline) {
+    const poll = await requestJson<DevicePollResponse>(baseUrl, "/v0/auth/device/poll", {
+      method: "POST",
+      body: JSON.stringify({ device_code: start.device_code })
+    });
+
+    if (poll.ok) {
+      return poll;
+    }
+
+    if (poll.status === "authorization_pending") {
+      await sleep(intervalSeconds * 1000);
+      continue;
+    }
+
+    if (poll.status === "slow_down") {
+      intervalSeconds = positiveNumber(poll.interval, intervalSeconds + 5);
+      await sleep(intervalSeconds * 1000);
+      continue;
+    }
+
+    throw new Error(deviceAuthorizationStatusMessage(poll.status));
+  }
+
+  throw new Error("Device authorization expired before approval.");
+}
+
+function deviceAuthorizationStatusMessage(status: Exclude<Extract<DevicePollResponse, { ok: false }>["status"], "authorization_pending" | "slow_down">): string {
+  if (status === "denied") {
+    return "Device authorization was denied in the browser.";
+  }
+  if (status === "expired") {
+    return "Device authorization expired before approval.";
+  }
+  return "Device authorization was already consumed. Run `userland login` again.";
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+async function sleep(milliseconds: number): Promise<void> {
+  if (milliseconds <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestInit): Promise<T> {
@@ -1083,8 +1194,42 @@ async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestIni
   return body as T;
 }
 
-async function apiBaseUrl(credentials?: CredentialsFile): Promise<string> {
-  return process.env.USERLAND_API_BASE_URL ?? credentials?.api_base_url ?? (await readCredentials())?.api_base_url ?? DEFAULT_API_BASE_URL;
+async function apiBaseUrl(credentials?: CredentialsFile, override?: string): Promise<string> {
+  return override ?? process.env.USERLAND_API_BASE_URL ?? credentials?.api_base_url ?? (await readCredentials())?.api_base_url ?? DEFAULT_API_BASE_URL;
+}
+
+async function consoleBaseUrl(credentials?: CredentialsFile, override?: string): Promise<string> {
+  return override ?? process.env.USERLAND_CONSOLE_URL ?? credentials?.console_url ?? (await readCredentials())?.console_url ?? DEFAULT_CONSOLE_BASE_URL;
+}
+
+function consoleUrlFromVerification(verificationUri: string | undefined, fallback: string): string {
+  if (!verificationUri) {
+    return fallback;
+  }
+  try {
+    const url = new URL(verificationUri);
+    return `${url.origin}`;
+  } catch {
+    return fallback;
+  }
+}
+
+async function openBrowser(url: string): Promise<boolean> {
+  const [command, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+        ? ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
+
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => {
+      child.unref();
+      resolve(true);
+    });
+  });
 }
 
 function credentialsPath(): string {
@@ -1112,7 +1257,10 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
     account_id: stringValue(credentials.account_id),
     api_base_url: stringValue(credentials.api_base_url),
     api_key: stringValue(credentials.api_key),
-    updated_at: stringValue(credentials.updated_at)
+    api_key_id: stringValue(credentials.api_key_id),
+    console_url: stringValue(credentials.console_url),
+    updated_at: stringValue(credentials.updated_at),
+    username: stringValue(credentials.username)
   };
 }
 
@@ -1125,8 +1273,10 @@ async function saveCredentials(update: CredentialsUpdate): Promise<string> {
     ...sanitizedUpdate,
     updated_at: new Date().toISOString()
   };
-  if (update.account_id === null) {
-    delete credentials.account_id;
+  for (const [key, value] of Object.entries(update)) {
+    if (value === null) {
+      delete credentials[key as keyof CredentialsFile];
+    }
   }
 
   const dir = path.dirname(filePath);
@@ -1135,297 +1285,6 @@ async function saveCredentials(update: CredentialsUpdate): Promise<string> {
   await fs.writeFile(filePath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
   await fs.chmod(filePath, 0o600).catch(() => undefined);
   return filePath;
-}
-
-async function readAccountCredentials(): Promise<AccountCredentials | undefined> {
-  const raw = await keychainGetSecret().catch((error: unknown) => {
-    if (error instanceof KeychainUnavailableError) {
-      return undefined;
-    }
-    throw error;
-  });
-  if (!raw) {
-    return undefined;
-  }
-
-  const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("Stored Userland account credentials are malformed.");
-  }
-
-  const credentials = parsed as AccountCredentials;
-  const username = stringValue(credentials.username);
-  const password = stringValue(credentials.password);
-  return username || password ? { username, password } : undefined;
-}
-
-async function saveAccountCredentials(update: AccountCredentials): Promise<void> {
-  const existing = (await readAccountCredentials()) ?? {};
-  const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined)) as AccountCredentials;
-  const credentials: AccountCredentials = {
-    ...existing,
-    ...sanitizedUpdate
-  };
-  if (!credentials.username && !credentials.password) {
-    return;
-  }
-  await keychainSetSecret(JSON.stringify(credentials));
-}
-
-function accountCredentialStoreLabel(): string {
-  return process.env.USERLAND_KEYCHAIN_FILE ? "test keychain" : "OS keychain";
-}
-
-class KeychainUnavailableError extends Error {}
-
-async function keychainGetSecret(): Promise<string | undefined> {
-  const testKeychainFile = process.env.USERLAND_KEYCHAIN_FILE;
-  if (testKeychainFile) {
-    return await fileKeychainGet(testKeychainFile);
-  }
-
-  if (process.platform === "darwin") {
-    const result = await runCommand("security", ["find-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w"]);
-    if (result.code === 44) {
-      return undefined;
-    }
-    assertCommandOk("security", result);
-    return result.stdout.trimEnd();
-  }
-
-  if (process.platform === "linux") {
-    const result = await runCommand("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE, "account", KEYCHAIN_ACCOUNT]);
-    if (result.code === 1) {
-      return undefined;
-    }
-    assertCommandOk("secret-tool", result);
-    return result.stdout.trimEnd();
-  }
-
-  if (process.platform === "win32") {
-    const result = await runPowerShell(windowsCredentialReadScript());
-    if (result.code === 2) {
-      return undefined;
-    }
-    assertCommandOk("powershell", result);
-    return result.stdout.trimEnd();
-  }
-
-  throw new KeychainUnavailableError(`OS keychain is not supported on ${process.platform}.`);
-}
-
-async function keychainSetSecret(secret: string): Promise<void> {
-  const testKeychainFile = process.env.USERLAND_KEYCHAIN_FILE;
-  if (testKeychainFile) {
-    await fileKeychainSet(testKeychainFile, secret);
-    return;
-  }
-
-  if (process.platform === "darwin") {
-    assertCommandOk(
-      "security",
-      await runCommand("security", ["add-generic-password", "-U", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w", secret])
-    );
-    return;
-  }
-
-  if (process.platform === "linux") {
-    assertCommandOk(
-      "secret-tool",
-      await runCommand("secret-tool", ["store", "--label", "Userland CLI", "service", KEYCHAIN_SERVICE, "account", KEYCHAIN_ACCOUNT], secret)
-    );
-    return;
-  }
-
-  if (process.platform === "win32") {
-    assertCommandOk("powershell", await runPowerShell(windowsCredentialWriteScript(), secret));
-    return;
-  }
-
-  throw new KeychainUnavailableError(`OS keychain is not supported on ${process.platform}.`);
-}
-
-async function fileKeychainGet(filePath: string): Promise<string | undefined> {
-  const contents = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  });
-  if (!contents) {
-    return undefined;
-  }
-
-  const parsed = JSON.parse(contents) as Record<string, string>;
-  return parsed[`${KEYCHAIN_SERVICE}:${KEYCHAIN_ACCOUNT}`];
-}
-
-async function fileKeychainSet(filePath: string, secret: string): Promise<void> {
-  const existing = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") {
-      return "{}";
-    }
-    throw error;
-  });
-  const parsed = JSON.parse(existing) as Record<string, string>;
-  parsed[`${KEYCHAIN_SERVICE}:${KEYCHAIN_ACCOUNT}`] = secret;
-  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  await fs.writeFile(filePath, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
-  await fs.chmod(filePath, 0o600).catch(() => undefined);
-}
-
-interface CommandResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-async function runCommand(command: string, args: string[], stdin?: string, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env: env ? { ...process.env, ...env } : process.env, stdio: ["pipe", "pipe", "pipe"] });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        reject(new KeychainUnavailableError(`${command} is required for OS keychain access.`));
-        return;
-      }
-      reject(error);
-    });
-    child.on("close", (code) => {
-      resolve({
-        code,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8")
-      });
-    });
-    child.stdin.end(stdin ?? "");
-  });
-}
-
-async function runPowerShell(script: string, stdin?: string): Promise<CommandResult> {
-  const env = stdin === undefined ? undefined : { USERLAND_KEYCHAIN_SECRET: stdin };
-  return await runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], scriptWithInput(script), env);
-}
-
-function scriptWithInput(script: string): string {
-  return `$ErrorActionPreference = "Stop"\n${script}`;
-}
-
-function assertCommandOk(command: string, result: CommandResult): void {
-  if (result.code !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code ?? "unknown"}`;
-    throw new Error(`${command} failed while accessing the OS keychain: ${detail}`);
-  }
-}
-
-function windowsCredentialWriteScript(): string {
-  return `
-Add-Type -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class UserlandCredential {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  private struct Credential {
-    public UInt32 Flags;
-    public UInt32 Type;
-    public string TargetName;
-    public string Comment;
-    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-    public UInt32 CredentialBlobSize;
-    public IntPtr CredentialBlob;
-    public UInt32 Persist;
-    public UInt32 AttributeCount;
-    public IntPtr Attributes;
-    public string TargetAlias;
-    public string UserName;
-  }
-
-  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  private static extern bool CredWrite(ref Credential credential, UInt32 flags);
-
-  public static void Write(string target, string username, string secret) {
-    byte[] bytes = Encoding.Unicode.GetBytes(secret);
-    IntPtr blob = Marshal.AllocCoTaskMem(bytes.Length);
-    try {
-      Marshal.Copy(bytes, 0, blob, bytes.Length);
-      Credential credential = new Credential();
-      credential.Type = 1;
-      credential.TargetName = target;
-      credential.UserName = username;
-      credential.CredentialBlob = blob;
-      credential.CredentialBlobSize = (UInt32)bytes.Length;
-      credential.Persist = 2;
-      if (!CredWrite(ref credential, 0)) {
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      }
-    } finally {
-      Marshal.FreeCoTaskMem(blob);
-    }
-  }
-}
-"@
-$secret = [Environment]::GetEnvironmentVariable("USERLAND_KEYCHAIN_SECRET")
-[UserlandCredential]::Write(${JSON.stringify(KEYCHAIN_SERVICE)}, ${JSON.stringify(KEYCHAIN_ACCOUNT)}, $secret)
-`;
-}
-
-function windowsCredentialReadScript(): string {
-  return `
-Add-Type -TypeDefinition @"
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-public static class UserlandCredential {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-  private struct Credential {
-    public UInt32 Flags;
-    public UInt32 Type;
-    public string TargetName;
-    public string Comment;
-    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-    public UInt32 CredentialBlobSize;
-    public IntPtr CredentialBlob;
-    public UInt32 Persist;
-    public UInt32 AttributeCount;
-    public IntPtr Attributes;
-    public string TargetAlias;
-    public string UserName;
-  }
-
-  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  private static extern bool CredRead(string target, UInt32 type, UInt32 reservedFlag, out IntPtr credentialPtr);
-
-  [DllImport("Advapi32.dll", SetLastError = true)]
-  private static extern void CredFree(IntPtr buffer);
-
-  public static string Read(string target) {
-    IntPtr credentialPtr;
-    if (!CredRead(target, 1, 0, out credentialPtr)) {
-      int error = Marshal.GetLastWin32Error();
-      if (error == 1168) {
-        Environment.Exit(2);
-      }
-      throw new Win32Exception(error);
-    }
-
-    try {
-      Credential credential = (Credential)Marshal.PtrToStructure(credentialPtr, typeof(Credential));
-      return Marshal.PtrToStringUni(credential.CredentialBlob, (int)credential.CredentialBlobSize / 2);
-    } finally {
-      CredFree(credentialPtr);
-    }
-  }
-}
-"@
-[Console]::Out.Write([UserlandCredential]::Read(${JSON.stringify(KEYCHAIN_SERVICE)}))
-`;
 }
 
 function parseOptions(args: string[]): CliOptions {
@@ -1449,16 +1308,26 @@ function parseAuthOptions(args: string[]): AuthOptions {
   const options: AuthOptions = { save: true };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--username") {
-      options.username = args[++index];
-    } else if (arg === "--password") {
-      options.password = args[++index];
+    if (arg === "--username" || arg === "--password") {
+      throw new Error("Userland platform auth is passwordless. Run `userland login` without username/password flags.");
     } else if (arg === "--email") {
       options.email = args[++index];
     } else if (arg === "--api-key") {
       options.apiKey = args[++index];
     } else if (arg === "--no-save") {
       options.save = false;
+    } else if (arg === "--save=false") {
+      options.save = false;
+    } else if (arg === "--no-browser") {
+      options.noBrowser = true;
+    } else if (arg === "--api-base-url") {
+      options.apiBaseUrl = args[++index];
+    } else if (arg === "--console-url") {
+      options.consoleUrl = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else if (arg === "--revoke") {
+      options.revoke = true;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1586,51 +1455,6 @@ async function promptLine(prompt: string): Promise<string> {
   } finally {
     readline.close();
   }
-}
-
-async function promptPassword(prompt: string): Promise<string> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    return await promptRequired(prompt);
-  }
-
-  process.stdout.write(prompt);
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-
-  return await new Promise<string>((resolve, reject) => {
-    let value = "";
-    const cleanup = (): void => {
-      process.stdin.setRawMode(false);
-      process.stdin.off("data", onData);
-    };
-    const onData = (chunk: string): void => {
-      for (const char of chunk) {
-        if (char === "\u0003") {
-          cleanup();
-          process.stdout.write("\n");
-          reject(new Error("Interrupted."));
-          return;
-        }
-        if (char === "\r" || char === "\n" || char === "\u0004") {
-          cleanup();
-          process.stdout.write("\n");
-          if (!value) {
-            reject(new Error("Password is required."));
-            return;
-          }
-          resolve(value);
-          return;
-        }
-        if (char === "\u007f") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += char;
-      }
-    };
-    process.stdin.on("data", onData);
-  });
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -1790,10 +1614,11 @@ function isHelpCommand(command: string | undefined): boolean {
 function usage(exitCode: number): never {
   const message = `Usage:
   userland [--help]
-  userland signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
-  userland login [--username <username>] [--password <password>] [--no-save]
+  userland signup [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
+  userland login [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
   userland auth status
-  userland auth save-key --username <username> --api-key <api-key> [--password <password>]
+  userland auth save-key --api-key <api-key> [--account <account-id>] [--api-base-url <url>] [--console-url <url>]
+  userland auth logout [--revoke]
   userland accounts list
   userland accounts use <account-id>
   userland accounts status [--account <account-id>]
@@ -1825,8 +1650,8 @@ function usage(exitCode: number): never {
   userland ops routes enable <route-id> [--reason <text>]
 
 Aliases:
-  userland auth signup [--username <username>] [--password <password>] [--email <email>] [--no-save]
-  userland auth login [--username <username>] [--password <password>] [--no-save]
+  userland auth signup [--no-browser] [--email <email>] [--no-save]
+  userland auth login [--no-browser] [--email <email>] [--no-save]
   userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
   userland releases <app-id> [--account <account-id>]
   userland versions <app-id> [--account <account-id>]
@@ -1834,7 +1659,7 @@ Aliases:
 Credentials:
   Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.
   App commands use --account, then USERLAND_ACCOUNT_ID, then saved account_id when set.
-  Account username and password are stored in the OS keychain.
+  Login and signup use browser device authorization and save only API-key credentials locally.
 
 Docs:
   https://docs.userland.fun/reference/cli

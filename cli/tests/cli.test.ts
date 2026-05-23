@@ -342,15 +342,22 @@ describe("public CLI", () => {
     await expectCommand(["ops", "routes", "enable", "route_ops"], api.baseUrl, "status=active");
   });
 
-  test("signs up, stores credentials, and uses the saved API key", async () => {
+  test("logs in with device flow, stores credentials, and uses the saved API key", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
-      "POST /v0/accounts": {
-        username: "newuser",
-        api_key: "created_api_key",
-        account_id: "acct_created",
-        warning: "Store this API key now. It will not be shown again."
-      },
+      "POST /v0/auth/device/start": deviceStartResponse(),
+      "POST /v0/auth/device/poll": [
+        { ok: false, status: "authorization_pending" },
+        {
+          ok: true,
+          status: "approved",
+          api_key: "created_api_key",
+          api_key_id: "apk_cli",
+          username: "alice",
+          accounts: [],
+          default_account_id: "acct_created"
+        }
+      ],
       "GET /v0/apps": {
         apps: [
           {
@@ -364,146 +371,162 @@ describe("public CLI", () => {
       }
     });
     const credentialsFile = await temporaryCredentialsFile();
-    const keychainFile = `${credentialsFile}.keychain.json`;
 
-    const signup = await runCli(["signup", "--username", "NewUser", "--password", "secret-password", "--email", "newuser@example.com"], api.baseUrl, {
+    const login = await runCli(["login", "--no-browser", "--console-url", "http://console.local"], api.baseUrl, {
       apiKey: null,
-      credentialsFile,
-      keychainFile
+      credentialsFile
     });
 
-    expect(signup.code).toBe(0);
-    expect(signup.stdout).toContain("Created Userland account newuser");
-    expect(signup.stdout).toContain(`Saved API key to ${credentialsFile}`);
-    expect(signup.stdout).toContain("Saved account login to test keychain");
-    expect(signup.stdout).not.toContain("created_api_key");
+    expect(login.code).toBe(0);
+    expect(login.stdout).toContain("http://console.local/device?code=ABCD-EFGH");
+    expect(login.stdout).toContain("user_code=ABCD-EFGH");
+    expect(login.stdout).toContain(`Saved API key to ${credentialsFile}`);
+    expect(login.stdout).toContain("selected_account_id=acct_created");
+    expect(login.stdout).not.toContain("created_api_key");
     expect(requests[0]).toMatchObject({
       method: "POST",
-      url: "/v0/accounts",
+      url: "/v0/auth/device/start",
       authorization: undefined,
-      body: { username: "NewUser", password: "secret-password", email: "newuser@example.com" }
+      body: { client: "userland-cli", client_version: "0.0.0", requested_capability: "api_key" }
     });
+    expect(requests.filter((request) => request.url === "/v0/auth/device/poll")).toHaveLength(2);
 
     const saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
     expect(saved).toMatchObject({
       api_key: "created_api_key",
+      api_key_id: "apk_cli",
       api_base_url: api.baseUrl,
+      console_url: "http://console.local",
+      username: "alice",
       account_id: "acct_created"
     });
-    expect(saved).not.toHaveProperty("username");
     expect(saved).not.toHaveProperty("password");
     expect((await fs.stat(credentialsFile)).mode & 0o777).toBe(0o600);
-    expect(await readStoredAccount(keychainFile)).toMatchObject({
-      username: "newuser",
-      password: "secret-password"
-    });
 
-    const list = await runCli(["apps", "list"], api.baseUrl, { apiKey: null, credentialsFile, keychainFile });
+    const list = await runCli(["apps", "list"], api.baseUrl, { apiKey: null, credentialsFile });
     expect(list.code).toBe(0);
     expect(list.stdout).toContain("app_saved");
     expect(requests.find((request) => request.url === "/v0/apps")?.authorization).toBe("Bearer created_api_key");
 
-    const status = await runCli(["auth", "status"], api.baseUrl, { apiKey: null, credentialsFile, keychainFile });
+    const status = await runCli(["auth", "status"], api.baseUrl, { apiKey: null, credentialsFile });
     expect(status.code).toBe(0);
     expect(status.stdout).toContain("api_key=file");
+    expect(status.stdout).toContain("api_key_id=apk_cli");
+    expect(status.stdout).toContain("console_url=http://console.local");
     expect(status.stdout).toContain("account=file");
     expect(status.stdout).toContain("account_id=acct_created");
-    expect(status.stdout).toContain("account_login=keychain");
-    expect(status.stdout).toContain("username=newuser");
+    expect(status.stdout).toContain("username=alice");
+    expect(status.stdout).not.toContain("account_login=");
   });
 
-  test("logs in and can save an existing API key", async () => {
+  test("honors slow_down polling responses", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
-      "POST /v0/auth/token": {
-        api_key: "login_api_key",
-        warning: "Store this API key now. It will not be shown again."
-      },
+      "POST /v0/auth/device/start": deviceStartResponse(),
+      "POST /v0/auth/device/poll": [
+        { ok: false, status: "slow_down", interval: 0 },
+        { ok: true, status: "approved", api_key: "slowed_key", api_key_id: "apk_slow", username: "alice", accounts: [], default_account_id: "acct_slow" }
+      ]
+    });
+    const credentialsFile = await temporaryCredentialsFile();
+
+    const login = await runCli(["login", "--no-browser"], api.baseUrl, {
+      apiKey: null,
+      credentialsFile
+    });
+
+    expect(login.code).toBe(0);
+    expect(requests.filter((request) => request.url === "/v0/auth/device/poll")).toHaveLength(2);
+    const saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    expect(saved.api_key).toBe("slowed_key");
+    expect(saved.account_id).toBe("acct_slow");
+  });
+
+  test("exits without saving credentials when device authorization is denied or expired", async () => {
+    for (const status of ["denied", "expired"] as const) {
+      const requests: RequestRecord[] = [];
+      const api = await startMockApi(requests, {
+        "POST /v0/auth/device/start": deviceStartResponse(),
+        "POST /v0/auth/device/poll": { ok: false, status }
+      });
+      const credentialsFile = await temporaryCredentialsFile();
+
+      const result = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(status === "denied" ? "Device authorization was denied" : "Device authorization expired");
+      await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(requests.filter((request) => request.url === "/v0/auth/device/poll")).toHaveLength(1);
+    }
+  });
+
+  test("signup is an alias for device login", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/auth/device/start": deviceStartResponse(),
+      "POST /v0/auth/device/poll": {
+        ok: true,
+        status: "approved",
+        api_key: "signup_api_key",
+        api_key_id: "apk_signup",
+        username: "newuser",
+        accounts: [],
+        default_account_id: "acct_signup"
+      }
+    });
+    const credentialsFile = await temporaryCredentialsFile();
+
+    const signup = await runCli(["signup", "--no-browser", "--email", "newuser@example.com"], api.baseUrl, { apiKey: null, credentialsFile });
+
+    expect(signup.code).toBe(0);
+    expect(signup.stdout).toContain("Signup uses the same browser approval flow as login.");
+    expect(signup.stdout).toContain("email_hint=newuser@example.com");
+    expect(requests.map((request) => request.url)).not.toContain("/v0/accounts");
+    const saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    expect(saved.api_key).toBe("signup_api_key");
+    expect(saved.account_id).toBe("acct_signup");
+  });
+
+  test("can save an existing API key and log out", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "DELETE /v0/auth/api-keys/apk_manual": { ok: true, revoked: true, api_key_id: "apk_manual" },
       "GET /v0/apps": {
         apps: []
       }
     });
     const credentialsFile = await temporaryCredentialsFile();
-    const keychainFile = `${credentialsFile}.keychain.json`;
 
-    const login = await runCli(["auth", "login", "--username", "dwrtz", "--password", "secret-password"], api.baseUrl, {
+    const saveKey = await runCli(["auth", "save-key", "--api-key", "manual_api_key", "--account", "acct_manual"], api.baseUrl, {
       apiKey: null,
-      credentialsFile,
-      keychainFile
-    });
-
-    expect(login.code).toBe(0);
-    expect(login.stdout).toContain(`Saved API key to ${credentialsFile}`);
-    expect(login.stdout).toContain("Saved account login to test keychain");
-    expect(requests[0]).toMatchObject({
-      method: "POST",
-      url: "/v0/auth/token",
-      authorization: undefined,
-      body: { username: "dwrtz", password: "secret-password" }
-    });
-
-    const saveKey = await runCli(["auth", "save-key", "--username", "dwrtz", "--api-key", "manual_api_key"], api.baseUrl, {
-      apiKey: null,
-      credentialsFile,
-      keychainFile
+      credentialsFile
     });
 
     expect(saveKey.code).toBe(0);
-    const saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    let saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
     expect(saved).toMatchObject({
-      api_key: "manual_api_key"
+      api_key: "manual_api_key",
+      account_id: "acct_manual"
     });
-    expect(saved).not.toHaveProperty("account_id");
     expect(saved).not.toHaveProperty("username");
     expect(saved).not.toHaveProperty("password");
-    expect(await readStoredAccount(keychainFile)).toMatchObject({
-      username: "dwrtz",
-      password: "secret-password"
-    });
 
-    await runCli(["apps", "list"], api.baseUrl, { apiKey: null, credentialsFile, keychainFile });
+    await runCli(["apps", "list"], api.baseUrl, { apiKey: null, credentialsFile });
     expect(requests.find((request) => request.url === "/v0/apps")?.authorization).toBe("Bearer manual_api_key");
-  });
 
-  test("does not require account support from older signup or login responses", async () => {
-    const requests: RequestRecord[] = [];
-    const api = await startMockApi(requests, {
-      "POST /v0/accounts": {
-        username: "legacy",
-        api_key: "legacy_signup_key",
-        warning: "Store this API key now. It will not be shown again."
-      },
-      "POST /v0/auth/token": {
-        api_key: "legacy_login_key",
-        warning: "Store this API key now. It will not be shown again."
-      }
-    });
-    const credentialsFile = await temporaryCredentialsFile();
-    const keychainFile = `${credentialsFile}.keychain.json`;
-    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
-    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_base_url: api.baseUrl, account_id: "acct_stale" }));
-
-    const signup = await runCli(["signup", "--username", "legacy", "--password", "secret-password"], api.baseUrl, {
-      apiKey: null,
-      credentialsFile,
-      keychainFile
-    });
-    expect(signup.code).toBe(0);
-    let saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
-    expect(saved.api_key).toBe("legacy_signup_key");
-    expect(saved).not.toHaveProperty("account_id");
-
-    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_base_url: api.baseUrl, account_id: "acct_stale" }));
-
-    const login = await runCli(["login", "--username", "legacy", "--password", "secret-password"], api.baseUrl, {
-      apiKey: null,
-      credentialsFile,
-      keychainFile
-    });
-    expect(login.code).toBe(0);
     saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
-    expect(saved.api_key).toBe("legacy_login_key");
-    expect(saved).not.toHaveProperty("account_id");
+    saved.api_key_id = "apk_manual";
+    await fs.writeFile(credentialsFile, JSON.stringify(saved));
+
+    const logout = await runCli(["auth", "logout", "--revoke"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(logout.code).toBe(0);
+    expect(logout.stdout).toContain("revoked_api_key_id=apk_manual");
+    expect(logout.stdout).toContain("local_credentials=removed");
+    await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(requests.find((request) => request.url === "/v0/auth/api-keys/apk_manual")).toMatchObject({
+      method: "DELETE",
+      authorization: "Bearer manual_api_key"
+    });
   });
 
   test("prints useful 403 API errors", async () => {
@@ -574,7 +597,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; keychainFile?: string } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return await new Promise((resolve) => {
     const env: NodeJS.ProcessEnv = {
@@ -588,9 +611,6 @@ async function runCli(
     }
     if (options.credentialsFile) {
       env.USERLAND_CREDENTIALS_FILE = options.credentialsFile;
-    }
-    if (options.keychainFile) {
-      env.USERLAND_KEYCHAIN_FILE = options.keychainFile;
     }
     if (options.accountId) {
       env.USERLAND_ACCOUNT_ID = options.accountId;
@@ -623,15 +643,20 @@ async function temporaryCredentialsFile(): Promise<string> {
   return path.join(dir, ".userland", "credentials.json");
 }
 
-async function readStoredAccount(keychainFile: string): Promise<Record<string, unknown> | undefined> {
-  const raw = JSON.parse(await fs.readFile(keychainFile, "utf8")) as Record<string, string>;
-  const credentials = raw["fun.userland.cli:default"];
-  return credentials ? (JSON.parse(credentials) as Record<string, unknown>) : undefined;
+function deviceStartResponse(): Record<string, unknown> {
+  return {
+    device_code: "dev_test_device_code",
+    user_code: "ABCD-EFGH",
+    verification_uri: "http://console.local/device",
+    verification_uri_complete: "http://console.local/device?code=ABCD-EFGH",
+    expires_in: 60,
+    interval: 0
+  };
 }
 
 async function startMockApi(
   requests: RequestRecord[],
-  routes: Record<string, unknown>
+  routes: Record<string, unknown | unknown[]>
 ): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   const server = createServer(async (request, response) => {
     await handleRequest(request, response, requests, routes);
@@ -653,7 +678,7 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   requests: RequestRecord[],
-  routes: Record<string, unknown>
+  routes: Record<string, unknown | unknown[]>
 ): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -677,7 +702,8 @@ async function handleRequest(
     return;
   }
 
-  const route = routes[key];
+  const configuredRoute = routes[key];
+  const route = Array.isArray(configuredRoute) ? configuredRoute.shift() : configuredRoute;
   if (typeof route === "object" && route !== null && "__status" in route) {
     const { __status, ...body } = route as { __status: number; [key: string]: unknown };
     response.writeHead(__status, { "content-type": "application/json" });

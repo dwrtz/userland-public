@@ -17,10 +17,13 @@ npm install -g @userland.fun/cli
 Then run:
 
 ```sh
-userland signup --username <username>
-userland login --username <username>
+userland login
+userland login --no-browser
+userland signup
 userland auth status
-userland auth save-key --username <username> --api-key <api-key>
+userland auth save-key --api-key <api-key>
+userland auth logout
+userland auth logout --revoke
 userland accounts list
 userland accounts use <account-id>
 userland accounts status --account <account-id>
@@ -45,10 +48,13 @@ userland apps domains verify <app-id> <hostname>
 From this repo, the same commands can be run from source:
 
 ```sh
-npm run userland -- signup --username <username>
-npm run userland -- login --username <username>
+npm run userland -- login
+npm run userland -- login --no-browser
+npm run userland -- signup
 npm run userland -- auth status
-npm run userland -- auth save-key --username <username> --api-key <api-key>
+npm run userland -- auth save-key --api-key <api-key>
+npm run userland -- auth logout
+npm run userland -- auth logout --revoke
 npm run userland -- accounts list
 npm run userland -- accounts use <account-id>
 npm run userland -- accounts status --account <account-id>
@@ -70,7 +76,9 @@ npm run userland -- apps domains add <app-id> <hostname>
 npm run userland -- apps domains verify <app-id> <hostname>
 ```
 
-`signup`, `login`, and `auth save-key` save the API key to `~/.userland/credentials.json` with `0600` permissions. Account username and password are stored in the OS keychain: macOS Keychain, Windows Credential Manager, or Linux Secret Service through `secret-tool`. App commands prefer `USERLAND_API_KEY` when it is set, then fall back to the saved API key.
+`login` starts a browser device-authorization flow. The CLI prints a verification URL and user code, opens the browser when possible, waits for approval, then saves the returned API key to `~/.userland/credentials.json` with `0600` permissions. `signup` is an alias for the same flow; if the email is new, account creation happens in the browser after email proof.
+
+The CLI does not store platform passwords. App commands prefer `USERLAND_API_KEY` when it is set, then fall back to the saved API key. `auth save-key` remains available for CI, support, and manually copied API keys.
 
 Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team, client, and agency workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
 
