@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - 2026-05-23
+
+- Send the `@userland.fun/cli` package version in browser device-authorization requests.
+
 ## 0.3.0 - 2026-05-23
 
 - Replace CLI username/password signup and login with browser-approved device authorization.

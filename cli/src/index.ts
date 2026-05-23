@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 
 const DEFAULT_API_BASE_URL = "https://api.userland.fun";
 const DEFAULT_CONSOLE_BASE_URL = "https://console.userland.fun";
-const CLI_VERSION = "0.0.0";
+const CLI_VERSION = readCliVersion();
+
+function readCliVersion(): string {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("Unable to read CLI package version");
+  }
+
+  return packageJson.version;
+}
 
 interface CliOptions {
   account?: string;
