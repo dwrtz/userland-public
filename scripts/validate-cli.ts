@@ -28,10 +28,12 @@ const requiredSourcePatterns = [
   'command === "signup"',
   'command === "login"',
   'command === "publish"',
+  'command === "--version"',
   'command === "releases" || command === "versions"'
 ];
 
 const requiredReadmeSnippets = [
+  "userland --version",
   "userland signup",
   "userland login",
   "userland auth status",
@@ -47,6 +49,7 @@ const requiredReadmeSnippets = [
   "userland apps events",
   "USERLAND_ACCOUNT_ID",
   "--account",
+  "npm run userland -- --version",
   "npm run userland -- signup",
   "npm run userland -- login",
   "npm run userland -- auth status",

@@ -30,7 +30,18 @@ describe("public CLI", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("userland --version");
     expect(result.stdout).toContain("userland apps publish");
+    expect(result.stderr).toBe("");
+  });
+
+  test("prints the CLI package version", async () => {
+    const cliPackageVersion = await readCliPackageVersion();
+
+    const result = await runCli(["--version"], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(`${cliPackageVersion}\n`);
     expect(result.stderr).toBe("");
   });
 

@@ -62,6 +62,7 @@ npm install -g @userland.fun/cli
 Then run:
 
 ```sh
+userland --version
 userland login
 userland apps publish examples/<example-slug>
 userland accounts list

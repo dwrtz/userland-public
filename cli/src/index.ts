@@ -262,6 +262,11 @@ async function main(): Promise<void> {
     usage(0);
   }
 
+  if (isVersionCommand(command)) {
+    console.log(CLI_VERSION);
+    return;
+  }
+
   if (command === "apps") {
     await appsCommand(args);
     return;
@@ -1623,9 +1628,14 @@ function isHelpCommand(command: string | undefined): boolean {
   return command === "--help" || command === "-h" || command === "help";
 }
 
+function isVersionCommand(command: string | undefined): boolean {
+  return command === "--version" || command === "version";
+}
+
 function usage(exitCode: number): never {
   const message = `Usage:
   userland [--help]
+  userland --version
   userland signup [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
   userland login [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
   userland auth status
