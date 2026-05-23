@@ -23,6 +23,7 @@ userland signup
 userland auth status
 userland auth save-key --api-key <api-key>
 userland auth logout
+userland auth logout --revoke
 userland accounts list
 userland accounts use <account-id>
 userland accounts status --account <account-id>
@@ -53,6 +54,7 @@ npm run userland -- signup
 npm run userland -- auth status
 npm run userland -- auth save-key --api-key <api-key>
 npm run userland -- auth logout
+npm run userland -- auth logout --revoke
 npm run userland -- accounts list
 npm run userland -- accounts use <account-id>
 npm run userland -- accounts status --account <account-id>
