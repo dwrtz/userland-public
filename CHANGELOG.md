@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-06-02
+
+- Remove public platform-admin command routing, help text, README examples, and mocked routing tests.
+- Move platform-admin operations to private internal tooling in `dwrtz/userland`.
+- Add a validation guard so platform-admin endpoints are not reintroduced into the public CLI package.
+
 ## 0.4.0 - 2026-05-23
 
 - Add `userland auth api-keys list`, `create`, `rename`, and `revoke` commands.

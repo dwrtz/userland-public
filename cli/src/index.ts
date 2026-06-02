@@ -40,19 +40,9 @@ interface EventsOptions {
   limit?: string;
 }
 
-interface ReasonOptions {
-  account?: string;
-  reason?: string;
-}
-
 interface DowngradePreviewOptions {
   account?: string;
   to?: string;
-}
-
-interface RouteDisableOptions {
-  reason?: string;
-  status?: string;
 }
 
 interface ApiKeyOptions {
@@ -321,11 +311,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "ops") {
-    await opsCommand(args);
-    return;
-  }
-
   if (command === "signup") {
     await signupCommand(args);
     return;
@@ -464,62 +449,6 @@ async function accountsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "downgrade" && rest[0] === "preview") {
     await downgradePreviewCommand(rest.slice(1));
-    return;
-  }
-  usage(1);
-}
-
-async function opsCommand(args: string[]): Promise<void> {
-  const [scope, subcommand, id, actionOrFlag, ...rest] = args;
-  if (scope === "accounts" && subcommand === "status" && id) {
-    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/accounts/${encodeURIComponent(id)}/status`, { method: "GET" }));
-    return;
-  }
-  if (scope === "accounts" && subcommand === "flag" && id && actionOrFlag) {
-    await printObject(await opsFlagCommand("accounts", id, actionOrFlag, rest, false));
-    return;
-  }
-  if (scope === "accounts" && subcommand === "clear" && id && actionOrFlag) {
-    await printObject(await opsFlagCommand("accounts", id, actionOrFlag, rest, true));
-    return;
-  }
-  if (scope === "apps" && subcommand === "status" && id) {
-    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/apps/${encodeURIComponent(id)}/status`, { method: "GET" }));
-    return;
-  }
-  if (scope === "apps" && subcommand === "flag" && id && actionOrFlag) {
-    await printObject(await opsFlagCommand("apps", id, actionOrFlag, rest, false));
-    return;
-  }
-  if (scope === "apps" && subcommand === "clear" && id && actionOrFlag) {
-    await printObject(await opsFlagCommand("apps", id, actionOrFlag, rest, true));
-    return;
-  }
-  if (scope === "apps" && subcommand === "takedown" && id) {
-    const options = parseReasonOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
-    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/apps/${encodeURIComponent(id)}/takedown`, {
-      method: "POST",
-      body: JSON.stringify(bodyWithReason(options))
-    }));
-    return;
-  }
-  if (scope === "routes" && subcommand === "disable" && id) {
-    const options = parseRouteDisableOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
-    if (!options.status) {
-      usage(1);
-    }
-    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/routes/${encodeURIComponent(id)}/disable`, {
-      method: "POST",
-      body: JSON.stringify({ status: options.status, ...bodyWithReason(options) })
-    }));
-    return;
-  }
-  if (scope === "routes" && subcommand === "enable" && id) {
-    const options = parseReasonOptions([actionOrFlag, ...rest].filter((value): value is string => value !== undefined));
-    await printObject(await apiFetch<Record<string, unknown>>(`/v0/ops/routes/${encodeURIComponent(id)}/enable`, {
-      method: "POST",
-      body: JSON.stringify(bodyWithReason(options))
-    }));
     return;
   }
   usage(1);
@@ -1056,14 +985,6 @@ async function appDomainsCommand(args: string[]): Promise<void> {
   usage(1);
 }
 
-async function opsFlagCommand(scope: "accounts" | "apps", id: string, flag: string, args: string[], clear: boolean): Promise<Record<string, unknown>> {
-  const options = parseReasonOptions(args);
-  return await apiFetch<Record<string, unknown>>(`/v0/ops/${scope}/${encodeURIComponent(id)}/flags/${encodeURIComponent(flag)}${clear ? "/clear" : ""}`, {
-    method: clear ? "POST" : "PUT",
-    body: JSON.stringify(bodyWithReason(options))
-  });
-}
-
 async function resolveAccountId(explicitAccountId: string | undefined): Promise<string> {
   const credentials = await readCredentials();
   const accountId = selectedAccountId(explicitAccountId, credentials);
@@ -1130,10 +1051,6 @@ function printOptionalBoolean(label: string, value: unknown): void {
   if (typeof value === "boolean") {
     console.log(`${label}=${value}`);
   }
-}
-
-function bodyWithReason(options: { reason?: string }): Record<string, string> {
-  return options.reason ? { reason: options.reason } : {};
 }
 
 async function readPublishDirectory(rootDir: string, options: CliOptions): Promise<Record<string, unknown>> {
@@ -1562,36 +1479,6 @@ function parseDowngradePreviewOptions(args: string[]): DowngradePreviewOptions {
   return options;
 }
 
-function parseReasonOptions(args: string[]): ReasonOptions {
-  const options: ReasonOptions = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--reason") {
-      options.reason = args[++index];
-    } else if (arg === "--account") {
-      options.account = args[++index];
-    } else {
-      throw new Error(`Unknown option: ${arg}`);
-    }
-  }
-  return options;
-}
-
-function parseRouteDisableOptions(args: string[]): RouteDisableOptions {
-  const options: RouteDisableOptions = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--status") {
-      options.status = args[++index];
-    } else if (arg === "--reason") {
-      options.reason = args[++index];
-    } else {
-      throw new Error(`Unknown option: ${arg}`);
-    }
-  }
-  return options;
-}
-
 function parseAccountOptions(args: string[]): { account?: string } {
   const options: { account?: string } = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -1824,15 +1711,6 @@ function usage(exitCode: number): never {
   userland apps domains add <app-id> <hostname> [--account <account-id>]
   userland apps domains verify <app-id> <hostname> [--account <account-id>]
   userland apps domains remove <app-id> <hostname> [--account <account-id>]
-  userland ops accounts status <account-id>
-  userland ops accounts flag <account-id> <flag> [--reason <text>]
-  userland ops accounts clear <account-id> <flag> [--reason <text>]
-  userland ops apps status <app-id>
-  userland ops apps flag <app-id> <flag> [--reason <text>]
-  userland ops apps clear <app-id> <flag> [--reason <text>]
-  userland ops apps takedown <app-id> [--reason <text>]
-  userland ops routes disable <route-id> --status <disabled_abuse|disabled_billing|disabled_downgrade> [--reason <text>]
-  userland ops routes enable <route-id> [--reason <text>]
 
 Aliases:
   userland auth signup [--no-browser] [--email <email>] [--no-save]
