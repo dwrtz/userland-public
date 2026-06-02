@@ -32,6 +32,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("userland --version");
     expect(result.stdout).toContain("userland apps publish");
+    expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
   });
 
@@ -407,33 +408,6 @@ describe("public CLI", () => {
     await expectCommand(["apps", "domains", "remove", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "deleted");
     expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("POST /v0/apps/app_ops/domains/www.example.com/verify");
     expect(requests.every((request) => request.accountId === "acct_ops")).toBe(true);
-  });
-
-  test("supports internal ops command routing", async () => {
-    const requests: RequestRecord[] = [];
-    const api = await startMockApi(requests, {
-      "GET /v0/ops/accounts/acct_ops/status": { account_id: "acct_ops", billing_access_state: "active", account_flags: [] },
-      "PUT /v0/ops/accounts/acct_ops/flags/suspended_abuse": { account_id: "acct_ops", flag: "suspended_abuse", active: true },
-      "POST /v0/ops/accounts/acct_ops/flags/suspended_abuse/clear": { account_id: "acct_ops", flag: "suspended_abuse", active: false },
-      "GET /v0/ops/apps/app_ops/status": { app_id: "app_ops", suspended: false },
-      "PUT /v0/ops/apps/app_ops/flags/suspended_security": { app_id: "app_ops", flag: "suspended_security", active: true },
-      "POST /v0/ops/apps/app_ops/flags/suspended_security/clear": { app_id: "app_ops", flag: "suspended_security", active: false },
-      "POST /v0/ops/apps/app_ops/takedown": { app_id: "app_ops", flag: "takedown_legal", active: true },
-      "POST /v0/ops/routes/route_ops/disable": { route_id: "route_ops", status: "disabled_abuse" },
-      "POST /v0/ops/routes/route_ops/enable": { route_id: "route_ops", status: "active" }
-    });
-
-    await expectCommand(["ops", "accounts", "status", "acct_ops"], api.baseUrl, "account_id=acct_ops");
-    await expectCommand(["ops", "accounts", "flag", "acct_ops", "suspended_abuse", "--reason", "spam"], api.baseUrl, "active=true");
-    expect(requests.at(-1)?.body).toEqual({ reason: "spam" });
-    await expectCommand(["ops", "accounts", "clear", "acct_ops", "suspended_abuse"], api.baseUrl, "active=false");
-    await expectCommand(["ops", "apps", "status", "app_ops"], api.baseUrl, "suspended=false");
-    await expectCommand(["ops", "apps", "flag", "app_ops", "suspended_security"], api.baseUrl, "active=true");
-    await expectCommand(["ops", "apps", "clear", "app_ops", "suspended_security"], api.baseUrl, "active=false");
-    await expectCommand(["ops", "apps", "takedown", "app_ops", "--reason", "legal"], api.baseUrl, "flag=takedown_legal");
-    await expectCommand(["ops", "routes", "disable", "route_ops", "--status", "disabled_abuse", "--reason", "spam"], api.baseUrl, "status=disabled_abuse");
-    expect(requests.at(-1)?.body).toEqual({ status: "disabled_abuse", reason: "spam" });
-    await expectCommand(["ops", "routes", "enable", "route_ops"], api.baseUrl, "status=active");
   });
 
   test("logs in with device flow, stores credentials, and uses the saved API key", async () => {

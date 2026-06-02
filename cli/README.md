@@ -127,20 +127,6 @@ userland apps domains verify <app-id> <hostname> --account <account-id>
 userland apps domains remove <app-id> <hostname> --account <account-id>
 ```
 
-Internal/platform-admin only operations are routed by the CLI but authorized server-side:
-
-```sh
-userland ops accounts status <account-id>
-userland ops accounts flag <account-id> suspended_abuse --reason "spam"
-userland ops accounts clear <account-id> suspended_abuse --reason "reviewed"
-userland ops apps status <app-id>
-userland ops apps flag <app-id> suspended_security --reason "incident"
-userland ops apps clear <app-id> suspended_security --reason "resolved"
-userland ops apps takedown <app-id> --reason "legal review"
-userland ops routes disable <route-id> --status disabled_abuse --reason "abuse"
-userland ops routes enable <route-id> --reason "resolved"
-```
-
 Structured API errors keep details on separate lines:
 
 ```text

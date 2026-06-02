@@ -69,9 +69,27 @@ const requiredReadmeSnippets = [
   "https://docs.userland.fun/reference/cli"
 ];
 
+const operatorCommand = "ops";
+const operatorApiPrefix = `/v0/${operatorCommand}`;
+const operatorCliPrefix = `userland ${operatorCommand}`;
+
+const forbiddenSourcePatterns = [
+  `command === "${operatorCommand}"`,
+  operatorApiPrefix,
+  operatorCliPrefix
+];
+
+const forbiddenReadmeSnippets = [
+  operatorApiPrefix,
+  operatorCliPrefix,
+  "Internal/platform-admin only operations"
+];
+
 const failures = [
   ...missing("cli/src/index.ts", cliSource, requiredSourcePatterns),
   ...missing("cli/README.md", cliReadme, requiredReadmeSnippets),
+  ...present("cli/src/index.ts", cliSource, forbiddenSourcePatterns),
+  ...present("cli/README.md", cliReadme, forbiddenReadmeSnippets),
   ...validatePackage()
 ];
 
@@ -81,6 +99,10 @@ if (failures.length > 0) {
 
 function missing(filePath: string, contents: string, snippets: string[]): string[] {
   return snippets.filter((snippet) => !contents.includes(snippet)).map((snippet) => `${filePath} is missing ${JSON.stringify(snippet)}`);
+}
+
+function present(filePath: string, contents: string, snippets: string[]): string[] {
+  return snippets.filter((snippet) => contents.includes(snippet)).map((snippet) => `${filePath} must not include ${JSON.stringify(snippet)}`);
 }
 
 function validatePackage(): string[] {
