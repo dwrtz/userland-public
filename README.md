@@ -67,6 +67,7 @@ userland login
 userland apps publish examples/<example-slug>
 userland accounts list
 userland accounts use <account-id>
+userland support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
 USERLAND_ACCOUNT_ID=<account-id> userland apps list
 ```
 
@@ -76,6 +77,7 @@ From this repo, run it from source:
 npm run userland -- login
 npm run userland -- apps publish examples/<example-slug>
 npm run userland -- apps publish examples/<example-slug> --account <account-id>
+npm run userland -- support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
 ```
 
 The CLI starts a browser device-authorization flow for login and signup, then keeps the approved API key and optional selected `account_id` in `~/.userland/credentials.json`. It does not store platform passwords. Most single-user flows do not need account selection; use it when publishing into a team or client account.

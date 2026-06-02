@@ -27,6 +27,14 @@ interface CliOptions {
   message?: string;
 }
 
+interface SupportOptions {
+  account?: string;
+  app?: string;
+  json?: boolean;
+  message?: string;
+  subject?: string;
+}
+
 interface SecretSetOptions {
   account?: string;
   value?: string;
@@ -279,6 +287,12 @@ interface RouteResponse {
   route: RouteRecord;
 }
 
+interface SupportRequestResponse {
+  status: "sent";
+  correlation_id: string;
+  reply_to_email: string;
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
 
@@ -308,6 +322,11 @@ async function main(): Promise<void> {
 
   if (command === "accounts") {
     await accountsCommand(args);
+    return;
+  }
+
+  if (command === "support") {
+    await supportCommand(args);
     return;
   }
 
@@ -449,6 +468,15 @@ async function accountsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "downgrade" && rest[0] === "preview") {
     await downgradePreviewCommand(rest.slice(1));
+    return;
+  }
+  usage(1);
+}
+
+async function supportCommand(args: string[]): Promise<void> {
+  const [subcommand, ...rest] = args;
+  if (subcommand === "open") {
+    await supportOpenCommand(rest);
     return;
   }
   usage(1);
@@ -758,6 +786,40 @@ async function downgradePreviewCommand(args: string[]): Promise<void> {
   for (const action of response.actions) {
     console.log(`action=${formatFields(action)}`);
   }
+}
+
+async function supportOpenCommand(args: string[]): Promise<void> {
+  const options = parseSupportOptions(args);
+  const subject = options.subject?.trim();
+  if (!subject) {
+    throw new Error("--subject is required.");
+  }
+  const message = (options.message ?? (await readStdin())).trim();
+  if (!message) {
+    throw new Error("--message is required or provide message on stdin.");
+  }
+
+  const body: Record<string, string> = {
+    subject,
+    message
+  };
+  if (options.app) {
+    body.app_id = options.app;
+  }
+
+  const response = await apiFetch<SupportRequestResponse>("/v0/support/requests", {
+    method: "POST",
+    body: JSON.stringify(body)
+  }, { accountId: options.account, accountScoped: true });
+
+  if (options.json) {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+
+  console.log("Support request sent.");
+  console.log(`correlation_id=${response.correlation_id}`);
+  console.log(`reply_to_email=${response.reply_to_email}`);
 }
 
 async function publishCommand(args: string[]): Promise<void> {
@@ -1382,6 +1444,27 @@ function parseOptions(args: string[]): CliOptions {
   return options;
 }
 
+function parseSupportOptions(args: string[]): SupportOptions {
+  const options: SupportOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--subject") {
+      options.subject = args[++index];
+    } else if (arg === "--message") {
+      options.message = args[++index];
+    } else if (arg === "--app") {
+      options.app = args[++index];
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function parseAuthOptions(args: string[]): AuthOptions {
   const options: AuthOptions = { save: true };
   for (let index = 0; index < args.length; index += 1) {
@@ -1696,6 +1779,7 @@ function usage(exitCode: number): never {
   userland accounts status [--account <account-id>]
   userland accounts limits [--account <account-id>]
   userland accounts downgrade preview --to <plan> [--account <account-id>]
+  userland support open --subject <subject> [--message <message>] [--app <app-id>] [--account <account-id>] [--json]
   userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
   userland apps list [--account <account-id>]
   userland apps status <app-id> [--account <account-id>]
