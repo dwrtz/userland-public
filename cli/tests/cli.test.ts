@@ -32,6 +32,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("userland --version");
     expect(result.stdout).toContain("userland apps publish");
+    expect(result.stdout).toContain("userland support open");
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
   });
@@ -184,6 +185,83 @@ describe("public CLI", () => {
     expect(fromFile.code).toBe(0);
     expect(requests.at(-1)?.authorization).toBe("Bearer saved_key");
     expect(requests.at(-1)?.accountId).toBe("acct_file");
+  });
+
+  test("opens support requests with explicit messages or stdin", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/support/requests": [
+        {
+          status: "sent",
+          correlation_id: "sup_message",
+          reply_to_email: "alice@example.com"
+        },
+        {
+          status: "sent",
+          correlation_id: "sup_stdin",
+          reply_to_email: "alice@example.com"
+        }
+      ]
+    });
+
+    const message = await runCli([
+      "support",
+      "open",
+      "--subject",
+      "Deploy failed",
+      "--message",
+      "The latest release is throwing errors.",
+      "--app",
+      "app_ops",
+      "--account",
+      "acct_support"
+    ], api.baseUrl);
+
+    expect(message.code).toBe(0);
+    expect(message.stdout).toContain("Support request sent.");
+    expect(message.stdout).toContain("correlation_id=sup_message");
+    expect(message.stdout).toContain("reply_to_email=alice@example.com");
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      url: "/v0/support/requests",
+      authorization: "Bearer test_api_key",
+      accountId: "acct_support",
+      body: {
+        subject: "Deploy failed",
+        message: "The latest release is throwing errors.",
+        app_id: "app_ops"
+      }
+    });
+
+    const stdin = await runCli(["support", "open", "--subject", "Logs look wrong", "--json"], api.baseUrl, {
+      stdin: "Here are details from stdin.\n"
+    });
+
+    expect(stdin.code).toBe(0);
+    expect(JSON.parse(stdin.stdout)).toEqual({
+      status: "sent",
+      correlation_id: "sup_stdin",
+      reply_to_email: "alice@example.com"
+    });
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      url: "/v0/support/requests",
+      accountId: undefined,
+      body: {
+        subject: "Logs look wrong",
+        message: "Here are details from stdin."
+      }
+    });
+  });
+
+  test("requires support subject and message", async () => {
+    const missingSubject = await runCli(["support", "open", "--message", "hello"], "http://127.0.0.1:1");
+    expect(missingSubject.code).toBe(1);
+    expect(missingSubject.stderr).toContain("--subject is required.");
+
+    const missingMessage = await runCli(["support", "open", "--subject", "Need help"], "http://127.0.0.1:1");
+    expect(missingMessage.code).toBe(1);
+    expect(missingMessage.stderr).toContain("--message is required or provide message on stdin.");
   });
 
   test("lists and selects accounts", async () => {
@@ -666,7 +744,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
@@ -689,12 +767,15 @@ async function runCli(
     const child = spawn(process.execPath, ["--import", "tsx", path.join("cli", "src", "index.ts"), ...args], {
       cwd: repoRoot,
       env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    if (options.stdin !== undefined) {
+      child.stdin?.end(options.stdin);
+    }
     child.on("close", (code) => {
       resolve({
         code,

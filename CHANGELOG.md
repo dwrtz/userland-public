@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 - 2026-06-02
+
+- Add `userland support open` for authenticated support requests with optional app and account context.
+- Support reading request details from `--message` or stdin, and add `--json` output for scripts.
+
 ## 0.5.0 - 2026-06-02
 
 - Remove public platform-admin command routing, help text, README examples, and mocked routing tests.

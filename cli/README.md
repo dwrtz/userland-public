@@ -34,6 +34,7 @@ userland accounts use <account-id>
 userland accounts status --account <account-id>
 userland accounts limits --account <account-id>
 userland accounts downgrade preview --to free --account <account-id>
+userland support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
 userland apps publish examples/<example-slug>
 userland apps publish examples/<example-slug> --account <account-id>
 userland apps list
@@ -70,6 +71,7 @@ npm run userland -- accounts use <account-id>
 npm run userland -- accounts status --account <account-id>
 npm run userland -- accounts limits --account <account-id>
 npm run userland -- accounts downgrade preview --to free --account <account-id>
+npm run userland -- support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
 npm run userland -- apps publish examples/<example-slug>
 npm run userland -- apps publish examples/<example-slug> --account <account-id>
 npm run userland -- apps list
@@ -113,6 +115,16 @@ userland apps status <app-id> --account <account-id>
 ```
 
 `accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts.
+
+Support requests:
+
+```sh
+userland support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
+printf '%s\n' "Details from logs or terminal output." | userland support open --subject "Runtime errors" --app <app-id>
+userland support open --subject "Billing question" --message "Please look at this account." --account <account-id>
+```
+
+`support open` sends a request to Userland support using the selected account. The response includes a `correlation_id` for follow-up; pass `--json` when scripting.
 
 Route management:
 
