@@ -70,7 +70,11 @@ To remove demo mode completely:
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/booking-app --message "First release"
 ```
 
@@ -84,7 +88,13 @@ userland apps publish examples/booking-app --app "$APP_ID" --message "Update les
 
 Create an owner invite through the Userland API. The response includes an `invite_url`; the owner opens it and sets a password.
 
+The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
+
 ```sh
+userland auth api-keys create --name "booking-app owner invite"
+export USERLAND_API_KEY="<the key printed under API key:>"
+export APP_ID="<the app_id from the publish output>"
+
 curl -fsS -X POST \
   -H "authorization: Bearer $USERLAND_API_KEY" \
   -H 'content-type: application/json' \
@@ -92,7 +102,7 @@ curl -fsS -X POST \
   "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
 ```
 
-After that, the owner signs in at `<origin>/studio`. The app does not allow public sign-up (`public_signup: false`).
+After that, the owner signs in at `<origin>/studio`. The app does not allow public sign-up (`public_signup: false`). Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
 
 ## Verify
 

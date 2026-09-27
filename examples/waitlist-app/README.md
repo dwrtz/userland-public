@@ -77,7 +77,11 @@ tests/                   vitest tests with an in-memory ctx
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/waitlist-app --message "Waitlist app"
 ```
 
@@ -85,9 +89,13 @@ The CLI prints `app_id`, `origin`, and `release_id`. Note them in your README so
 
 ## Make yourself the owner
 
-Owner pages are closed until an app user with the `owner` role exists. Create an invite with your platform API key (it stays on your machine, never in the app):
+Owner pages are closed until an app user with the `owner` role exists. The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
 
 ```sh
+userland auth api-keys create --name "waitlist-app owner invite"
+export USERLAND_API_KEY="<the key printed under API key:>"
+export APP_ID="<the app_id from the publish output>"
+
 curl -fsS -X POST \
   -H "authorization: Bearer $USERLAND_API_KEY" \
   -H 'content-type: application/json' \
@@ -95,7 +103,7 @@ curl -fsS -X POST \
   "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
 ```
 
-Open the `invite_url` from the response, choose a password, and you're signed in. Later, sign in at `<origin>/_userland/auth/login?return_to=/admin`.
+Open the `invite_url` from the response, choose a password, and you're signed in. Later, sign in at `<origin>/_userland/auth/login?return_to=/admin`. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
 
 ## Verify
 

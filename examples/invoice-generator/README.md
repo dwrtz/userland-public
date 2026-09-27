@@ -45,10 +45,22 @@ tests/                   vitest tests on the shared fake runtime (scripts/runtim
 
 ## The owner sign-in
 
-`/desk` routes call `ctx.auth.requireRole(request, "owner")`. A signed-out visitor is sent to Userland's sign-in page (`/_userland/auth/login`); a signed-in user without the role gets a 403. Public signup is off, so the owner is invited after the first publish:
+`/desk` routes call `ctx.auth.requireRole(request, "owner")`. A signed-out visitor is sent to Userland's sign-in page (`/_userland/auth/login`); a signed-in user without the role gets a 403. Public signup is off, so the owner is invited after the first publish.
+
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
 
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/invoice-generator --message "First release"
+```
+
+The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment:
+
+```sh
+userland auth api-keys create --name "invoice-generator owner invite"
+export USERLAND_API_KEY="<the key printed under API key:>"
+export APP_ID="<the app_id from the publish output>"
 
 curl -fsS -X POST \
   -H "authorization: Bearer $USERLAND_API_KEY" \
@@ -57,7 +69,7 @@ curl -fsS -X POST \
   "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
 ```
 
-The response includes an `invite_url` where the owner sets a password and signs in. Run the curl from your own terminal; the API key never goes into the app.
+The response includes an `invite_url` where the owner sets a password and signs in. Run these commands in your own terminal; the API key never goes into the app. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
 
 See https://docs.userland.fun/guides/auth for invites and sessions.
 

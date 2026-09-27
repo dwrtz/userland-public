@@ -49,7 +49,11 @@ tests/                   vitest tests with an in-memory Userland ctx
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/link-in-bio-app --message "First release"
 ```
 
@@ -61,9 +65,13 @@ userland apps publish examples/link-in-bio-app --app "$APP_ID" --message "Update
 
 ### Make yourself the owner
 
-Invite your email with the `owner` role through the Userland API (the invite creates an app user for this app only):
+Invite your email with the `owner` role through the Userland API (the invite creates an app user for this app only). The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
 
 ```sh
+userland auth api-keys create --name "link-in-bio-app owner invite"
+export USERLAND_API_KEY="<the key printed under API key:>"
+export APP_ID="<the app_id from the publish output>"
+
 curl -fsS -X POST \
   -H "authorization: Bearer $USERLAND_API_KEY" \
   -H 'content-type: application/json' \
@@ -71,7 +79,7 @@ curl -fsS -X POST \
   "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
 ```
 
-Open the invite link, set a password, then visit `/admin`. After that, open **Links** and click **Add starter links** to fill the page from `server/content.js`, then edit them.
+Open the invite link, set a password, then visit `/admin`. After that, open **Links** and click **Add starter links** to fill the page from `server/content.js`, then edit them. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
 
 ### Undo a release
 

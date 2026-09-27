@@ -25,7 +25,7 @@ Steps:
 4. Keep lead creation and stage changes in `ctx.data.transaction` so a lead and its history entry are saved together.
 5. For a real business, remove demo mode (see below) before sharing the link with customers.
 6. Validate the manifest with `npm run validate:manifests` and test with `npx vitest run examples/mini-crm`.
-7. Publish with `userland apps publish <dir> --message "..."`. Then invite the owner as an app user with the `owner` role through `POST /v0/apps/:app_id/admin-invites` (see the Auth guide). The invite link lets them set a password and sign in at `/_userland/auth/login`.
+7. Publish with `userland apps publish <dir> --message "..."`. Then invite the owner as an app user with the `owner` role through `POST /v0/apps/:app_id/admin-invites` (see the Auth guide). The invite link lets them set a password and sign in at `/_userland/auth/login`. Before publishing, install the CLI with `npm install -g @userland.fun/cli` and sign in with `userland login` (it opens the browser to approve the CLI and never asks for a password). The invite call needs an API key in `USERLAND_API_KEY`, but `userland login` saves its key to `~/.userland/credentials.json`, not the environment: have the owner run `userland auth api-keys create --name "owner invite"` and export the printed key and the app id in their own terminal (README.md shows the commands), then unset and revoke that key once they have signed in.
 8. Record the app ID and release ID in the project README so later publishes use `--app <app-id>`.
 
 Demo mode:

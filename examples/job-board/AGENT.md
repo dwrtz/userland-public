@@ -24,7 +24,7 @@ Steps:
 4. To add a listing field: declare it in the manifest, add limits in `FIELD_LIMITS`, copy it in `toListing`, add it to the form in `listingFields`, and add it to `PRIVATE_FIELDS` if the public must not see it.
 5. Keep every `where` and `order_by` field inside a declared index. The Free plan allows 2 indexes per collection and 2 collections.
 6. Test with `npx vitest run examples/job-board`.
-7. Publish with `userland apps publish <dir> --message "..."`, record the app ID and release ID in the README, then create an owner invite with `POST /v0/apps/:app_id/admin-invites` and `{"email": "...", "roles": ["owner"]}`.
+7. Publish with `userland apps publish <dir> --message "..."`, record the app ID and release ID in the README, then create an owner invite with `POST /v0/apps/:app_id/admin-invites` and `{"email": "...", "roles": ["owner"]}`. Before publishing, install the CLI with `npm install -g @userland.fun/cli` and sign in with `userland login` (it opens the browser to approve the CLI and never asks for a password). The invite call needs an API key in `USERLAND_API_KEY`, but `userland login` saves its key to `~/.userland/credentials.json`, not the environment: have the owner run `userland auth api-keys create --name "owner invite"` and export the printed key and the app id in their own terminal (README.md shows the commands), then unset and revoke that key once they have signed in.
 
 Safety:
 

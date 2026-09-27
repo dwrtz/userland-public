@@ -23,7 +23,7 @@ Steps:
 4. Change fields in `manifest.userland.json` and `server/store.js` together. `where` and `order_by` fields must be in an index. The Free plan allows two collections with two indexes each; keep line items in the `json` field instead of adding a third collection.
 5. Keep status changes inside `TRANSITIONS` and conversions inside `ctx.data.transaction`.
 6. Run `npx vitest run examples/invoice-generator` (update tests when you change routes or rules).
-7. Publish with `userland apps publish <dir> --message "..."`, then invite the owner with `POST /v0/apps/:app_id/admin-invites` and `{"roles":["owner"]}`.
+7. Publish with `userland apps publish <dir> --message "..."`, then invite the owner with `POST /v0/apps/:app_id/admin-invites` and `{"roles":["owner"]}`. Before publishing, install the CLI with `npm install -g @userland.fun/cli` and sign in with `userland login` (it opens the browser to approve the CLI and never asks for a password). The invite call needs an API key in `USERLAND_API_KEY`, but `userland login` saves its key to `~/.userland/credentials.json`, not the environment: have the owner run `userland auth api-keys create --name "owner invite"` and export the printed key and the app id in their own terminal (README.md shows the commands), then unset and revoke that key once they have signed in.
 8. Tell the owner the link, how to sign in, that it runs on Free, and how to roll back (`userland apps releases`, `userland apps rollback`).
 
 Safety:
