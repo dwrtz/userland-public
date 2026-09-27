@@ -14,7 +14,8 @@ export const DEMO = "https://waitlist-demo.apps.userland.fun";
 
 // An in-memory ctx that follows the runtime rules: declared fields only, `where` and
 // `order_by` on indexed fields only, unique indexes, and at most 100 rows per list call.
-export function makeCtx(specs: Record<string, CollectionSpec> = collections) {
+// `rowLimit` plays the plan's row limit: a create past it throws `quota_exceeded` (402).
+export function makeCtx(specs: Record<string, CollectionSpec> = collections, { rowLimit = Infinity }: { rowLimit?: number } = {}) {
   const tables: Record<string, Row[]> = {};
   let next = 0;
   const failure = (code: string, message: string) => Object.assign(new Error(message), { code, status: 400 });
@@ -39,6 +40,8 @@ export function makeCtx(specs: Record<string, CollectionSpec> = collections) {
       async create(input: Record<string, unknown>) {
         checkFields(input);
         checkUnique(input, null);
+        const used = Object.values(tables).reduce((sum, table) => sum + table.length, 0);
+        if (used >= rowLimit) throw Object.assign(new Error("Data row limit reached."), { code: "quota_exceeded", status: 402, metric: "data.rows.max" });
         const now = new Date().toISOString();
         const row: Row = { ...input, id: `row_${++next}`, created_at: now, updated_at: now };
         rows.push(row);
@@ -101,7 +104,7 @@ export function makeCtx(specs: Record<string, CollectionSpec> = collections) {
         return user;
       }
     },
-    log: { info: vi.fn(async () => undefined) }
+    log: { info: vi.fn(async () => undefined), warn: vi.fn(async () => undefined), error: vi.fn(async () => undefined) }
   };
 }
 

@@ -19,7 +19,9 @@ The owner (signed in with the `owner` role):
 
 - Sees everyone on the list with place in line, answers, referrals, and status.
 - Searches, filters by status or answer, and sorts by place, newest, or referrals.
-- Invites, archives, or restores people.
+- Invites, archives, or restores people, and deletes archived people for good.
+- Archives everyone matching a search, or deletes everyone archived, 50 at a time.
+- Makes a new private link for someone who lost theirs (the old link stops working).
 - Downloads the filtered list as CSV.
 - Sees top referrers and recent activity.
 
@@ -28,9 +30,9 @@ The owner (signed in with the `owner` role):
 - Static files from `public/`: CSS, self-hosted fonts, icon, and a small optional copy-link script.
 - Server routes in `server/index.js`, rendered as plain HTML (works without JavaScript).
 - Managed data: the `signups` collection, with unique indexes on `email` and `referral_code`.
-- App-user auth with one `owner` role. Owner pages call `ctx.auth.requireRole(request, "owner")`.
-- Referral credit without a stored counter: each person's count is worked out from the friends whose `referred_by` names their code. A signup is one write, so friends joining at the same moment can't overwrite each other's credit, and archiving a fake signup takes its credit away.
-- App events: every signup, answer update, status change, and export calls `ctx.log.info` (ids only, no emails), so it shows up in the Userland console and `userland apps events`.
+- App-user auth with one `owner` role. Owner pages read `ctx.auth.currentUser(request)` once and check `user.roles`, so signed-out visitors go to sign in and other accounts get a `403` page.
+- Referral credit without a stored counter: each person's count is worked out from the friends whose `referred_by` names their code. A signup is one write, so friends joining at the same moment can't overwrite each other's credit, and archiving a fake signup takes its credit away. Each inbox counts once (`emailKey()` treats `ada+1@gmail.com` and `a.da@gmail.com` as `ada@gmail.com`), and the referrer's own inbox under another spelling earns nothing.
+- App events: every signup, answer update, status change, new link, deletion, and export calls `ctx.log.info` (ids only, no emails), so it shows up in the Userland console and `userland apps events`. A caught bot logs a `warn` and a full list logs an `error`.
 
 ## Plan
 
@@ -38,16 +40,18 @@ Publishes on the **Free** plan. The manifest uses server routes, app-user auth w
 
 Usage limits still apply, and a busy launch can reach them:
 
-- **Rows:** Free keeps up to 1,000 data rows per app, so a list that grows past about 1,000 signups needs Starter (25,000 rows).
+- **Rows:** Free keeps up to 1,000 data rows per app, so a list that grows past about 1,000 signups needs Starter (25,000 rows). Archived people still use a row; delete them to free room. When the limit is reached, new visitors see "The waitlist is full right now" instead of an error, and the app logs a `waitlist full` error. Check with `userland apps events "$APP_ID" --severity error`.
 - **Requests:** Free allows 10,000 requests a month across all your apps on the account. Every page, form post, and file counts, and a first visit to the landing page is about six (page, stylesheet, two fonts, script, icon). If your launch may get shared widely, plan on Starter (100,000 a month).
-- **Compute per request:** the landing page reads only one page of signups (100 rows). The private place-in-line page and the owner view read the whole list, 100 rows per query, so they take longer as the list grows. Free gives each request 10 ms of compute and Starter 25 ms. Before launch day, test those two pages with a list the size you expect.
+- **Compute per request:** the landing page reads only one page of signups (100 rows). The private place-in-line page and the owner view read the whole list, 100 rows per query, every page until the end (never a cut-off list), so they take longer as the list grows. Free gives each request 10 ms of compute and Starter 25 ms. Before launch day, test those two pages with a list the size you expect.
 
 A slug (like `waitlist-demo`), a custom domain, and App Analytics are account features on paid plans; the app works without them.
 
 ## Spam and privacy
 
-- The join form has a hidden honeypot field, length limits, and same-site checks, but no per-visitor rate limit. A script can still post many fake emails and push a Free list toward its 1,000-row limit. If that happens, sort the owner view by Newest first or search by email, and archive the junk (archived people also lose any referral credit they gave), and consider Starter for headroom.
-- A repeat email gets the same neutral "Thanks, you're on the list" page as a bot, so the form can't be used to look up whether an address signed up. A brand-new email still goes straight to its private page. To close that last signal, email the private link instead of showing it (add an email provider key as a secret and send from the server).
+- **Bots.** The join form has a hidden honeypot field (`leave_blank`, hidden with `display: none` and named so browsers don't autofill it), length limits, and same-site checks. A caught bot gets the normal thanks page and the app logs a `waitlist signup ignored` warning, so you can spot it if real people ever get caught too.
+- **No per-visitor rate limit.** A script can still post many fake emails and push a Free list toward its 1,000-row limit. Free allows two data collections and this example uses both (`signups` and the demo's `demo-signups`), so there is no room for a throttle collection. To clean up, search for the junk (for example its email domain), press **Archive** under the list (50 at a time), then open the Archived list and press **Delete** (50 at a time, for good). Archived people also lose any referral credit they gave. If you remove the demo, the free collection slot can hold a small per-visitor throttle.
+- **Referral farming.** Each inbox counts once, so `ada+1@`, `ada+2@`, or dotted Gmail spellings don't add credit, and your own inbox under another spelling earns nothing. Someone with many real addresses can still move up; archive those signups to take the credit away, or change `withReferralCounts()` to count only friends you have invited.
+- **Who holds the private link.** A repeat email gets the same neutral "Thanks, you're on the list" page as a bot, so the form doesn't say whether that address already joined. A brand-new email still goes straight to its private page, so the form does show whether an address was new, and whoever types an email first holds that person's private page and invite link. When someone writes in (the thanks page points them to `BRAND.contactEmail`) because they lost their link or someone else used their email, press **New link** next to them in the owner view and send the new link to their address yourself; the old link stops working at once. To close both gaps, email the private link instead of showing it (add an email provider key as a secret and send from the server).
 
 ## Files
 
@@ -74,6 +78,11 @@ tests/                   vitest tests with an in-memory ctx; demo.test.ts covers
 | `GET /admin` | Owner | List, filters, stats, top referrers, recent activity |
 | `GET /admin/export.csv` | Owner | CSV of the current filter |
 | `POST /admin/signups/:id/status` | Owner | Invite, archive, or restore |
+| `POST /admin/signups/:id/link` | Owner | New private link for that person; the old one stops working |
+| `POST /admin/signups/:id/delete` | Owner | Delete an archived person for good |
+| `POST /admin/bulk` | Owner | Archive people matching a search or filter, or delete archived people, 50 per click |
+
+Every form post checks that it came from this app's own pages (`Origin`), and rejects other sites, other `*.apps.userland.fun` apps, and `null` origins.
 
 ## Publish
 
@@ -107,11 +116,13 @@ Open the `invite_url` from the response, choose a password, and you're signed in
 
 ## Verify
 
+This adds a real signup to your list, so use your own email. Afterwards, archive it in the owner view, then delete it from the Archived list.
+
 ```sh
 ORIGIN=https://<app-id>.apps.userland.fun
 
-# Join and follow the redirect to the private page
-curl -si -X POST "$ORIGIN/join" --data 'email=ada@example.com&name=Ada' | grep -i location
+# Join with your own email and follow the redirect to the private page
+curl -si -X POST "$ORIGIN/join" --data 'email=you@yourcompany.com&name=You' | grep -i location
 
 # Owner pages redirect to sign-in when you're signed out
 curl -si "$ORIGIN/admin" | grep -i location
@@ -120,10 +131,16 @@ curl -si "$ORIGIN/admin" | grep -i location
 userland apps events "$APP_ID" --limit 10
 ```
 
-Run the tests from the repo root:
+The tests run inside the `userland-public` repo: they use its shared test helper (`scripts/runtime-harness.ts`) and its vitest setup. From the repo root:
 
 ```sh
 npx vitest run examples/waitlist-app
+```
+
+In a copy outside that repo, check the manifest against your plan instead:
+
+```sh
+userland validate . --plan free --strict
 ```
 
 ## Demo mode
@@ -135,6 +152,7 @@ npx vitest run examples/waitlist-app
 - Status changes to sample signups save a private copy for that visitor.
 - The invite link on the private page only credits a friend inside the same demo, so the page links to a version with the visitor's demo key and says so.
 - Signups go to the separate `demo-signups` collection, never to `signups`.
+- Deleting for good is turned off; the owner view explains that the demo clears out visitor signups after a day instead.
 - The demo stays small on its own. Each visitor row carries `demo_expires_at`, a day after it was saved, and every demo write first deletes a batch of expired rows (listed oldest first by that indexed field). Each visitor can add up to 30 signups, and the whole demo holds at most 400 visitor rows; past that, visitors see a friendly "The demo is busy right now" page instead of an error. The cap has no rate limit behind it, so a script that posts a few hundred fake signups can keep the demo busy for everyone for up to a day. That is an accepted trade-off for a demo that holds no real data; a real waitlist never uses this cap.
 - Every page gets `<meta name="robots" content="noindex,follow">` and a "Built with Userland" note.
 
@@ -144,7 +162,7 @@ To remove it:
 2. In `server/index.js`, delete every line that ends with `// demo`.
 3. Delete the `demo-signups` collection from `manifest.userland.json` (its `demo_key` and `demo_expires_at` fields and indexes go with it).
 
-The `demo` and `demoRequest` values left in `server/index.js` are then always empty, so the owner view always requires sign-in. The "removing demo mode" test in `tests/waitlist-app.test.ts` runs exactly these steps on a copy of `server/` and the manifest and checks that joining, the private page, and the owner view still work, so mark any line you add for the demo the same way.
+The `demo` and `demoRequest` values left in `server/index.js` are then always empty, so the owner view always requires sign-in. Then run the tests; they pass. The "removing demo mode" tests in `tests/waitlist-app.test.ts` run these steps on a copy of `server/` and the manifest, check that joining, the private page, and the owner view still work, and check that no test outside `tests/demo.test.ts` depends on the demo. Mark any line you add for the demo with `// demo`, and put demo-only tests in `tests/demo.test.ts`.
 
 ## Customize
 
@@ -152,6 +170,7 @@ The `demo` and `demoRequest` values left in `server/index.js` are then always em
 - Copy: `landingPage()` and `statusPage()` in `server/views.js`.
 - Questions: `QUESTIONS` in `server/waitlist.js`. Keys are stored, labels are shown.
 - Referral reward: `REFERRAL_BOOST` in `server/waitlist.js`.
+- Contact address for lost links: `BRAND.contactEmail` in `server/views.js`.
 - Invite emails: this example marks people as invited and exports CSV for your email tool. To send email from the app, add an email provider API key as a secret and call it from the server.
 
 ## Undo a release

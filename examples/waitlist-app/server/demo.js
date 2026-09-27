@@ -12,6 +12,7 @@
 //     instead of changing what other visitors see.
 //   - Visitor signups are deleted a day after they were saved, and the whole
 //     demo holds at most MAX_DEMO_ROWS of them, so it can't fill up the app.
+//   - Deleting for good is turned off (the day-long cleanup does it instead).
 //   - Every page carries a noindex tag and a small "Demo app" note.
 //
 // Demo mode is only on for the hostnames in DEMO_HOSTS: the demo's named
@@ -45,10 +46,12 @@ const KEY_PATTERN = /^[a-f0-9]{32}$/u;
 export class DemoLimitError extends Error {
   constructor(
     heading = "That's plenty for a demo.",
-    message = `This demo keeps up to ${MAX_SIGNUPS_PER_VISITOR} signups per visitor.`
+    message = `This demo keeps up to ${MAX_SIGNUPS_PER_VISITOR} signups per visitor.`,
+    status = 429
   ) {
     super(message);
     this.heading = heading;
+    this.status = status;
     this.code = "demo_limit";
   }
 }
@@ -122,8 +125,8 @@ export function demoStore(ctx, key, now = new Date()) {
       }
       if (!key) return null;
       const row = await collection().get(id);
-      // Only return rows that belong to this visitor.
-      return row && row.demo_key === key ? toSignup(row) : null;
+      // Only return rows that belong to this visitor and are still within their day.
+      return row && row.demo_key === key && !isExpired(row, now) ? toSignup(row) : null;
     },
     async findByEmail(email) {
       return (await all()).find((row) => row.email === email) ?? null;
@@ -147,6 +150,13 @@ export function demoStore(ctx, key, now = new Date()) {
         return toSignup(await collection().create({ ...fields, ...patch, ...stamp() }));
       }
       return toSignup(await collection().update(current.id, patch));
+    },
+    async remove() {
+      throw new DemoLimitError(
+        "Deleting is off in the demo.",
+        "On your own waitlist, this removes an archived person for good and frees up room on your plan. Here, the people you add are cleared out after a day.",
+        403
+      );
     }
   };
   return store;
@@ -204,7 +214,7 @@ export function demoSite(demo, page, inviteHref) {
 
 // Message page options for a DemoLimitError, with a link back to the owner view.
 export function limitMessage(error, demo, label) {
-  return { title: "Demo limit", heading: error.heading, message: error.message, action: { href: pathWith("/admin", {}, persistParams(demo.key)), label }, status: 429 };
+  return { title: "Demo limit", heading: error.heading, message: error.message, action: { href: pathWith("/admin", {}, persistParams(demo.key)), label }, status: error.status };
 }
 
 // Query values that must stay on every link and form so the visitor keeps their demo.

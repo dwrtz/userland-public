@@ -4,6 +4,9 @@
 import { toCsv } from "../server/waitlist.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { sampleSignups } from "../server/demo.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+// @ts-expect-error Example server files are plain JavaScript app bundles.
+import app from "../server/index.js";
 import { APP, DEMO, call, join, makeCtx, owner, post } from "./helpers.js";
 
 describe("public demo", () => {
@@ -161,5 +164,61 @@ describe("demo samples", () => {
     expect(samples.every((row: { email: string }) => row.email.endsWith("@example.com"))).toBe(true);
     expect(new Set(samples.map((row: { email: string }) => row.email)).size).toBe(samples.length);
     expect(toCsv([], new Map())).toContain("place_in_line");
+  });
+});
+
+describe("demo pages", () => {
+  it("answer HEAD like GET, including the owner view", async () => {
+    const ctx = makeCtx();
+    const path = await join(ctx, DEMO, { email: "gus@example.com" });
+    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
+    expect(key).not.toBe("");
+    const pages: Array<[string, number]> = [
+      [`${DEMO}${path}`, 200],
+      [`${DEMO}/thanks?demo=${key}`, 200],
+      [`${DEMO}/admin`, 200],
+      [`${DEMO}/admin?demo=${key}&sort=newest`, 200],
+      [`${DEMO}/admin/export.csv?demo=${key}`, 200]
+    ];
+    for (const [url, status] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url)).status).toBe(status);
+    }
+  });
+
+  it("turns off a private link once its day is up, even before the cleanup runs", async () => {
+    const ctx = makeCtx();
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-09-01T12:00:00Z") });
+    const path = await join(ctx, DEMO, { email: "old@example.com" });
+    expect((await call(ctx, `${DEMO}${path}`)).status).toBe(200);
+    vi.setSystemTime(new Date("2026-09-02T12:05:00Z"));
+    // The row is still stored (nothing has written since), but its page is gone, not "#NaN".
+    expect(ctx.tables["demo-signups"]).toHaveLength(1);
+    const expired = await call(ctx, `${DEMO}${path}`);
+    expect(expired.status).toBe(404);
+    expect(await expired.text()).not.toContain("NaN");
+    vi.useRealTimers();
+  });
+
+  it("explains that deleting is off, and still makes new private links", async () => {
+    const ctx = makeCtx();
+    const path = await join(ctx, DEMO, { email: "hal@example.com" });
+    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
+    const id = ctx.tables["demo-signups"][0].id;
+
+    await post(ctx, `${DEMO}/admin/signups/${id}/status`, { status: "archived", demo: key });
+    const refused = await post(ctx, `${DEMO}/admin/signups/${id}/delete`, { demo: key });
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).toContain("Deleting is off in the demo.");
+    const bulk = await post(ctx, `${DEMO}/admin/bulk`, { action: "delete", status: "archived", demo: key });
+    expect(bulk.status).toBe(403);
+    expect(ctx.tables["demo-signups"]).toHaveLength(1);
+
+    await post(ctx, `${DEMO}/admin/signups/${id}/status`, { status: "waiting", demo: key });
+    const link = await post(ctx, `${DEMO}/admin/signups/${id}/link`, { demo: key });
+    expect(link.status).toBe(200);
+    const newPath = new RegExp(`${DEMO}(/you/${id}/[^"]+)"`, "u").exec(await link.text())?.[1] ?? "";
+    expect(newPath).not.toBe("");
+    expect((await call(ctx, `${DEMO}${path}`)).status).toBe(404);
+    expect((await call(ctx, `${DEMO}${newPath}`)).status).toBe(200);
   });
 });

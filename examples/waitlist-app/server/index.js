@@ -3,10 +3,11 @@
 // Public routes              Owner routes (app user with the "owner" role)
 //   GET  /                     GET  /admin                  list, filters, stats, activity
 //   POST /join                 GET  /admin/export.csv       download the filtered list
-//   GET  /r/:code              POST /admin/signups/:id/status
-//   GET  /you/:id/:token       (sign in at /_userland/auth/login)
-//   POST /you/:id/:token/answers
-//   GET  /thanks
+//   GET  /r/:code              POST /admin/signups/:id/status   invite, archive, restore
+//   GET  /you/:id/:token       POST /admin/signups/:id/link     new private link
+//   POST /you/:id/:token/answers  POST /admin/signups/:id/delete  delete an archived person
+//   GET  /thanks               POST /admin/bulk             archive or delete many at once
+//                              (sign in at /_userland/auth/login)
 //
 // Static files (CSS, fonts, icons, share.js) are served from public/ before this code runs.
 //
@@ -15,9 +16,11 @@
 // (see "Demo mode" in README.md).
 
 import {
+  BULK_LIMIT,
   DuplicateSignupError,
   LIMITS,
   STATUSES,
+  TRAP_FIELD,
   applyFilters,
   isValidId,
   joinWaitlist,
@@ -25,6 +28,7 @@ import {
   rankWaitlist,
   readFilters,
   recentActivity,
+  reissueLink,
   safeEqual,
   signupStore,
   summarize,
@@ -33,7 +37,7 @@ import {
   validateAnswers,
   validateJoin
 } from "./waitlist.js";
-import { landingPage, messagePage, ownerPage, pathWith, statusPage } from "./views.js";
+import { BRAND, landingPage, messagePage, ownerPage, pathWith, statusPage } from "./views.js";
 import * as demoMode from "./demo.js"; // demo
 
 const OWNER_ROLE = "owner";
@@ -81,7 +85,10 @@ function siteFor(demo, page, { privatePage = false, inviteHref } = {}) {
 // Request helpers
 // ---------------------------------------------------------------------------
 
-// Rejects form posts sent from other websites.
+// Rejects form posts sent from other websites, including other apps on
+// *.apps.userland.fun (they count as the same site to the browser, so the
+// sign-in cookie alone is not enough) and pages with an opaque "null" origin.
+// Every form post in this app checks it before changing anything.
 function isSameOrigin(request, url) {
   const origin = request.headers.get("origin");
   if (origin) return origin === url.origin;
@@ -106,14 +113,14 @@ async function readForm(request) {
 
 // Owner pages need a signed-in app user with the owner role.
 // Invite yourself once after publishing (see README), then sign in at /_userland/auth/login.
+// One session lookup: the signed-in user carries their roles. Anything else
+// that goes wrong (a storage error, say) is not hidden behind "Owners only".
 async function requireOwner(request, ctx, returnTo) {
   const user = await ctx.auth.currentUser(request);
   if (!user) {
     return { response: redirect(`/_userland/auth/login?return_to=${encodeURIComponent(returnTo)}`) };
   }
-  try {
-    return { user: await ctx.auth.requireRole(request, OWNER_ROLE) };
-  } catch {
+  if (!Array.isArray(user.roles) || !user.roles.includes(OWNER_ROLE)) {
     return {
       response: message(siteFor(null, "other", { privatePage: true }), {
         title: "Owners only",
@@ -124,6 +131,7 @@ async function requireOwner(request, ctx, returnTo) {
       })
     };
   }
+  return { user };
 }
 
 // Demo pages that aren't tied to a signup still get the demo banner and noindex
@@ -188,7 +196,11 @@ async function handleJoin(request, url, ctx, demoRequest) {
 
   // Honeypot: people never see this field, so anything in it came from a bot.
   // Bots get the same answer as people, so they can't tell they were caught.
-  if (form.company) return redirect(demoPath("/thanks", demo));
+  // The warning lets the owner spot it if real people ever get caught too.
+  if (form[TRAP_FIELD]) {
+    await ctx.log.warn("waitlist signup ignored", { reason: "honeypot", demo: Boolean(demo) });
+    return redirect(demoPath("/thanks", demo));
+  }
 
   const { values, errors } = validateJoin(form);
   if (Object.keys(errors).length) return await showLanding(url, ctx, demo, { values, errors, status: 400 });
@@ -200,9 +212,23 @@ async function handleJoin(request, url, ctx, demoRequest) {
     return redirect(`/you/${signup.id}/${signup.status_token}`);
   } catch (error) {
     if (error instanceof DuplicateSignupError) {
-      // Same neutral page as the honeypot, not an "already on the list" error,
-      // so the form can't be used to check whether someone's email signed up.
+      // Same page as the honeypot rather than an "already on the list" error.
+      // This only hides repeat emails: a new email still goes straight to its
+      // private page, so the form still shows whether an address was new
+      // (see "Spam and privacy" in README.md).
       return redirect(demoPath("/thanks", demo));
+    }
+    if (error?.code === "quota_exceeded") {
+      // The plan's row limit is reached. Tell the visitor in plain words and
+      // leave an error in the app's activity log so the owner notices.
+      await ctx.log.error("waitlist full", { reason: "quota_exceeded", demo: Boolean(demo) });
+      return message(siteFor(demo, "other"), {
+        title: "Try again soon",
+        heading: "The waitlist is full right now.",
+        message: "We can't add anyone new at the moment. Please try again in a day or two.",
+        action: { href: demoPath("/", demo), label: "Back to the waitlist" },
+        status: 503
+      });
     }
     if (error instanceof demoMode.DemoLimitError) return message(siteFor(demo, "other"), demoMode.limitMessage(error, demo, "Open the owner view")); // demo
     throw error;
@@ -276,7 +302,22 @@ async function loadOwnerData(store, url) {
   return { rows, positions, filters, filtered };
 }
 
-const DONE_NOTICES = { invited: "Marked as invited.", waiting: "Moved back to the line.", archived: "Archived." };
+const DONE_NOTICES = { invited: "Marked as invited.", waiting: "Moved back to the line.", archived: "Archived.", deleted: "Deleted for good." };
+const BULK_NOTICES = {
+  "archived-many": (count) => `Archived ${count} ${count === 1 ? "person" : "people"}.`,
+  "deleted-many": (count) => `Deleted ${count} ${count === 1 ? "person" : "people"} for good.`
+};
+
+// The note shown after a change. Only known values show anything, so
+// ?done=constructor or ?done=__proto__ shows nothing.
+function doneNotice(params) {
+  const done = params.get("done") ?? "";
+  if (Object.hasOwn(DONE_NOTICES, done)) return DONE_NOTICES[done];
+  if (!Object.hasOwn(BULK_NOTICES, done)) return "";
+  const count = Math.min(Math.max(Number.parseInt(params.get("n") ?? "0", 10) || 0, 0), BULK_LIMIT);
+  const more = params.get("more") === "1" ? " More people match: press the button again to continue." : "";
+  return `${BULK_NOTICES[done](count)}${more}`;
+}
 
 async function showOwner(request, url, ctx, demoRequest) {
   const demo = anyDemo(demoRequest, url.searchParams.get("demo")); // The demo skips sign-in.
@@ -298,7 +339,8 @@ async function showOwner(request, url, ctx, demoRequest) {
     activity: recentActivity(rows),
     keep: keepParams(demo),
     user,
-    notice: DONE_NOTICES[url.searchParams.get("done")] ?? ""
+    notice: doneNotice(url.searchParams),
+    bulkLimit: BULK_LIMIT
   });
   return html(page, { privatePage: true });
 }
@@ -322,25 +364,53 @@ async function exportCsv(request, url, ctx, demoRequest) {
   });
 }
 
-async function changeStatus(request, url, ctx, demoRequest, id) {
+// Every owner form post starts here: a same-site check, the visitor's demo key
+// in the demo, and the owner sign-in check everywhere else.
+// Returns { form, demo } or { response } to send back as is.
+async function ownerPost(request, url, ctx, demoRequest, isValid) {
   const form = await readForm(request);
-  if (!form || !isSameOrigin(request, url) || !isValidId(id) || !STATUSES.includes(form.status)) {
+  if (!form || !isSameOrigin(request, url) || !isValid(form)) {
     const demo = anyDemo(demoRequest, form?.demo);
-    return message(siteFor(demo, "owner", { privatePage: true }), {
-      title: "Try again",
-      heading: "That change didn't go through.",
-      message: "Go back to the owner view and try again.",
-      action: { href: demoPath("/admin", demo), label: "Back to the owner view" },
-      status: 400
-    });
+    return {
+      response: message(siteFor(demo, "owner", { privatePage: true }), {
+        title: "Try again",
+        heading: "That change didn't go through.",
+        message: "Go back to the owner view and try again.",
+        action: { href: demoPath("/admin", demo), label: "Back to the owner view" },
+        status: 400
+      })
+    };
   }
   // The demo skips sign-in. A visitor who hasn't joined yet gets a demo key on their first change.
   let demo = null;
   if (demoRequest) demo = { key: demoMode.readDemoKey(form.demo) || demoMode.newDemoKey() }; // demo
   if (!demo) {
     const gate = await requireOwner(request, ctx, "/admin");
-    if (gate.response) return gate.response;
+    if (gate.response) return gate;
   }
+  return { form, demo };
+}
+
+// Back to the owner view the change was made from, with a note about what happened.
+function backToOwner(form, url, demo, notice) {
+  const back = typeof form.back === "string" && /^\/admin(\?|$)/u.test(form.back) ? form.back : "/admin";
+  const next = new URL(back, url.origin);
+  for (const key of ["done", "n", "more"]) next.searchParams.delete(key);
+  for (const [key, value] of Object.entries(notice)) next.searchParams.set(key, String(value));
+  if (demo) next.searchParams.set("demo", demo.key); // demo
+  return redirect(`${next.pathname}${next.search}`);
+}
+
+// Turns a demo limit into its friendly page; anything else is rethrown.
+function ownerFailure(error, demo) {
+  if (error instanceof demoMode.DemoLimitError) return message(siteFor(demo, "owner", { privatePage: true }), demoMode.limitMessage(error, demo, "Back to the owner view")); // demo
+  throw error;
+}
+
+async function changeStatus(request, url, ctx, demoRequest, id) {
+  const posted = await ownerPost(request, url, ctx, demoRequest, (form) => isValidId(id) && STATUSES.includes(form.status));
+  if (posted.response) return posted.response;
+  const { form, demo } = posted;
 
   const store = openStore(ctx, demo);
   const current = await store.get(id);
@@ -350,16 +420,110 @@ async function changeStatus(request, url, ctx, demoRequest, id) {
   try {
     updated = await store.update(current.id, patch);
   } catch (error) {
-    if (error instanceof demoMode.DemoLimitError) return message(siteFor(demo, "owner", { privatePage: true }), demoMode.limitMessage(error, demo, "Back to the owner view")); // demo
-    throw error;
+    return ownerFailure(error, demo);
   }
   await ctx.log.info("waitlist status changed", { signup_id: updated.id, status: updated.status });
+  return backToOwner(form, url, demo, { done: updated.status });
+}
 
-  const back = typeof form.back === "string" && /^\/admin(\?|$)/u.test(form.back) ? form.back : "/admin";
-  const next = new URL(back, url.origin);
-  next.searchParams.set("done", updated.status);
-  if (demo) next.searchParams.set("demo", demo.key); // demo
-  return redirect(`${next.pathname}${next.search}`);
+// Deletes one person for good. Only archived people can be deleted, so it
+// always takes two clicks (Archive, then Delete) to lose someone.
+async function deleteSignup(request, url, ctx, demoRequest, id) {
+  const posted = await ownerPost(request, url, ctx, demoRequest, () => isValidId(id));
+  if (posted.response) return posted.response;
+  const { form, demo } = posted;
+
+  const store = openStore(ctx, demo);
+  const current = await store.get(id);
+  if (!current) return notFound(demo);
+  if (current.status !== "archived") {
+    return message(siteFor(demo, "owner", { privatePage: true }), {
+      title: "Archive first",
+      heading: "Archive this person first.",
+      message: "Only archived people can be deleted. Archive them, then delete them from the Archived list.",
+      action: { href: demoPath("/admin", demo), label: "Back to the owner view" },
+      status: 409
+    });
+  }
+  try {
+    await store.remove(current.id);
+  } catch (error) {
+    return ownerFailure(error, demo);
+  }
+  await ctx.log.info("waitlist signup deleted", { signup_id: current.id });
+  return backToOwner(form, url, demo, { done: "deleted" });
+}
+
+// Makes a new private link for someone and shows it to the owner to send on.
+// Use it when a person lost their link, or when someone else joined with
+// their email first: the old link stops working at once.
+async function newPrivateLink(request, url, ctx, demoRequest, id) {
+  const posted = await ownerPost(request, url, ctx, demoRequest, () => isValidId(id));
+  if (posted.response) return posted.response;
+  const { demo } = posted;
+
+  const store = openStore(ctx, demo);
+  const current = await store.get(id);
+  if (!current) return notFound(demo);
+  let updated;
+  try {
+    updated = await reissueLink(store, current.id);
+  } catch (error) {
+    return ownerFailure(error, demo);
+  }
+  await ctx.log.info("waitlist private link replaced", { signup_id: updated.id });
+  return message(siteFor(demo, "owner", { privatePage: true }), {
+    title: "New private link",
+    heading: "Here's their new private link.",
+    message: `Send it to ${updated.email} yourself. Their old link no longer works. This page won't show the link again.`,
+    copyValue: `${url.origin}/you/${updated.id}/${updated.status_token}`,
+    action: { href: demoPath("/admin", demo), label: "Back to the owner view" }
+  });
+}
+
+// Archives, or deletes, the people that match the owner's current filters,
+// BULK_LIMIT at a time. Archiving needs a search or filter, so one click can't
+// empty the whole list. Deleting only ever touches archived people.
+async function bulkChange(request, url, ctx, demoRequest) {
+  const posted = await ownerPost(request, url, ctx, demoRequest, (form) => form.action === "archive" || form.action === "delete");
+  if (posted.response) return posted.response;
+  const { form, demo } = posted;
+
+  const filters = readFilters(new URLSearchParams(Object.entries(form).filter(([key]) => ["q", "status", "frequency", "goal"].includes(key))));
+  const narrowed = Boolean(filters.q || filters.status || filters.frequency || filters.goal);
+  if (form.action === "archive" && !narrowed) {
+    return message(siteFor(demo, "owner", { privatePage: true }), {
+      title: "Pick who first",
+      heading: "Search or filter first.",
+      message: "Archiving many people at once only works on a search or filter, so the whole list can't be archived by accident.",
+      action: { href: demoPath("/admin", demo), label: "Back to the owner view" },
+      status: 400
+    });
+  }
+
+  const store = openStore(ctx, demo);
+  const rows = await store.all();
+  const { positions } = rankWaitlist(rows);
+  const matches = applyFilters(rows, positions, filters);
+  const targets = matches.filter((row) => (form.action === "archive" ? row.status !== "archived" : row.status === "archived"));
+  const batch = targets.slice(0, BULK_LIMIT);
+  try {
+    // One at a time, so a busy list doesn't get dozens of writes at the same instant.
+    for (const row of batch) {
+      try {
+        if (form.action === "archive") await store.update(row.id, { status: "archived" });
+        else await store.remove(row.id);
+      } catch (error) {
+        // Already deleted by another click a moment ago: nothing left to do.
+        if (error?.code !== "not_found") throw error;
+      }
+    }
+  } catch (error) {
+    return ownerFailure(error, demo);
+  }
+  await ctx.log.info("waitlist bulk change", { action: form.action, count: batch.length });
+  const done = form.action === "archive" ? "archived-many" : "deleted-many";
+  return backToOwner(form, url, demo, { done, n: batch.length, ...(targets.length > batch.length ? { more: 1 } : {}) });
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +548,7 @@ const app = {
     const method = request.method;
     const path = url.pathname.replace(/\/+$/u, "") || "/";
     const statusMatch = path.match(/^\/you\/([^/]+)\/([^/]+)(\/answers)?$/u);
-    const statusChange = path.match(/^\/admin\/signups\/([^/]+)\/status$/u);
+    const ownerAction = path.match(/^\/admin\/signups\/([^/]+)\/(status|link|delete)$/u);
     const refMatch = path.match(/^\/r\/([^/]+)$/u);
 
     if (path === "/" && method === "GET") {
@@ -392,7 +556,8 @@ const app = {
     }
     if (path === "/join" && method === "POST") return await handleJoin(request, url, ctx, demoRequest);
     if (refMatch && method === "GET") {
-      const code = normalizeCode(decodeURIComponent(refMatch[1]));
+      // Codes only use A-Z and 2-9, so there is nothing to decode.
+      const code = normalizeCode(refMatch[1]);
       return redirect(code ? `/?ref=${code}` : "/");
     }
     if (statusMatch && !statusMatch[3] && method === "GET") return await showStatus(url, ctx, demoRequest, statusMatch[1], statusMatch[2]);
@@ -403,13 +568,19 @@ const app = {
       return message(siteFor(demo, "other"), {
         title: "Thanks",
         heading: "Thanks, you're on the list.",
-        message: "We'll be in touch when early access opens. If you joined before, your spot is still saved: open the private link from your first visit to see your place in line.",
+        message: `We'll be in touch when early access opens. If you joined before, your spot is still saved: open the private link from your first visit to see your place in line. Lost it? Email ${BRAND.contactEmail} and we'll send you a new one.`,
         action: { href: demoPath("/", demo), label: "Back to the waitlist" }
       });
     }
     if (path === "/admin" && method === "GET") return await showOwner(request, url, ctx, demoRequest);
     if (path === "/admin/export.csv" && method === "GET") return await exportCsv(request, url, ctx, demoRequest);
-    if (statusChange && method === "POST") return await changeStatus(request, url, ctx, demoRequest, statusChange[1]);
+    if (ownerAction && method === "POST") {
+      const [, id, action] = ownerAction;
+      if (action === "status") return await changeStatus(request, url, ctx, demoRequest, id);
+      if (action === "link") return await newPrivateLink(request, url, ctx, demoRequest, id);
+      return await deleteSignup(request, url, ctx, demoRequest, id);
+    }
+    if (path === "/admin/bulk" && method === "POST") return await bulkChange(request, url, ctx, demoRequest);
 
     return notFound(anyDemo(demoRequest, url.searchParams.get("demo")));
   }

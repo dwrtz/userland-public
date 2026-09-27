@@ -259,6 +259,16 @@ p {
   font-size: 13px;
 }
 
+.button--danger {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+.button--danger:hover {
+  background: rgba(255, 138, 122, 0.12);
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -314,12 +324,9 @@ input[aria-invalid="true"] {
   font-size: 13.5px;
 }
 
+/* The honeypot. display: none keeps browsers from autofilling it. */
 .hp {
-  position: absolute;
-  left: -10000px;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
+  display: none;
 }
 
 .notice {
@@ -1072,12 +1079,31 @@ legend {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
 }
 
 .actions form {
   margin: 0;
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.bulk__note {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.message .share__link {
+  margin-top: 0;
 }
 
 .pager {
