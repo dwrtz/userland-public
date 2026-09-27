@@ -16,7 +16,7 @@ Outputs:
 
 - Manifest with `auth` (role `owner`) and the `links` and `inbox` collections.
 - Server-rendered pages in `server/views.js`; routes and the owner gate in `server/index.js`.
-- Tests in `tests/` that cover forms, escaping, the owner gate, and demo privacy.
+- Tests in `tests/` that cover forms, escaping, the owner gate, and removing demo mode (`tests/demo.test.ts` covers demo privacy and is deleted with `server/demo.js`).
 
 Steps:
 
@@ -25,9 +25,9 @@ Steps:
 3. Keep every `/admin` route behind `requireOwner` in `server/index.js`, which uses `ctx.auth.currentUser` and `ctx.auth.requireRole(request, "owner")`. In the deployed runtime these helpers throw plain errors, so catch them and return a redirect or 403 instead of letting the request fail.
 4. Only filter on indexed, declared fields. `where` is exact-match only; sort in code (`server/store.js`). Stay at two collections and two indexes per collection to keep the Free plan.
 5. Escape every value from visitors or the database with `escapeHtml` in `server/views.js`. Keep the honeypot field and length limits on public forms.
-6. Delete `server/demo.js` and the `demo` lines in `server/index.js` unless the app is a public demo (see README "Demo mode"). Demo mode only turns on for the hostnames in `DEMO_HOSTS`.
+6. Unless the app is a public demo, delete `server/demo.js` and `tests/demo.test.ts`, then delete every line in `server/index.js` that ends with `// demo` (see README "Demo mode"). Keep the `demo_key` field; real rows use `""`. The "removing demo mode" test runs these steps on a copy. Demo mode only turns on for the hostnames in `DEMO_HOSTS`.
 7. Validate: `npm run validate:manifests` and `npx vitest run examples/link-in-bio-app`.
-8. Publish with `userland apps publish <dir>`, invite the owner (`POST /v0/apps/:app_id/admin-invites` with `"roles":["owner"]`), and tell the owner to click "Add starter links" in the owner view.
+8. Publish with `userland apps publish <dir>`, invite the owner (`POST /v0/apps/:app_id/admin-invites` with `"roles":["owner"]`), and tell the owner to click "Add starter links" in the owner view. Before publishing, install the CLI with `npm install -g @userland.fun/cli` and sign in with `userland login` (it opens the browser to approve the CLI and never asks for a password). The invite call needs an API key in `USERLAND_API_KEY`, but `userland login` saves its key to `~/.userland/credentials.json`, not the environment: have the owner run `userland auth api-keys create --name "owner invite"` and export the printed key and the app id in their own terminal (README.md shows the commands), then unset and revoke that key once they have signed in.
 
 Safety:
 

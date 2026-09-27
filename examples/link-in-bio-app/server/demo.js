@@ -5,12 +5,10 @@
 // else already behaves like a real app: the owner view requires an app user
 // with the "owner" role. To remove demo mode completely:
 //
-//   1. Delete this file.
-//   2. In server/index.js, delete the `import { demoMode } ...` line and every
-//      line that mentions `demo` (search for "demo").
-//   3. Optional, before your first publish: remove the `demo_key` field from
-//      both collections in manifest.userland.json and pass "" for the scope
-//      in server/store.js (or leave it; it is always "" without demo mode).
+//   1. Delete this file and tests/demo.test.ts.
+//   2. In server/index.js, delete every line that ends with `// demo`.
+// Keep the `demo_key` field and indexes in manifest.userland.json: every row a
+// real app saves has demo_key "", and server/store.js filters on it.
 //
 // How the demo keeps visitors apart:
 //

@@ -6,9 +6,12 @@
 // Static files (styles, fonts, pictures) are served by Userland from public/.
 // Everything else falls through to this module because the manifest sets
 // runtime.fallback to "server".
+//
+// Demo mode lives in demo.js. The lines in this file that turn it on end with
+// `// demo`; deleting them and demo.js removes it (see "Demo mode" in README.md).
 
 import { contact, pictures, profile } from "./content.js";
-import { demoMode } from "./demo.js";
+import { demoMode } from "./demo.js"; // demo
 import {
   addSignup,
   addStarterLinks,
@@ -37,7 +40,8 @@ const EMAIL_PATTERN = /^[A-Za-z0-9._+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-
 export default {
   async fetch(request, ctx) {
     const url = new URL(request.url);
-    const demo = demoMode(request); // null unless this is the public demo
+    let demo = null; // The public demo's visitor state. Always null in your own app.
+    demo = demoMode(request); // demo
     const nav = demo ? demoNav(demo, "noindex,follow") : PLAIN_NAV;
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const method = request.method.toUpperCase();

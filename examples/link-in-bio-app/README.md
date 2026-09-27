@@ -32,7 +32,7 @@ server/content.js        name, bio, social profiles, form wording, starter links
 server/views.js          HTML for every page (all output is escaped)
 server/store.js          reads and writes for the links and inbox collections
 server/demo.js           demo mode for the public demo only (safe to delete)
-tests/                   vitest tests with an in-memory Userland ctx
+tests/                   vitest tests with an in-memory Userland ctx; demo.test.ts covers demo mode only
 ```
 
 ## Make it yours
@@ -103,7 +103,12 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 - deletes copies older than six hours,
 - adds `noindex` and a "Built with Userland" ribbon to every page.
 
-To remove it, delete `server/demo.js`, then delete the `demoMode` import and every line that mentions `demo` in `server/index.js`. The `nav.demo` checks in `server/views.js` can stay (they are always off) or be deleted. The `demo_key` field can stay (it is always empty) or be removed from the manifest before your first publish.
+To remove it:
+
+1. Delete `server/demo.js` and `tests/demo.test.ts`.
+2. In `server/index.js`, delete every line that ends with `// demo` (the `demoMode` import and the line that turns demo mode on).
+
+After that, `demo` is always `null`, so the `if (demo)` branches in `server/index.js` and the `nav.demo` checks in `server/views.js` never run; delete them whenever you like. Keep the `demo_key` field and indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
 
 ## Userland docs
 
