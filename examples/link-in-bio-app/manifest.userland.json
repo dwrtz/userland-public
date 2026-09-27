@@ -29,12 +29,18 @@
             "visible": "boolean",
             "position": "integer",
             "clicks": "integer",
-            "demo_key": "string"
+            "demo_key": "string",
+            "slot": "string"
           },
           "indexes": [
             {
               "name": "by_scope",
               "fields": ["demo_key"]
+            },
+            {
+              "name": "by_slot",
+              "fields": ["slot"],
+              "unique": true
             }
           ],
           "access": {
@@ -57,12 +63,18 @@
               "values": ["new", "replied", "archived"]
             },
             "received_at": "datetime",
-            "demo_key": "string"
+            "demo_key": "string",
+            "slot": "string"
           },
           "indexes": [
             {
-              "name": "by_scope_kind",
-              "fields": ["demo_key", "kind"]
+              "name": "by_scope_status",
+              "fields": ["demo_key", "kind", "status", "received_at"]
+            },
+            {
+              "name": "by_slot",
+              "fields": ["slot"],
+              "unique": true
             }
           ],
           "access": {

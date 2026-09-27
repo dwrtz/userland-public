@@ -1266,3 +1266,27 @@ textarea:focus-visible {
     transition: none !important;
   }
 }
+
+/* Inbox paging and clean-up */
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bulk-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+}
+
+.bulk-form p {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 15px;
+}

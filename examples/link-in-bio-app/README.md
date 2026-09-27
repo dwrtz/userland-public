@@ -7,18 +7,32 @@ The sample business is **Kiln & Crumb**, a made-up potter who sells pie dishes a
 - Live demo: https://link-in-bio-demo.apps.userland.fun/
 - Example page: https://userland.fun/examples/link-in-bio-app/
 - Plan: runs on the **Free** plan. A custom domain (like `links.yourstudio.com`) needs Starter.
+- Room to grow: the Free plan saves up to 1,000 items per account, and links, messages, and email-list signups all count toward it. Starter saves 25,000. When the space is full, visitors see a "this page is full for now" page and the owner view says how to make room.
 
 ## What visitors see
 
 - `/` shows the profile, social buttons, featured products with prices, the list of links, an email-list signup, and a contact card.
 - `/contact` is a contact form with a topic picker.
 - `/thanks` confirms a signup or message.
-- `/go/:id` counts a tap, then sends the visitor to the link.
+- `/go/:id` counts a tap, then sends the visitor to the link. Search engines, link previews, and browser prefetches don't count, and `public/robots.txt` asks crawlers to stay out of `/go/` and `/admin`, so tap counts are a good guide rather than an exact tally.
 
 ## What the owner sees
 
-- `/admin` is the inbox: contact messages (new, replied, archived) and the email list, with a spreadsheet download for your newsletter tool.
+- `/admin` is the inbox, in four tabs: **New** and **Replied** messages, the **Email list**, and **Archived**. Each tab shows a page at a time, newest first, with an "Older" link. Every item can be archived, and archived items deleted for good. Two clean-up buttons archive all new messages or delete everything archived, 15 at a time, for the day a script floods the form.
+- The email list has a spreadsheet download for your newsletter tool. A list longer than 1,500 addresses downloads in parts. The list is not confirmed: anyone can type any address, so turn on your newsletter tool's confirmation email (double opt-in) when you import it. An address you remove stays removed even if someone signs it up again; "Put back on list" in Archived restores it.
 - `/admin/links` adds, edits, hides, reorders, and deletes links, and shows tap counts. A link marked "featured" shows as a product card with a price.
+
+## Limits on the public forms
+
+The forms are open to anyone, so a script could try to fill your inbox or use up your plan's saved items. These limits live at the top of `server/store.js`; change them to suit your page:
+
+| Limit | Default | What visitors see |
+| --- | --- | --- |
+| Notes from one email address per day | 3 | "You've sent a few notes today" |
+| Unread messages before the contact form pauses | 100 | "Wren's inbox is full right now" (your first name); archive or delete messages to reopen it |
+| New email-list signups per 24 hours | 200 | "The list is extra busy today" |
+
+An email address can be on the list only once, even if it is sent twice at the same moment. The hidden "leave this empty" field still turns away simple bots quietly.
 
 The owner view is for app users with the `owner` role. Signed-out visitors are sent to the Userland sign-in page; signed-in users without the role get a "for the page owner" message.
 
@@ -26,11 +40,11 @@ The owner view is for app users with the `owner` role. Signed-out visitors are s
 
 ```text
 manifest.userland.json   app name, runtime, owner role, and the two data collections
-public/                  styles, self-hosted fonts, pictures, favicon
+public/                  styles, self-hosted fonts, pictures, favicon, robots.txt
 server/index.js          routes, form checks, and the owner gate
 server/content.js        name, bio, social profiles, form wording, starter links
 server/views.js          HTML for every page (all output is escaped)
-server/store.js          reads and writes for the links and inbox collections
+server/store.js          reads and writes for the links and inbox collections, and the form limits
 server/demo.js           demo mode for the public demo only (safe to delete)
 tests/                   vitest tests with an in-memory Userland ctx; demo.test.ts covers demo mode only
 ```
@@ -96,19 +110,21 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 
 - opens the owner view without sign-in,
 - gives each visitor a private key in the page address (`?visit=...`) and their own copy of made-up messages, signups, and links, because Userland passes only its own sign-in cookie to app code,
+- only opens copies it handed out itself, and only when the visitor arrives from the demo's own pages or types the address; a link to someone's copy posted on another site opens a fresh copy instead,
+- hands out up to 50 new copies an hour, then shows a "demo is busy" page, and caps how much one visitor can add,
 - stores everything a visitor sends or changes under that key, so visitors never see each other's data,
 - stores typed email addresses partly hidden (`a•••@r•••.com`; `@example.com` addresses are kept), because anyone handed a visitor's exact address can open that visitor's copy, and says so in the owner view along with the plain demo address to share,
 - asks visitors to use made-up details on the public forms,
 - shows a "where this link goes" page instead of leaving the demo,
 - deletes copies older than six hours,
-- adds `noindex` and a "Built with Userland" ribbon to every page.
+- adds `noindex` and a "Built with Userland" ribbon to every page, with `rel="nofollow"` on its links into the owner view.
 
 To remove it:
 
 1. Delete `server/demo.js` and `tests/demo.test.ts`.
 2. In `server/index.js`, delete every line that ends with `// demo` (the `demoMode` import and the line that turns demo mode on).
 
-After that, `demo` is always `null`, so the `if (demo)` branches in `server/index.js` and the `nav.demo` checks in `server/views.js` never run; delete them whenever you like. Keep the `demo_key` field and indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
+After that, `demo` is always `null`, so the `if (demo)` branches and `demo?.` calls in `server/index.js` and the `nav.demo` checks in `server/views.js` do nothing; delete them whenever you like. Keep the `demo_key` and `slot` fields and the indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it and uses `slot` to stop duplicate signups, starter links, and tap counts. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
 
 ## Userland docs
 

@@ -1,0 +1,4 @@
+# Keep crawlers out of the owner view and the tap-counting link addresses.
+User-agent: *
+Disallow: /admin
+Disallow: /go/
