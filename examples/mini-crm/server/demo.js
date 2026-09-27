@@ -26,6 +26,7 @@
 //    change the last line to `export default createApp();`.
 // 3. In manifest.userland.json, remove the demo_visitor fields and the
 //    by_demo_visitor indexes.
+// 4. Delete tests/demo.test.ts.
 // The owner routes then require a signed-in app user with the owner role.
 // ---------------------------------------------------------------------------
 

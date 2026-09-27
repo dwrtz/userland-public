@@ -31,7 +31,8 @@ Free. The manifest uses the server runtime, app-user auth with one role, two col
 | `server/demo.js` | Demo mode for the public demo only (see below) |
 | `public/assets/crm.css` | Brand and layout |
 | `public/fonts/` | Barlow Condensed and IBM Plex Sans Condensed, self-hosted (SIL Open Font License) |
-| `tests/mini-crm.test.ts` | Form validation, the owner gate, and demo privacy |
+| `tests/mini-crm.test.ts` | Form validation, the owner gate, and turning demo mode off |
+| `tests/demo.test.ts` | Demo mode only: demo privacy and limits |
 
 ## Routes
 
@@ -93,8 +94,9 @@ To turn it off for a real business, before the first publish:
 1. Delete `server/demo.js`.
 2. In `server/index.js`, delete the `import { demo } from "./demo.js";` line and change the last line to `export default createApp();`.
 3. In `manifest.userland.json`, remove the `demo_visitor` fields and the `by_demo_visitor` indexes.
+4. Delete `tests/demo.test.ts` (the demo-mode tests).
 
-The owner routes then require a signed-in app user with the `owner` role.
+The owner routes then require a signed-in app user with the `owner` role. The "turning demo mode off" test in `tests/mini-crm.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that the form and the owner board still work.
 
 ## Verify
 

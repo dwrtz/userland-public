@@ -1,91 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { createApp } from "../server/index.js";
-// @ts-expect-error Example server files are plain JavaScript app bundles.
-import { DEMO_LIMITS, demo } from "../server/demo.js";
-
-type Row = Record<string, unknown> & { id: string; created_at: string; updated_at: string };
-type User = { id: string; email: string; roles: string[] } | null;
-
-const ORIGIN = "https://crm.example.test";
-
-/** In-memory stand-in for the Userland runtime ctx: data, auth, and log. */
-function makeCtx({ user = null as User } = {}) {
-  const state: Record<string, Row[]> = { leads: [], activity: [] };
-  let clock = Date.parse("2026-09-01T12:00:00.000Z");
-  const tick = () => new Date((clock += 1000)).toISOString();
-
-  const collection = (name: string) => {
-    const rows = state[name];
-    if (!rows) throw new Error(`Unknown collection ${name}`);
-    return {
-      async create(input: Record<string, unknown>) {
-        const now = tick();
-        const row = { ...input, id: `${name}_${rows.length + 1}`, created_at: now, updated_at: now } as Row;
-        rows.push(row);
-        return { ...row };
-      },
-      async get(id: string) {
-        const row = rows.find((candidate) => candidate.id === id);
-        return row ? { ...row } : null;
-      },
-      async update(id: string, patch: Record<string, unknown>) {
-        const row = rows.find((candidate) => candidate.id === id);
-        if (!row) throw new Error(`Missing row ${id}`);
-        Object.assign(row, patch, { updated_at: tick() });
-        return { ...row };
-      },
-      async list(options: { where?: Record<string, unknown>; limit?: number; cursor?: string } = {}) {
-        const matches = rows
-          .filter((row) => Object.entries(options.where ?? {}).every(([key, value]) => row[key] === value))
-          .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
-        const offset = options.cursor ? Number(atob(options.cursor)) : 0;
-        const limit = options.limit ?? 50;
-        const page = matches.slice(offset, offset + limit);
-        return { rows: page.map((row) => ({ ...row })), ...(offset + limit < matches.length ? { cursor: btoa(String(offset + limit)) } : {}) };
-      }
-    };
-  };
-
-  const data = { collection, async transaction<T>(callback: (tx: { collection: typeof collection }) => Promise<T>) { return await callback({ collection }); } };
-  return {
-    state,
-    data,
-    auth: { currentUser: vi.fn(async () => user) },
-    log: { info: vi.fn(async () => {}), error: vi.fn(async () => {}) }
-  };
-}
-
-type Ctx = ReturnType<typeof makeCtx>;
-
-function get(app: any, ctx: Ctx, path: string) {
-  return app.fetch(new Request(`${ORIGIN}${path}`), ctx) as Promise<Response>;
-}
-
-function post(app: any, ctx: Ctx, path: string, fields: Record<string, string>, headers: Record<string, string> = {}) {
-  return app.fetch(
-    new Request(`${ORIGIN}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, ...headers },
-      body: new URLSearchParams(fields).toString()
-    }),
-    ctx
-  ) as Promise<Response>;
-}
-
-const request = {
-  name: "Jordan Pike",
-  email: "jordan.pike@example.com",
-  phone: "(555) 010-9911",
-  project: "bathroom",
-  budget: "15k_40k",
-  timeline: "1_3_months",
-  details: "Hall bath needs a new tub surround and vanity."
-};
-
-function demoKey(response: Response) {
-  const location = response.headers.get("location") ?? "";
-  return new URL(location, ORIGIN).searchParams.get("demo") ?? "";
-}
+import { ORIGIN, get, makeCtx, post, request } from "./helpers.js";
 
 describe("public estimate form", () => {
   it("renders the form without demo notices when demo mode is off", async () => {
@@ -205,141 +125,59 @@ describe("owner routes with demo mode off", () => {
   });
 });
 
-describe("demo mode", () => {
-  it("shows sample leads to visitors without signing in, marked noindex with a link back", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
-    for (const path of ["/", "/thanks", "/admin", "/admin/leads/new", "/admin/leads/sample-maya", "/missing"]) {
-      const body = await (await get(app, ctx, path)).text();
-      expect(body, path).toContain('<meta name="robots" content="noindex,follow">');
-      expect(body, path).toContain('href="https://userland.fun/examples/mini-crm/"');
+describe("turning demo mode off", () => {
+  // Follows the steps in README.md on a copy of server/ and the manifest, then
+  // checks the public form and the owner board still work.
+  async function strippedApp() {
+    const source = path.resolve(import.meta.dirname, "../server");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "mini-crm-no-demo-"));
+    for (const name of fs.readdirSync(source)) {
+      if (name === "demo.js") continue;
+      fs.copyFileSync(path.join(source, name), path.join(target, name));
     }
-    const board = await (await get(app, ctx, "/admin")).text();
-    expect(board).toContain("Maya Okafor");
-    expect(ctx.auth.currentUser).not.toHaveBeenCalled();
-    expect(ctx.state.leads).toHaveLength(0);
-  });
+    // Once demo mode is gone from server/, these edits find nothing to change.
+    const kept = fs
+      .readFileSync(path.join(target, "index.js"), "utf8")
+      .split("\n")
+      .filter((line) => !line.startsWith('import { demo } from "./demo.js";'))
+      .map((line) => (line === "export default createApp({ demo });" ? "export default createApp();" : line));
+    expect(kept.join("\n")).not.toContain("demo.js\"");
+    expect(kept).toContain("export default createApp();");
+    fs.writeFileSync(path.join(target, "index.js"), kept.join("\n"));
+    return (await import(pathToFileURL(path.join(target, "index.js")).href)).default;
+  }
 
-  it("asks for made-up details and never promises more privacy than a link gives", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
+  function strippedManifest() {
+    const manifest = readExampleManifest(path.resolve(import.meta.dirname, "..")) as any;
+    for (const collection of Object.values(manifest.resources.data.collections) as any[]) {
+      delete collection.fields.demo_visitor;
+      collection.indexes = collection.indexes.filter((index: { name: string }) => index.name !== "by_demo_visitor");
+    }
+    expect(JSON.stringify(manifest)).not.toContain("demo");
+    return manifest;
+  }
+
+  it("keeps the estimate form and the owner board working without demo.js or the demo_visitor fields", async () => {
+    const app = await strippedApp();
+    const rt = createFakeRuntime(strippedManifest());
+    const ctx = rt.ctx as any; // The shared runtime harness, checked against the stripped manifest.
 
     const home = await (await get(app, ctx, "/")).text();
-    expect(home).toContain("nobody will contact you");
-    expect(home).toContain("Please use made-up details.");
-    expect(home).toContain("Anyone with this page's link can see what you add.");
-    expect(home).not.toContain("We only use your details");
-    expect(home).not.toContain("Start a new demo");
+    expect(home).not.toContain("Demo app");
+    expect((await post(app, ctx, "/estimate", request)).status).toBe(303);
+    const [lead] = rt.state.rows.get("leads")!;
+    expect(lead!.data).toMatchObject({ name: "Jordan Pike", stage: "new" });
 
-    // Nothing saved yet: the thanks page doesn't claim a request arrived.
-    const plainThanks = await (await get(app, ctx, "/thanks")).text();
-    expect(plainThanks).toContain("Open the lead board to see sample leads");
-    expect(plainThanks).not.toContain("Your request is on the owner's lead board");
-    expect(plainThanks).toContain("nobody will contact you");
+    const signedOut = await get(app, ctx, "/admin");
+    expect(signedOut.status).toBe(303);
+    expect(signedOut.headers.get("location")).toContain("/_userland/auth/login");
 
-    const sent = await post(app, ctx, "/estimate", request);
-    const key = demoKey(sent);
-    const thanks = await (await get(app, ctx, `/thanks?demo=${key}`)).text();
-    expect(thanks).toContain("Your request is on the owner's lead board");
-    expect(thanks).toContain("anyone you share that link with can see it too");
-
-    // A page opened from someone's demo link says so and offers a clean start.
-    const linked = await (await get(app, ctx, `/?demo=${key}`)).text();
-    expect(linked).toContain('<a href="/">Start a new demo</a>');
-
-    for (const body of [home, plainThanks, thanks, await (await get(app, ctx, "/admin")).text()]) {
-      expect(body).not.toContain("kept separate");
-      expect(body).not.toContain("Only you can see");
-    }
-  });
-
-  it("keeps each visitor's entries away from other visitors", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
-
-    const first = await post(app, ctx, "/estimate", { ...request, name: "Visitor Alpha" });
-    const alpha = demoKey(first);
-    expect(alpha).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(first.headers.get("location")).toBe(`/thanks?demo=${alpha}`);
-
-    const second = await post(app, ctx, "/estimate", { ...request, name: "Visitor Bravo" });
-    const bravo = demoKey(second);
-    expect(bravo).not.toBe(alpha);
-
-    const alphaBoard = await (await get(app, ctx, `/admin?demo=${alpha}`)).text();
-    expect(alphaBoard).toContain("Visitor Alpha");
-    expect(alphaBoard).not.toContain("Visitor Bravo");
-    expect(alphaBoard).toContain(`demo=${alpha}`);
-
-    const bravoBoard = await (await get(app, ctx, `/admin?demo=${bravo}`)).text();
-    expect(bravoBoard).toContain("Visitor Bravo");
-    expect(bravoBoard).not.toContain("Visitor Alpha");
-
-    const anonymous = await (await get(app, ctx, "/admin")).text();
-    expect(anonymous).not.toContain("Visitor Alpha");
-    expect(anonymous).not.toContain("Visitor Bravo");
-
-    // Knowing another visitor's lead id is not enough to open it.
-    const alphaLead = ctx.state.leads.find((row) => row.name === "Visitor Alpha")!;
-    expect((await get(app, ctx, `/admin/leads/${alphaLead.id}?demo=${bravo}`)).status).toBe(404);
-    expect((await get(app, ctx, `/admin/leads/${alphaLead.id}`)).status).toBe(404);
-    expect((await post(app, ctx, `/admin/leads/${alphaLead.id}/notes`, { body: "hi", demo: bravo })).status).toBe(404);
-    expect((await get(app, ctx, `/admin/leads/${alphaLead.id}?demo=${alpha}`)).status).toBe(200);
-  });
-
-  it("applies changes to sample leads for one visitor only", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
-
-    const moved = await post(app, ctx, "/admin/leads/sample-maya/stage", { stage: "won", follow_up_on: "" });
-    expect(moved.status).toBe(303);
-    const key = demoKey(moved);
-    expect(moved.headers.get("location")).toBe(`/admin/leads/sample-maya?saved=update&demo=${key}`);
-    await post(app, ctx, "/admin/leads/sample-maya/notes", { body: "Signed today.", demo: key });
-
-    const mine = await (await get(app, ctx, `/admin/leads/sample-maya?demo=${key}`)).text();
-    expect(mine).toContain('class="chip chip-won"');
-    expect(mine).toContain("Signed today.");
-
-    const someoneElse = await (await get(app, ctx, "/admin/leads/sample-maya")).text();
-    expect(someoneElse).toContain('class="chip chip-new"');
-    expect(someoneElse).not.toContain("Signed today.");
-    expect(ctx.state.leads).toHaveLength(0);
-  });
-
-  it("caps how much one visitor can save", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
-    const first = await post(app, ctx, "/estimate", request);
-    const key = demoKey(first);
-    for (let index = 1; index < DEMO_LIMITS.leads; index += 1) {
-      expect((await post(app, ctx, "/estimate", { ...request, demo: key })).status).toBe(303);
-    }
-    const over = await post(app, ctx, "/estimate", { ...request, demo: key });
-    expect(over.status).toBe(429);
-    expect(await over.text()).toContain("That&#39;s plenty for a demo");
-    expect(ctx.state.leads).toHaveLength(DEMO_LIMITS.leads);
-    // Every lead kept its history row: a refused save never stops halfway.
-    expect(ctx.state.activity).toHaveLength(DEMO_LIMITS.leads);
-  });
-
-  it("stops taking new entries once the whole demo is full", async () => {
-    const app = createApp({ demo });
-    const ctx = makeCtx();
-    // Fill the demo with history rows from many earlier visitors.
-    for (let index = 0; index < DEMO_LIMITS.everyone; index += 1) {
-      await ctx.data.collection("activity").create({ lead_id: "sample-maya", lead_name: "Maya Okafor", kind: "note", body: "Earlier visitor", demo_visitor: `visitor${String(index).padStart(15, "0")}` });
-    }
-    const response = await post(app, ctx, "/estimate", request);
-    expect(response.status).toBe(429);
-    expect(await response.text()).toContain("The demo is full for now");
-    expect(ctx.state.leads).toHaveLength(0);
-
-    const note = await post(app, ctx, "/admin/leads/sample-maya/notes", { body: "One more" });
-    expect(note.status).toBe(429);
-    expect(ctx.state.activity).toHaveLength(DEMO_LIMITS.everyone);
-
-    // Looking around still works.
-    expect((await get(app, ctx, "/admin")).status).toBe(200);
+    rt.setUser({ id: "u_1", app_user_id: "u_1", email: "owner@example.com", roles: ["owner"] });
+    expect(await (await get(app, ctx, "/admin")).text()).toContain("Jordan Pike");
+    expect((await post(app, ctx, `/admin/leads/${lead!.id}/stage`, { stage: "contacted", follow_up_on: "" })).status).toBe(303);
+    expect((await post(app, ctx, `/admin/leads/${lead!.id}/notes`, { body: "Called back." })).status).toBe(303);
+    const detail = await (await get(app, ctx, `/admin/leads/${lead!.id}`)).text();
+    expect(detail).toContain("Called back.");
+    expect(rt.state.rows.get("leads")![0]!.data.stage).toBe("contacted");
   });
 });

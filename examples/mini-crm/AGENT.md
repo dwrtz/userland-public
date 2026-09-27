@@ -31,7 +31,7 @@ Steps:
 Demo mode:
 
 - `server/demo.js` powers the public demo only. It lets visitors see the owner side without signing in and keeps each visitor's entries apart with a random key in the page address. Userland forwards only its own sign-in cookie to app code, so the key can't live in a cookie. Anyone with a visitor's link sees that visitor's entries, so the demo copy asks for made-up details; don't reword it into a privacy promise. `DEMO_LIMITS` caps each visitor and the demo as a whole.
-- To remove it: delete `server/demo.js`, delete the `import { demo } from "./demo.js";` line in `server/index.js`, change the last line to `export default createApp();`, and remove the `demo_visitor` fields and `by_demo_visitor` indexes from the manifest. Do this before the first publish of a real app; removing fields later is a resource change.
+- To remove it: delete `server/demo.js`, delete the `import { demo } from "./demo.js";` line in `server/index.js`, change the last line to `export default createApp();`, remove the `demo_visitor` fields and `by_demo_visitor` indexes from the manifest, and delete `tests/demo.test.ts`. The "turning demo mode off" test in `tests/mini-crm.test.ts` checks these steps. Do this before the first publish of a real app; removing fields later is a resource change.
 
 Plan:
 
