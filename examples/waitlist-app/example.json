@@ -1,0 +1,14 @@
+{
+  "slug": "waitlist-app",
+  "title": "Waitlist App",
+  "summary": "Pre-launch waitlist with referral positions, optional questions, and an owner view with filters and CSV export.",
+  "path": "examples/waitlist-app",
+  "capabilities": ["static", "server", "auth", "data"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0",
+  "required_plan": "free",
+  "paid_features": [],
+  "launch_role": "launch-example",
+  "demo_url": "https://waitlist-demo.apps.userland.fun/",
+  "page_url": "https://userland.fun/examples/waitlist-app/"
+}
