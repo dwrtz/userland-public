@@ -48,13 +48,14 @@ async function answerHead(request, ctx, fetchGet) {
 
 export default {
   async fetch(request, ctx) {
-    // A link checker's HEAD on /go/:id isn't a visitor, so it doesn't count as a click.
-    if (request.method === "HEAD") return await answerHead(request, ctx, (get) => route(get, ctx, { countClick: false }));
+    // A HEAD from a link checker or uptime monitor isn't a visitor: it doesn't
+    // count as a tap on /go/:id, and in the demo it doesn't set up sample data.
+    if (request.method === "HEAD") return await answerHead(request, ctx, (get) => route(get, ctx, { head: true }));
     return await route(request, ctx);
   }
 };
 
-async function route(request, ctx, { countClick = true } = {}) {
+async function route(request, ctx, { head = false } = {}) {
   const url = new URL(request.url);
   let demo = null; // The public demo's visitor state. Always null in your own app.
   demo = demoMode(request); // demo
@@ -68,8 +69,8 @@ async function route(request, ctx, { countClick = true } = {}) {
     if (path === "/contact" && method === "GET") return html(contactPage({ nav, values: { topic: contact.topics[0] } }));
     if (path === "/contact" && method === "POST") return await sendMessage(request, ctx, nav, demo);
     if (path === "/thanks" && method === "GET") return html(thanksPage({ nav, kind: url.searchParams.get("kind") }));
-    if (path.startsWith("/go/") && method === "GET") return await followLink(ctx, nav, demo, path.slice(4), { countClick });
-    if (path === "/admin" || path.startsWith("/admin/")) return await ownerRoutes(request, ctx, url, path, method, demo);
+    if (path.startsWith("/go/") && method === "GET") return await followLink(ctx, nav, demo, path.slice(4), { countClick: !head });
+    if (path === "/admin" || path.startsWith("/admin/")) return await ownerRoutes(request, ctx, url, path, method, demo, { head });
     return notFound(nav);
   } catch (error) {
     await ctx.log.error("request failed", { path, message: error instanceof Error ? error.message : String(error) });
@@ -154,14 +155,15 @@ async function followLink(ctx, nav, demo, rawId, { countClick = true } = {}) {
 
 // ---------------------------------------------------------------- owner
 
-async function ownerRoutes(request, ctx, url, path, method, demo) {
+async function ownerRoutes(request, ctx, url, path, method, demo, { head = false } = {}) {
   let nav;
   if (demo) {
     // The public demo skips sign-in. Each visitor gets their own copy of the
     // sample data instead (see server/demo.js).
     const form = method === "POST" ? await readForm(request.clone()) : null;
     demo.useKeyFrom(form?.get("visit"));
-    if (await demo.ensureVisitor(ctx)) return redirect(demo.href(url.pathname + url.search));
+    // A HEAD gets the same redirect to a new key, but no copy of the sample data.
+    if (await demo.ensureVisitor(ctx, { seed: !head })) return redirect(demo.href(url.pathname + url.search));
     nav = demoNav(demo, "noindex,follow", { owner: true });
   } else {
     const denied = await requireOwner(request, ctx, url, method);

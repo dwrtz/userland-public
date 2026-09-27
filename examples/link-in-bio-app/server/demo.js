@@ -97,11 +97,12 @@ class Demo {
 
   // Makes sure the visitor has a key and their own copy of the sample data.
   // Returns true when a new key was created (the caller then redirects so the
-  // key shows up in the address).
-  async ensureVisitor(ctx) {
+  // key shows up in the address). With seed: false (a HEAD request, which
+  // shows nothing) it only makes the key and writes nothing.
+  async ensureVisitor(ctx, { seed = true } = {}) {
     if (this.key) return false;
     this.key = newKey();
-    await Promise.all([seedVisitor(ctx, this.key), deleteExpiredVisitors(ctx)]);
+    if (seed) await Promise.all([seedVisitor(ctx, this.key), deleteExpiredVisitors(ctx)]);
     return true;
   }
 

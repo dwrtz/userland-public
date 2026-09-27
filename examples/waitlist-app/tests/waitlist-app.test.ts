@@ -263,4 +263,21 @@ describe("HEAD requests", () => {
       expect((await expectHeadLikeGet(app, ctx, url, { headers })).status).toBe(status);
     }
   });
+
+  it("answer the demo's pages like GET, including the owner view", async () => {
+    const ctx = makeCtx();
+    const path = await join(ctx, DEMO, { email: "gus@example.com" });
+    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
+    expect(key).not.toBe("");
+    const pages: Array<[string, number]> = [
+      [`${DEMO}${path}`, 200],
+      [`${DEMO}/thanks?demo=${key}`, 200],
+      [`${DEMO}/admin`, 200],
+      [`${DEMO}/admin?demo=${key}&sort=newest`, 200],
+      [`${DEMO}/admin/export.csv?demo=${key}`, 200]
+    ];
+    for (const [url, status] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url)).status).toBe(status);
+    }
+  });
 });

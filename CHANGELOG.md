@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Example servers now answer `HEAD` like `GET`, with the same status and headers and no body. `waitlist-app`, `link-in-bio-app`, and the `blog-cms`, `booking-lite`, `server-notes`, `tiny-store`, and `webhook-automation` examples answered `HEAD` on their server pages with `404`. `booking-app`, `invoice-generator`, `job-board`, and `mini-crm` sent the page body with `HEAD`, and a signed-out `HEAD` on some owner pages got a `401` where `GET` redirects to sign-in. In `link-in-bio-app`, a `HEAD` on a link button no longer counts as a tap. Each example's tests check `HEAD` against `GET` with the new `expectHeadLikeGet` helper in `scripts/runtime-harness.ts`, and the `userland-runtime-code` skill now covers `HEAD`.
+- Example servers now answer `HEAD` like `GET`, with the same status and headers and no body. `waitlist-app`, `link-in-bio-app`, and the `blog-cms`, `booking-lite`, `server-notes`, `tiny-store`, and `webhook-automation` examples answered `HEAD` on their server pages with `404`. `booking-app`, `invoice-generator`, `job-board`, and `mini-crm` sent the page body with `HEAD`, and a signed-out `HEAD` on some owner pages got a `401` where `GET` redirects to sign-in. In `link-in-bio-app`, a `HEAD` on a link button no longer counts as a tap, and a `HEAD` on the demo's owner view gets the same redirect as `GET` without setting up a visitor copy of the sample data. Each example's tests check `HEAD` against `GET` with the new `expectHeadLikeGet` helper in `scripts/runtime-harness.ts`, and the `userland-runtime-code` skill now covers `HEAD`.
 
 ## 0.7.0 - 2026-09-27
 

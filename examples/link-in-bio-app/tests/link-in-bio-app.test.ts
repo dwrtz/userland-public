@@ -77,6 +77,36 @@ describe("HEAD requests", () => {
     expect((await expectHeadLikeGet(app, ctx, `${APP}/go/${link.id}`)).status).toBe(302);
     expect(ctx.state.links[0].clicks).toBe(1);
   });
+
+  it("answer the demo's owner view and link pages like GET", async () => {
+    const ctx = makeCtx();
+    const start = await get(ctx, `${DEMO}/admin`);
+    expect(start.status).toBe(303);
+    const key = /visit=([^&]+)/.exec(start.headers.get("location")!)![1];
+    const link = ctx.state.links.find((row) => row.demo_key === key)!;
+    const pages: Array<[string, number]> = [
+      [`${DEMO}/admin?visit=${key}`, 200],
+      [`${DEMO}/admin?tab=list&visit=${key}`, 200],
+      [`${DEMO}/admin/links?visit=${key}`, 200],
+      [`${DEMO}/go/${link.id}?visit=${key}`, 200],
+      [`${DEMO}/go/social/instagram`, 200],
+      [`${DEMO}/go/social/nope`, 404]
+    ];
+    for (const [url, status] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url)).status).toBe(status);
+    }
+  });
+
+  it("don't set up a demo copy for a visitor with no key", async () => {
+    const ctx = makeCtx();
+    await get(ctx, `${DEMO}/`); // the shared starter links
+    const before = JSON.stringify(ctx.state);
+    const res = await app.fetch(new Request(`${DEMO}/admin`, { method: "HEAD" }), ctx);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toMatch(/^\/admin\?visit=\d{10}-[a-f0-9]{24}$/);
+    expect(await res.text()).toBe("");
+    expect(JSON.stringify(ctx.state)).toBe(before);
+  });
 });
 
 describe("email list and contact form", () => {
