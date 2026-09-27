@@ -7,6 +7,6 @@
   "difficulty": "advanced",
   "userland_api_version": "v0",
   "required_plan": "business",
-  "paid_features": ["auth.public_signup", "data.indexes_per_collection.max", "files.max_upload_size_bytes.max", "secrets.required.max", "jobs.scheduled", "jobs.schedule.allowed", "jobs.declared.max", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
+  "paid_features": ["auth.public_signup", "data.collections.max", "data.indexes_per_collection.max", "files.max_upload_size_bytes.max", "secrets.required.max", "jobs.scheduled", "jobs.schedule.allowed", "jobs.declared.max", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
   "launch_role": "capability-fixture"
 }

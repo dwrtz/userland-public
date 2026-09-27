@@ -4,12 +4,27 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Server Notes</title>
+    <link rel="stylesheet" href="/assets/app.css">
   </head>
   <body>
     <main>
       <h1>Server Notes</h1>
-      <p>Create and list notes through the Userland server runtime.</p>
+      <p>A shared notes board. Anyone with the link can read and add notes, so don't post anything private. Notes are kept for 30 days.</p>
+      <form id="new-note">
+        <label for="title">Title</label>
+        <input id="title" name="title" required maxlength="200">
+        <label for="body">Note (optional)</label>
+        <textarea id="body" name="body" maxlength="2000"></textarea>
+        <div class="hidden-field" aria-hidden="true">
+          <label for="website">Leave this empty</label>
+          <input id="website" name="website" tabindex="-1" autocomplete="off">
+        </div>
+        <button type="submit">Add note</button>
+        <p id="form-message" role="status"></p>
+      </form>
+      <section id="notes" aria-live="polite"></section>
+      <button id="more-notes" type="button" class="secondary" hidden>Show more notes</button>
     </main>
+    <script type="module" src="/assets/app.js"></script>
   </body>
 </html>
-

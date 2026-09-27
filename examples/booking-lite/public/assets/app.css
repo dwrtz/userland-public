@@ -6,37 +6,29 @@ body {
 }
 
 main {
-  max-width: 760px;
+  max-width: 720px;
   margin: 0 auto;
   padding: 40px 20px;
 }
 
-header,
-article,
-form {
-  margin-bottom: 24px;
-}
-
-h1 {
-  margin: 0 0 8px;
-  font-size: 2rem;
-}
-
-p {
-  color: #5f6368;
-}
-
-article,
-form {
+form,
+article {
+  margin-bottom: 16px;
+  padding: 16px;
   border: 1px solid #d9dee3;
   border-radius: 8px;
   background: #fff;
-  padding: 16px;
 }
 
-a {
-  color: #0b57d0;
-  font-weight: 650;
+h2 {
+  margin: 0 0 6px;
+  font-size: 1.1rem;
+}
+
+label {
+  display: block;
+  margin-top: 12px;
+  font-weight: 600;
 }
 
 input,
@@ -44,7 +36,7 @@ textarea,
 button {
   box-sizing: border-box;
   width: 100%;
-  margin-top: 10px;
+  margin-top: 8px;
   padding: 10px 12px;
   border: 1px solid #c8ced6;
   border-radius: 6px;
@@ -52,7 +44,7 @@ button {
 }
 
 textarea {
-  min-height: 140px;
+  min-height: 100px;
   resize: vertical;
 }
 
@@ -63,28 +55,25 @@ button {
   cursor: pointer;
 }
 
-h2 {
-  margin: 32px 0 12px;
-  font-size: 1.25rem;
-}
-
-label {
-  display: block;
-  margin-top: 12px;
-  font-weight: 600;
-}
-
-.actions {
-  display: flex;
-  gap: 12px;
-}
-
 button.secondary {
   border-color: #c8ced6;
   color: #202124;
   background: #fff;
 }
 
+.hidden-field {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
 [hidden] {
   display: none !important;
+}
+
+.done {
+  color: #137333;
+  font-weight: 600;
 }

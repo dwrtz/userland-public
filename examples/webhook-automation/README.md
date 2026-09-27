@@ -5,9 +5,9 @@ Receive signed webhooks from another service and process each one in a backgroun
 ## What it shows
 
 - A webhook that Userland verifies before the app sees it.
-- A background job that records each event once, even when the sender retries.
-- An `automation-events` data collection that only server code can read or write.
-- A summary route that lists processed events without their contents.
+- A background job that records each event once, even when the sender retries or the same request is replayed.
+- An `automation-events` data collection that only server code can read or write. It keeps each event's `external_id` and `type`, not the whole body.
+- No public routes: processed events show up in the app's activity log, which only members of your Userland account can read.
 
 ## Plan
 
@@ -45,7 +45,9 @@ Userland checks every request before the app sees it, using the `generic_hmac` s
 - `X-Userland-Timestamp`: the current Unix time in seconds. Requests more than 5 minutes off are rejected.
 - `X-Userland-Signature`: the hex HMAC-SHA256 of the timestamp followed directly by the raw request body, keyed with ``AUTOMATION_WEBHOOK_SECRET``. A `sha256=` prefix is optional.
 
-Missing or wrong headers are rejected with a 400 or 401 and never reach the app. Include an `external_id` in the JSON body so repeats are recognized.
+Missing or wrong headers are rejected with a 400 or 401 and never reach the app.
+
+Every event must include an `external_id`: the sender's own id for the event (letters, digits, and `. _ : -`, up to 200 characters), the same on every retry. It is how repeats are recognized. Events without one are skipped with an `automation event skipped` warning, because Userland gives each incoming request a new delivery id and a retry would otherwise look like a new event. Userland does not remember signed requests, so a captured request can be sent again within the 5-minute window; the `external_id` check makes that harmless too.
 
 Send a signed test event from a terminal:
 
@@ -62,9 +64,13 @@ curl -X POST https://<app-id>.apps.userland.fun/_userland/webhooks/automation \
 
 ## Try it
 
+After sending the test event, check that it was processed:
+
 ```sh
-curl https://<app-id>.apps.userland.fun/api/events
+userland apps events <app-id> --type runtime.log.info --limit 10
 ```
+
+Sending the same body again logs `automation event already processed` instead.
 
 ## Troubleshoot or undo
 

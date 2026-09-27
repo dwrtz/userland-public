@@ -36,3 +36,16 @@ h2 {
   margin: 0 0 6px;
   font-size: 1.1rem;
 }
+
+button {
+  padding: 10px 14px;
+  border: 1px solid #c8ced6;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+[hidden] {
+  display: none !important;
+}

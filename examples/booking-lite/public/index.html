@@ -4,12 +4,29 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Booking Lite</title>
+    <link rel="stylesheet" href="/assets/app.css">
   </head>
   <body>
     <main>
       <h1>Booking Lite</h1>
-      <p>List available slots and claim one through a Userland data transaction.</p>
+      <p>Pick an open time and book it. Each time can only be booked once.</p>
+      <section id="slots" aria-live="polite"><p>Loading open times...</p></section>
+
+      <form id="book" hidden>
+        <h2 id="book-title"></h2>
+        <input type="hidden" name="slot_id">
+        <label for="name">Your name</label>
+        <input id="name" name="name" required maxlength="120" autocomplete="name">
+        <label for="email">Your email</label>
+        <input id="email" name="email" type="email" required maxlength="254" autocomplete="email">
+        <div class="hidden-field" aria-hidden="true">
+          <label for="website">Leave this empty</label>
+          <input id="website" name="website" tabindex="-1" autocomplete="off">
+        </div>
+        <button type="submit">Book this time</button>
+        <p id="book-message" role="status"></p>
+      </form>
     </main>
+    <script type="module" src="/assets/app.js"></script>
   </body>
 </html>
-

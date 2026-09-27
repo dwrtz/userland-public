@@ -4,11 +4,22 @@ A small notes app: server routes save notes and list them back.
 
 ## What it shows
 
+- A page with a note form and a list of notes, 20 at a time with a "Show more" button.
 - Server routes for creating and listing notes.
 - A `notes` data collection that only server code can write.
 - Activity logs you can read with `userland apps events`.
 
 Anyone who can reach the app can add a note. Add sign-in before you use this pattern for private notes.
+
+Because anyone can post, the app protects its data quota (1,000 rows on Free):
+
+- Titles are up to 200 characters and notes up to 2,000.
+- The whole app takes at most 30 new notes an hour (`429` after that) and keeps at most 300 notes (`503 board_full`). Apps can't see visitors' IP addresses, so these limits are app-wide, not per person.
+- Notes older than 30 days are deleted, up to 10 each time someone adds a note, to make room.
+- A hidden form field catches simple bots; their posts are dropped.
+- Notes can only be added from the app's own page, not from other sites.
+
+There is no way to delete a single note in this example. To moderate notes, add sign-in with an owner role and a delete route.
 
 ## Plan
 
@@ -26,12 +37,16 @@ userland apps publish examples/server-notes
 
 ## Try it
 
+Open `https://<app-id>.apps.userland.fun/` and add a note, or use curl:
+
 ```sh
 curl -X POST https://<app-id>.apps.userland.fun/api/notes \
   -H 'content-type: application/json' \
   --data '{"title":"First note","body":"Hello"}'
 curl https://<app-id>.apps.userland.fun/api/notes
 ```
+
+The list returns up to 20 notes and, when there are more, a `cursor`. Pass it back as `?cursor=<cursor>` for the next page.
 
 ## Troubleshoot or undo
 

@@ -13,7 +13,7 @@
   "resources": {
     "auth": {
       "mode": "app_users",
-      "roles": ["admin", "customer"],
+      "roles": ["admin"],
       "public_signup": true
     },
     "data": {
@@ -79,6 +79,22 @@
           ],
           "access": {
             "read": "owner",
+            "write": "server_only"
+          }
+        },
+        "stock-updates": {
+          "fields": {
+            "order_id": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_order",
+              "fields": ["order_id"],
+              "unique": true
+            }
+          ],
+          "access": {
+            "read": "server_only",
             "write": "server_only"
           }
         }

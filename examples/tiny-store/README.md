@@ -5,8 +5,12 @@ A small shop: admins add products, signed-in customers place orders, and a payme
 ## What it shows
 
 - Server routes for products, orders, and order pages.
-- App sign-in with `admin` and `customer` roles, and open sign-up for customers.
-- `products` and `orders` data collections. Order totals are worked out on the server from product prices.
+- App sign-in with an `admin` role, and open sign-up for customers. New customers get no role; any signed-in customer can order.
+- `products` and `orders` data collections. Order totals are worked out on the server from product prices. A small `stock-updates` collection makes sure each paid order takes stock off only once.
+- Stock: an order can't ask for more than a product's `inventory_count`, and stock goes down when the payment is confirmed. Shoppers see "Sold out", not the exact count.
+- A customer can have at most 5 unpaid orders open at once.
+- The product list comes 50 at a time with a "Show more" button.
+- Shop actions only work from the shop's own pages. Another site, including another app on `apps.userland.fun`, cannot post to them on a signed-in admin's or customer's behalf.
 - A public `product-images` file store.
 - Two server-only secrets for the payment provider.
 - A webhook that hands verified payment events to a background job.
@@ -19,7 +23,7 @@ Checkout is a stand-in. Replace it with your payment provider's server-side API 
 **Plan needed: Business.** This example is intentionally paid.
 
 - Business: open customer sign-up, and the hourly job (Starter allows daily jobs only).
-- Starter or higher: the payment webhook, a second secret, a second job, a scheduled job, a third index on orders, and image uploads up to 10 MB.
+- Starter or higher: the payment webhook, a second secret, a second job, a scheduled job, a third data collection, a third index on orders, and image uploads up to 10 MB.
 
 To fit Starter, turn off open sign-up and run the cleanup job daily. Run `userland accounts limits` to see your account's current limits.
 
@@ -58,9 +62,25 @@ Userland checks every request before the app sees it, using the `generic_hmac` s
 - `X-Userland-Timestamp`: the current Unix time in seconds. Requests more than 5 minutes off are rejected.
 - `X-Userland-Signature`: the hex HMAC-SHA256 of the timestamp followed directly by the raw request body, keyed with ``CHECKOUT_WEBHOOK_SECRET``. A `sha256=` prefix is optional.
 
-Missing or wrong headers are rejected with a 400 or 401 and never reach the app. The JSON body must include the `checkout_session_id` returned when the order was created.
+Missing or wrong headers are rejected with a 400 or 401 and never reach the app.
 
-Payment providers sign their webhooks with their own schemes, so you cannot point a provider straight at this URL. Relay the provider's events through a small service that checks the provider's own signature, then re-signs the body in the format above and forwards it here. The Webhooks guide lists the other signing schemes Userland accepts.
+Only one event marks an order paid. Its JSON body must look like this, with the `checkout_session_id` returned when the order was created and the amount in cents:
+
+```json
+{
+  "type": "checkout.completed",
+  "checkout_session_id": "<checkout-session-id>",
+  "payment_status": "paid",
+  "amount_total": 2400,
+  "currency": "usd"
+}
+```
+
+Every other event is logged and ignored: expired or abandoned checkouts, failed payments, and completed checkouts whose payment is still processing (`payment_status` other than `paid`). An amount or currency that doesn't match the order is ignored with a warning. A payment that arrives after the hourly job cancelled the order is left alone with a `payment received for cancelled order` warning, so you can refund it or restore the order yourself. Find these with `userland apps events <app-id> --severity warn`.
+
+Payment providers sign their webhooks with their own schemes, so you cannot point a provider straight at this URL. Relay the provider's events through a small service that checks the provider's own signature, turns a successful payment into the body above, re-signs it in the format above, and forwards it here. The Webhooks guide lists the other signing schemes Userland accepts.
+
+Stock is taken off once per order when the payment is confirmed, even if the payment event arrives twice. Payments for two different orders confirmed at the same moment can miss each other's change, and a payment for the last items can arrive after someone else's; the job logs an `order oversold` warning when stock would go below zero. If stock can't be updated at all, the job logs a `stock not updated` error; adjust the product's stock by hand.
 
 ## Troubleshoot or undo
 

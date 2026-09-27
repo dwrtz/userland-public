@@ -4,10 +4,20 @@ Let people book time slots without two people getting the same slot.
 
 ## What it shows
 
-- Server routes to add sample slots, list open slots, and book one.
+- A page that lists open times and books one.
+- Slots you list in `server/schedule.js`. The app stores any new ones the next time someone opens the slot list, skips times that have passed, and deletes past slots nobody booked.
 - `slots` and `bookings` data collections that only server code can write.
-- A data transaction that checks the slot is still open and books it in one step, so a second booking for the same slot is refused.
+- A unique index on the booking's `slot_id`, so a slot can only ever have one booking, even when two people book it at the same moment. The second person gets `409`.
 - Public slot lists never show who booked.
+
+Because anyone can book, the app also:
+
+- checks names (up to 120 characters) and email addresses;
+- allows 2 bookings per email address per day, and 20 bookings an hour across the whole app (`429` after that). Apps can't see visitors' IP addresses, so there is no per-person limit beyond the email;
+- drops posts from simple bots that fill in a hidden form field;
+- only takes bookings from its own page, not from other sites.
+
+There is no owner view or cancel button: bookings are stored where only server code can read them. For an inbox where the owner reviews and cancels bookings, start from the Booking App example instead.
 
 ## Plan
 
@@ -25,13 +35,9 @@ userland apps publish examples/booking-lite
 
 ## Try it
 
-Add two sample slots (tomorrow and the day after):
+Open `https://<app-id>.apps.userland.fun/` and book a time. The sample schedule offers an intro call tomorrow and a planning session the day after, at 16:00 UTC.
 
-```sh
-curl -X POST https://<app-id>.apps.userland.fun/api/seed
-```
-
-List open slots:
+Or list open slots with curl:
 
 ```sh
 curl https://<app-id>.apps.userland.fun/api/slots
@@ -46,6 +52,21 @@ curl -X POST https://<app-id>.apps.userland.fun/api/bookings \
 ```
 
 The first booking returns `201`. A second booking for the same slot returns `409`.
+
+## Use your own slots
+
+Edit `scheduledSlots` in `server/schedule.js` to return your times, then publish again with `--app <app-id>`:
+
+```js
+export function scheduledSlots() {
+  return [
+    { title: "Intro call", starts_at: "2026-11-02T16:00:00Z" },
+    { title: "Intro call", starts_at: "2026-11-03T16:00:00Z" }
+  ];
+}
+```
+
+Delete `tests/sample-schedule.test.ts`, which only checks the sample times. Sample slots that were already stored stay until they pass (booked ones stay after that).
 
 ## Troubleshoot or undo
 

@@ -2,14 +2,17 @@
 
 Call an AI model provider from the server so the provider key never reaches the browser.
 
-The example uses a stand-in model call. Replace `callMockModel` in `server/index.js` with your provider's API.
+The example uses a stand-in model call that spends nothing. Replace `callMockModel` in `server/index.js` with your provider's API.
 
-**Before you connect a real provider key:** `/api/run` does not require sign-in. Anyone who finds the app's URL can call it, and every call would spend your provider credit. Add app sign-in (declare `resources.auth` and return 401 when `ctx.auth.currentUser(request)` is empty) or a per-user rate limit first. Invite-only sign-in works on the Free plan; see the Auth guide.
+**Before you connect a real provider key:** `/api/run` does not require sign-in. Anyone who finds the app's URL can call it, and every call would spend your provider credit. Add app sign-in and a daily limit per person in the same change; `AGENT.md` step 2 has the manifest and code. Invite-only sign-in and one small data collection both fit the Free plan; see the Auth guide.
 
 ## What it shows
 
-- One server route, `/api/run`, that takes a prompt and returns an answer.
+- A page with a question box that calls the app's own server.
+- One server route, `/api/run`, that takes a prompt and returns an answer of at most 4,000 characters.
 - A `MODEL_API_KEY` secret that only server code can read. It is never sent to the browser, returned, or logged.
+- Provider errors are logged by status and code only. Visitors get a plain `model_unavailable` error, never the provider's message, which can quote part of the key or your billing state.
+- `/api/run` only accepts JSON from the app's own page. Another site, including another app on `apps.userland.fun`, gets a `403`, and plain form posts get a `415`.
 
 ## Plan
 

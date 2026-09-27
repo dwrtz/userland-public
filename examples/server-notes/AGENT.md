@@ -19,10 +19,12 @@ Steps:
 
 1. Update the `notes` collection fields. `id`, `created_at`, `updated_at`, `deleted_at`, and `data` are reserved field names.
 2. Only filter or sort on indexed, declared fields. `created_at` and `updated_at` cannot be used in `order_by`; with no `order_by`, rows come back most recently updated first.
-3. Keep writes on server routes and validate input before `create`.
-4. Log successful writes with identifiers only.
-5. Add `auth` before storing anything private: the example accepts writes from any visitor.
-6. Validate: `npm run validate:manifests -- server-notes` and `npx vitest run examples/server-notes`.
+3. Keep writes on server routes and validate input before `create`: `readJson` answers `415`/`413`/`400` for non-JSON, oversized, or non-object bodies, and titles and bodies have length limits.
+4. Keep the abuse limits in `LIMITS` while writes stay anonymous: an app-wide hourly cap, a cap on stored notes, deletion of notes older than `keepDays` (a few per request), a hidden `website` honeypot field, and the same-origin check on POST. Apps do not get the visitor's IP address, so there is no per-person limit; the checks read before they write, so a burst can go slightly over. Size the caps to stay well under the plan's data row limit.
+5. Keep the list paginated with `cursor`; do not raise `limit` to hide pagination.
+6. Log successful writes with identifiers only.
+7. Add `auth` before storing anything private, or to let an owner delete notes: the example accepts writes from any visitor and has no moderation.
+8. Validate: `npm run validate:manifests -- server-notes` and `npx vitest run examples/server-notes`.
 
 Safety:
 

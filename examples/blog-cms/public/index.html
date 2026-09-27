@@ -10,15 +10,29 @@
     <main>
       <header>
         <h1>Userland Blog CMS</h1>
-        <p>Publish posts with app-scoped auth, durable data, and media files.</p>
+        <p>The latest posts, newest first.</p>
+        <p id="account" class="account"></p>
       </header>
       <section id="posts" aria-live="polite"></section>
-      <form id="editor">
-        <input name="title" placeholder="Title" required>
-        <textarea name="body" placeholder="Body" required></textarea>
-        <input name="image_url" placeholder="Image URL">
-        <button type="submit">Create draft</button>
-      </form>
+      <button id="more-posts" type="button" class="secondary" hidden>Show more posts</button>
+
+      <section id="admin" hidden>
+        <h2>Write a post</h2>
+        <form id="editor">
+          <label>Title <input name="title" required maxlength="200"></label>
+          <label>Post <textarea name="body" required></textarea></label>
+          <label>Image address (optional) <input name="image_url" type="url" placeholder="https://"></label>
+          <div class="actions">
+            <button type="submit" name="status" value="draft">Save as draft</button>
+            <button type="submit" name="status" value="published" class="secondary">Publish now</button>
+          </div>
+          <p id="editor-message" role="status"></p>
+        </form>
+
+        <h2>Drafts</h2>
+        <section id="drafts" aria-live="polite"></section>
+        <button id="more-drafts" type="button" class="secondary" hidden>Show more drafts</button>
+      </section>
     </main>
     <script type="module" src="/assets/app.js"></script>
   </body>

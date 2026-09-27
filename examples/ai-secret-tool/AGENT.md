@@ -14,22 +14,27 @@ Outputs:
 
 - Manifest with one required secret.
 - Server route that reads the secret through `ctx.secrets.require`.
-- Frontend that calls only the app server.
+- Frontend (`public/index.html`, `public/assets/app.js`) that calls only the app server.
 
 Steps:
 
 1. Keep provider calls in `server/index.js`.
-2. Replace `callMockModel` with the provider request. Read the key with `ctx.secrets.require("MODEL_API_KEY")` inside the request handler.
-3. Validate prompt input before reading the secret, and return only sanitized model output.
-4. Secret names must be uppercase and cannot start with `USERLAND_`, `CF_`, or `CLOUDFLARE_`. App tags cannot be reserved names such as `secrets`.
-5. Validate: `npm run validate:manifests -- ai-secret-tool` and `npx vitest run examples/ai-secret-tool`.
-6. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting the secret does not activate it. Set it with `printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY`, then publish again into the same app with `userland apps publish examples/ai-secret-tool --app <app-id>` (without `--app` the CLI creates a second app).
-7. Before connecting a paid provider key, protect `/api/run` with app sign-in (`resources.auth` plus a `ctx.auth.currentUser(request)` check returning 401) or a per-user rate limit. As shipped, anyone with the URL can call it and spend the provider credit.
+2. Replace `callMockModel` with the provider request, and in the same change add sign-in and a daily limit. As shipped, anyone with the URL can call `/api/run`; with a real key every call spends the owner's credit. Do not publish a real key without both:
+   - Manifest (still Free): add `"auth": { "mode": "app_users", "roles": ["member"], "public_signup": false }` and a collection `"usage": { "fields": { "key": "string", "count": "integer" }, "indexes": [{ "name": "by_key", "fields": ["key"], "unique": true }], "access": { "read": "server_only", "write": "server_only" } }`. Add `"auth"` and `"data"` to `capabilities` in `example.json` and `catalog.json`.
+   - Code: at the top of `runTool`, `const user = await ctx.auth.currentUser(request)`; return `401` when there is none and `403` without the `member` role. Then look up the row with `key = user.app_user_id + ":" + today (YYYY-MM-DD)` via `list({ where: { key }, limit: 1 })`; return `429` once `count` reaches your daily limit, otherwise `update` it to `count + 1` (or `create` it with `count: 1`, treating `unique_conflict` as "someone else just created it, read it again"). The read-then-write can let a couple of simultaneous calls through; it is a budget, not an exact counter.
+   - Invite each person with `POST /v0/apps/<app-id>/admin-invites` and `"roles": ["member"]` (Auth guide), and point the page at `/_userland/auth/login?return_to=/` for signed-out visitors.
+   Read the key with `ctx.secrets.require("MODEL_API_KEY")` inside the request handler, and pass `MAX_ANSWER_TOKENS` as the provider's output limit.
+3. Validate prompt input before reading the secret, and return only sanitized model output. Keep the `try`/`catch` around `model.call`: provider SDK errors carry `code` and `status`, and the platform returns an uncaught error's message and status to the visitor, which can expose part of the key or billing state. Log only `status` and `code`.
+4. Keep the same-origin check (`isSameOrigin`) and `readJson` requiring `content-type: application/json` on `/api/run`, so other sites (including other `*.apps.userland.fun` apps) cannot call it through a visitor's browser. Once you add sign-in, this is also what stops them acting as a signed-in member.
+5. Secret names must be uppercase and cannot start with `USERLAND_`, `CF_`, or `CLOUDFLARE_`. App tags cannot be reserved names such as `secrets`.
+6. Validate: `npm run validate:manifests -- ai-secret-tool` and `npx vitest run examples/ai-secret-tool`.
+7. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting the secret does not activate it. Set it with `printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY`, then publish again into the same app with `userland apps publish examples/ai-secret-tool --app <app-id>` (without `--app` the CLI creates a second app).
 
 Safety:
 
 - Do not put provider keys in frontend files.
-- Do not ship a real provider key behind an unauthenticated, unlimited `/api/run`.
+- Do not ship a real provider key behind an unauthenticated, unlimited `/api/run` (step 2).
+- Do not return a provider error's message to the visitor.
 - Do not return, log, or echo any part of a secret, including a prefix.
 - Do not log prompts; they may contain private user data. Log sizes or ids instead.
 
