@@ -243,12 +243,14 @@ export async function analyzeAppDirectory(rootDir: string, options: { strict?: b
   }
 
   const check = checkManifestDocument(manifestDocument);
-  const manifestErrors = [...check.errors, ...validateCliKeys(cliKeys)];
+  const cliCheck = validateCliKeys(cliKeys);
+  const manifestErrors = [...check.errors, ...cliCheck.errors];
+  const schemaStrict = [...check.schema_strict, ...cliCheck.schema_strict];
   report.errors.push(...manifestErrors);
   if (options.strict) {
-    report.errors.push(...check.schema_strict);
+    report.errors.push(...schemaStrict);
   } else {
-    report.warnings.push(...check.schema_strict);
+    report.warnings.push(...schemaStrict);
   }
 
   const releaseFiles = await collectReleaseFiles(absoluteRoot, document, report);
@@ -444,16 +446,24 @@ function schemaPropertyKeys(at: string[]): Set<string> {
   return new Set(isPlainObject(node) && isPlainObject(node.properties) ? Object.keys(node.properties) : []);
 }
 
-function validateCliKeys(cliKeys: Record<string, unknown>): ValidationIssue[] {
+/**
+ * Checks the top-level keys the CLI reads itself. A wrong type for `$schema`, `message`, or
+ * `provenance` (and an unknown key in a `files` entry) is ignored when publishing: the CLI never
+ * sends `$schema`, sends only a string `message` (the API also ignores any other type), and sends
+ * `{}` for a non-object `provenance`. Those are `schema_strict` issues, like other rules the API
+ * tolerates. Malformed `files` change which files are uploaded, so they stay errors.
+ */
+function validateCliKeys(cliKeys: Record<string, unknown>): { errors: ValidationIssue[]; schema_strict: ValidationIssue[] } {
   const errors: ValidationIssue[] = [];
+  const schemaStrict: ValidationIssue[] = [];
   if (cliKeys.$schema !== undefined && typeof cliKeys.$schema !== "string") {
-    errors.push({ code: "schema", manifest_path: "$schema", message: "must be a string" });
+    schemaStrict.push({ code: "schema_strict", manifest_path: "$schema", message: "must be a string (ignored when publishing)" });
   }
   if (cliKeys.message !== undefined && typeof cliKeys.message !== "string") {
-    errors.push({ code: "schema", manifest_path: "message", message: "must be a string" });
+    schemaStrict.push({ code: "schema_strict", manifest_path: "message", message: "must be a string (ignored when publishing)" });
   }
   if (cliKeys.provenance !== undefined && !isPlainObject(cliKeys.provenance)) {
-    errors.push({ code: "schema", manifest_path: "provenance", message: "must be an object" });
+    schemaStrict.push({ code: "schema_strict", manifest_path: "provenance", message: "must be an object (ignored when publishing)" });
   }
   if (cliKeys.files !== undefined) {
     if (!Array.isArray(cliKeys.files)) {
@@ -467,7 +477,7 @@ function validateCliKeys(cliKeys: Record<string, unknown>): ValidationIssue[] {
         }
         for (const key of Object.keys(entry)) {
           if (key !== "path" && key !== "content_type") {
-            errors.push({ code: "schema", manifest_path: `${entryPath}.${key}`, message: "is not an allowed key" });
+            schemaStrict.push({ code: "schema_strict", manifest_path: `${entryPath}.${key}`, message: "is not an allowed key (ignored when publishing)" });
           }
         }
         if (typeof entry.path !== "string" || entry.path.length === 0) {
@@ -479,7 +489,7 @@ function validateCliKeys(cliKeys: Record<string, unknown>): ValidationIssue[] {
       });
     }
   }
-  return errors;
+  return { errors, schema_strict: schemaStrict };
 }
 
 /** Cross-field rules the API enforces that JSON Schema cannot express. */

@@ -877,9 +877,17 @@ describe("public CLI", () => {
     expect(json).toMatchObject({ ok: true, errors: [], warnings: [] });
 
     const badMessage = await temporaryAppDir({ app: { name: "Message" }, runtime: { static_root: "public" }, message: 42 });
+    // A non-string message is ignored when publishing (the API ignores it too), so it only warns.
     const bad = await runCli(["validate", badMessage, "--json"], "http://127.0.0.1:1", { apiKey: null });
-    expect(bad.code).toBe(1);
-    expect(JSON.parse(bad.stdout).errors).toEqual([{ code: "schema", manifest_path: "message", message: "must be a string" }]);
+    expect(bad.code).toBe(0);
+    expect(JSON.parse(bad.stdout)).toMatchObject({
+      ok: true,
+      errors: [],
+      warnings: [{ code: "schema_strict", manifest_path: "message", message: "must be a string (ignored when publishing)" }]
+    });
+    const badStrict = await runCli(["validate", badMessage, "--strict", "--json"], "http://127.0.0.1:1", { apiKey: null });
+    expect(badStrict.code).toBe(1);
+    expect(JSON.parse(badStrict.stdout).errors).toEqual([{ code: "schema_strict", manifest_path: "message", message: "must be a string (ignored when publishing)" }]);
   });
 
   test("publishes the manifest release message unless --message overrides it", async () => {
