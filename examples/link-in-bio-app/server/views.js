@@ -93,7 +93,7 @@ export function homePage({ nav, links, signupForm = {}, signupErrors = {} }) {
 ${featured
   .map(
     (link) => `    <li class="product">
-      <a class="product-link" href="${e(outbound(link))}">
+      <a class="product-link" href="${e(outbound(link))}" rel="nofollow">
         <span class="product-picture">${picture(link.picture, "product-img", [320, 240])}</span>
         <span class="product-body">
           <span class="product-title">${e(link.title)}</span>
@@ -114,7 +114,7 @@ ${featured
   <ul class="link-list" role="list">
 ${regular
   .map(
-    (link) => `    <li><a class="link-pill" href="${e(outbound(link))}">
+    (link) => `    <li><a class="link-pill" href="${e(outbound(link))}" rel="nofollow">
       <span class="link-thumb">${picture(link.picture, "thumb-img", [56, 56])}</span>
       <span class="link-text"><span class="link-title">${e(link.title)}</span>${link.note ? `<span class="link-note">${e(link.note)}</span>` : ""}</span>
       <span class="link-arrow">${ARROW}</span>
@@ -133,7 +133,7 @@ ${regular
       <p class="byline"><strong>${e(profile.person)}</strong> <span aria-hidden="true">&middot;</span> ${e(profile.role)}</p>
       <p class="bio">${e(profile.bio)}</p>
       <ul class="socials" role="list">
-${socials.map((social) => `        <li><a class="social" href="${e(socialHref(social))}" aria-label="${e(profile.brand)} on ${e(social.label)}">${socialIcon(social.icon)}</a></li>`).join("\n")}
+${socials.map((social) => `        <li><a class="social" href="${e(socialHref(social))}"${nav.demo ? ' rel="nofollow"' : ""} aria-label="${e(profile.brand)} on ${e(social.label)}">${socialIcon(social.icon)}</a></li>`).join("\n")}
       </ul>
     </section>
     ${signupCard({ nav, values: signupForm, errors: signupErrors })}
@@ -290,24 +290,33 @@ ${main}
   });
 }
 
-export function inboxPage({ nav, tab, messages, signups, flash }) {
-  const openMessages = messages.filter((m) => m.status !== "archived");
-  const activeSignups = signups.filter((s) => s.status !== "archived");
-  const archived = [...messages, ...signups].filter((item) => item.status === "archived");
-  const newCount = openMessages.filter((m) => m.status === "new").length;
-  const tabs = [
-    { key: "messages", label: "Messages", count: newCount ? `${newCount} new` : String(openMessages.length) },
-    { key: "list", label: "Email list", count: String(activeSignups.length) },
-    { key: "archived", label: "Archived", count: String(archived.length) }
-  ];
+const TAB_LABELS = { messages: "New", replied: "Replied", list: "Email list", archived: "Archived" };
+
+// One tab of the inbox. Each tab shows one page, newest first, with an
+// "Older" link when there is more.
+export function inboxPage({ nav, tab, items, cursor, olderPage = false, newCount, listCount, flash }) {
+  const countText = ({ count, more }) => (more ? `${count}+` : String(count));
   const tabNav = `<nav class="tabs" aria-label="Inbox sections">
-${tabs.map((t) => `  <a href="${e(nav.href(`/admin?tab=${t.key}`))}"${t.key === tab ? ' aria-current="page"' : ""}>${t.label} <span class="count">${e(t.count)}</span></a>`).join("\n")}
+${Object.entries(TAB_LABELS)
+  .map(([key, label]) => {
+    const count = key === "messages" && newCount?.count ? ` <span class="count">${e(countText(newCount))}</span>` : "";
+    return `  <a href="${e(nav.href(`/admin?tab=${key}`))}"${key === tab ? ' aria-current="page"' : ""}>${label}${count}</a>`;
+  })
+  .join("\n")}
 </nav>`;
 
   let body;
-  if (tab === "list") body = emailListSection({ nav, signups: activeSignups });
-  else if (tab === "archived") body = itemList({ nav, items: archived, empty: "Nothing archived yet." });
-  else body = itemList({ nav, items: openMessages, empty: "No messages yet. They show up here when someone uses the contact form." });
+  if (tab === "list") body = emailListSection({ nav, signups: items, listCount, pager: pager({ nav, tab, cursor, olderPage }) });
+  else {
+    const empty = {
+      messages: olderPage ? "No older new messages." : "No new messages. They show up here when someone uses the contact form.",
+      replied: "Nothing marked as replied yet.",
+      archived: "Nothing archived yet."
+    }[tab];
+    body = `${bulkForm({ nav, tab, show: items.length > 0 })}
+${itemList({ nav, tab, items, empty })}
+${pager({ nav, tab, cursor, olderPage })}`;
+  }
 
   const main = `<div class="owner-title-row"><h1 class="page-title">Inbox</h1></div>
 ${flash ? `<p class="flash" role="status">${e(flash)}</p>` : ""}
@@ -317,32 +326,60 @@ ${domainTip()}`;
   return ownerLayout({ nav, title: "Inbox", active: "inbox", main });
 }
 
-function itemList({ nav, items, empty }) {
+function pager({ nav, tab, cursor, olderPage }) {
+  if (!cursor && !olderPage) return "";
+  const links = [];
+  if (olderPage) links.push(`<a class="button button-small button-quiet" href="${e(nav.href(`/admin?tab=${tab}`))}">Back to newest</a>`);
+  if (cursor) links.push(`<a class="button button-small" href="${e(nav.href(`/admin?tab=${tab}&cursor=${encodeURIComponent(cursor)}`))}">Older <span aria-hidden="true">&rarr;</span></a>`);
+  return `<nav class="pager" aria-label="More ${e(TAB_LABELS[tab].toLowerCase())}">${links.join(" ")}</nav>`;
+}
+
+// Clean-up buttons for a flood of messages: archive every new message, or
+// delete everything archived, a batch at a time.
+function bulkForm({ nav, tab, show }) {
+  if (!show || (tab !== "messages" && tab !== "archived")) return "";
+  const [action, label, note] =
+    tab === "messages"
+      ? ["archive-new", "Archive all new messages", "Moves every new message to Archived, a batch at a time. Handy after a burst of junk."]
+      : ["delete-archived", "Delete everything in Archived", "Deletes archived messages and removed addresses for good, a batch at a time. A deleted address can sign up again."];
+  return `<form class="bulk-form card" method="post" action="${e(nav.href("/admin/inbox"))}">
+  ${nav.hidden}
+  <p class="muted">${note}</p>
+  <label class="check"><input type="checkbox" name="confirm" value="yes"> Yes, I'm sure</label>
+  <button class="button button-small button-quiet" type="submit" name="action" value="${action}">${label}</button>
+</form>`;
+}
+
+function itemList({ nav, tab, items, empty }) {
   if (!items.length) return `<p class="empty">${e(empty)}</p>`;
   return `<ul class="messages" role="list">
-${items.map((item) => messageCard({ nav, item })).join("\n")}
+${items.map((item) => messageCard({ nav, tab, item })).join("\n")}
 </ul>`;
 }
 
-function messageCard({ nav, item }) {
+function messageCard({ nav, tab, item }) {
   const isSignup = item.kind === "signup";
-  const statusLabel = { new: "New", replied: "Replied", archived: "Archived" }[item.status] ?? "New";
+  const statusLabel = isSignup && item.status === "archived" ? "Removed from list" : ({ new: "New", replied: "Replied", archived: "Archived" }[item.status] ?? "New");
   const actions = [];
   if (!isSignup && item.status !== "replied") actions.push(["replied", "Mark replied"]);
   if (item.status !== "new") actions.push(["new", isSignup ? "Put back on list" : "Move to new"]);
   if (item.status !== "archived") actions.push(["archived", "Archive"]);
+  // Deleting can't be undone, so it's offered once an item is archived.
+  if (item.status === "archived") actions.push(["delete", "Delete"]);
   const subject = `Re: ${item.topic || "your note"}`;
+  const who = item.name || item.email;
   return `  <li class="message card">
     <div class="message-head">
-      <p class="message-from"><strong>${e(item.name || item.email)}</strong>${item.topic ? ` <span class="chip">${e(item.topic)}</span>` : ""}${isSignup ? ` <span class="chip">Email list</span>` : ""}</p>
+      <p class="message-from"><strong>${e(who)}</strong>${item.topic ? ` <span class="chip">${e(item.topic)}</span>` : ""}${isSignup ? ` <span class="chip">Email list</span>` : ""}</p>
       <p class="message-meta"><span class="status status-${e(item.status)}">${statusLabel}</span> <time datetime="${e(item.received_at)}">${e(timeAgo(item.received_at))}</time></p>
     </div>
     ${item.message ? `<p class="message-text">${e(item.message)}</p>` : ""}
     <div class="message-foot">
-      ${emailLink(item.email, { className: "reply-link", subject })}
+      ${emailLink(item.email, { className: "reply-link", subject: isSignup ? "" : subject })}
       <form class="inline-actions" method="post" action="${e(nav.href(`/admin/inbox/${encodeURIComponent(item.id)}`))}">
         ${nav.hidden}
-${actions.map(([value, label]) => `        <button class="button button-small${value === "replied" ? "" : " button-quiet"}" type="submit" name="status" value="${value}">${label}</button>`).join("\n")}
+        <input type="hidden" name="tab" value="${e(tab)}">
+${actions.map(([value, label]) => `        <button class="button button-small${value === "replied" ? "" : " button-quiet"}" type="submit" name="status" value="${value}"${value === "delete" ? ` aria-label="Delete for good: ${e(who)}"` : ""}>${label}</button>`).join("\n")}
       </form>
     </div>
   </li>`;
@@ -359,24 +396,38 @@ function emailLink(email, { className = "", subject = "" } = {}) {
   return `<a${cls} href="mailto:${e(encodeURI(email).replace(/[?&#]/g, encodeURIComponent))}${e(query)}">${e(email)}</a>`;
 }
 
-function emailListSection({ nav, signups }) {
+function emailListSection({ nav, signups, listCount, pager: pagerHtml }) {
+  const total = listCount ?? { count: signups.length, more: false };
+  const heading = total.more ? `More than ${total.count.toLocaleString("en-US")} people on your list` : `${total.count.toLocaleString("en-US")} ${total.count === 1 ? "person" : "people"} on your list`;
   const rows = signups
     .map(
       (s) => `  <li class="signup-row">
     <span class="signup-who"><strong>${e(s.name || "No name given")}</strong>${emailLink(s.email)}</span>
     <time datetime="${e(s.received_at)}">${e(timeAgo(s.received_at))}</time>
-    <form method="post" action="${e(nav.href(`/admin/inbox/${encodeURIComponent(s.id)}`))}">${nav.hidden}<button class="button button-small button-quiet" type="submit" name="status" value="archived" aria-label="Remove ${e(s.email)} from the list">Remove</button></form>
+    <form method="post" action="${e(nav.href(`/admin/inbox/${encodeURIComponent(s.id)}`))}">${nav.hidden}<input type="hidden" name="tab" value="list"><button class="button button-small button-quiet" type="submit" name="status" value="archived" aria-label="Remove ${e(s.email)} from the list">Remove</button></form>
   </li>`
     )
     .join("\n");
   return `<section class="card list-card" aria-labelledby="list-title">
   <div class="list-head">
-    <div><h2 id="list-title" class="card-title">${signups.length} ${signups.length === 1 ? "person" : "people"} on your list</h2>
-    <p class="muted">Download the list and import it into the newsletter tool you already use.</p></div>
+    <div><h2 id="list-title" class="card-title">${e(heading)}</h2>
+    <p class="muted">Download the list and import it into the newsletter tool you already use. Anyone can type any address here, so turn on your newsletter tool's confirmation email (often called double opt-in) before you send. Removed addresses stay off the list even if they sign up again; you'll find them in Archived.</p></div>
     <a class="button" href="${e(nav.href("/admin/email-list.csv"))}" download>Download list (spreadsheet)</a>
   </div>
   ${signups.length ? `<ul class="signup-rows" role="list">\n${rows}\n</ul>` : `<p class="empty">No signups yet. Share your page to get the first one.</p>`}
+  ${pagerHtml}
 </section>`;
+}
+
+// Shown instead of the spreadsheet when the list is longer than one download holds.
+export function exportPartsPage({ nav, size, thisPart, nextPart, first }) {
+  const main = `<p class="back"><a href="${e(nav.href("/admin?tab=list"))}"><span aria-hidden="true">&larr;</span> Email list</a></p>
+<section class="card simple-card" aria-labelledby="parts-title">
+  <h1 id="parts-title" class="page-title">Download in parts</h1>
+  <p>Your list is longer than one spreadsheet holds here, so it downloads ${size.toLocaleString("en-US")} addresses at a time, newest first. Download ${first ? "the first part" : "this part"}, then open the next one.</p>
+  <p class="simple-actions"><a class="button" href="${e(nav.href(thisPart))}" download>Download ${first ? "the first part" : "this part"}</a> <a class="button button-quiet" href="${e(nav.href(nextPart))}">Next part <span aria-hidden="true">&rarr;</span></a></p>
+</section>`;
+  return ownerLayout({ nav, title: "Download in parts", active: "inbox", main });
 }
 
 function domainTip() {
@@ -418,7 +469,7 @@ export function linksPage({ nav, links, values = {}, errors = {}, flash }) {
 </section>`;
 
   const main = `<div class="owner-title-row"><h1 class="page-title">Links</h1></div>
-<p class="lead">Featured items show as product cards with a price. Everything else shows in the list of links. Taps count each time someone uses a link.</p>
+<p class="lead">Featured items show as product cards with a price. Everything else shows in the list of links. Taps count each time someone uses a link. Search engines and link previews are left out, so the counts are a good guide rather than an exact tally.</p>
 ${flash ? `<p class="flash" role="status">${e(flash)}</p>` : ""}
 ${links.length ? `<ul class="manage-list" role="list">\n${rows}\n</ul>` : empty}
 <section class="card form-card" aria-labelledby="add-title">
