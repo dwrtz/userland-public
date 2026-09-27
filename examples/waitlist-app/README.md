@@ -58,7 +58,7 @@ server/index.js          routes, owner check, responses
 server/waitlist.js       validation, referral codes, place in line, filters, CSV, storage
 server/views.js          HTML for every page (all output escaped)
 server/demo.js           demo mode only (see below)
-tests/                   vitest tests with an in-memory ctx
+tests/                   vitest tests with an in-memory ctx; demo.test.ts covers demo mode only
 ```
 
 ## Routes
@@ -140,10 +140,11 @@ npx vitest run examples/waitlist-app
 
 To remove it:
 
-1. Delete `server/demo.js`.
-2. In `server/index.js`, delete the demo import and each `if (demo)` / `demoRequest` branch (the `openStore` and `siteFor` helpers show where).
+1. Delete `server/demo.js` and `tests/demo.test.ts`.
+2. In `server/index.js`, delete every line that ends with `// demo`.
 3. Delete the `demo-signups` collection from `manifest.userland.json` (its `demo_key` and `demo_expires_at` fields and indexes go with it).
-4. Delete the `public demo` tests.
+
+The `demo` and `demoRequest` values left in `server/index.js` are then always empty, so the owner view always requires sign-in. The "removing demo mode" test in `tests/waitlist-app.test.ts` runs exactly these steps on a copy of `server/` and the manifest and checks that joining, the private page, and the owner view still work, so mark any line you add for the demo the same way.
 
 ## Customize
 

@@ -1,136 +1,10 @@
-import { readFileSync } from "node:fs";
-// @ts-expect-error Example server files are plain JavaScript app bundles.
-import app from "../server/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { rankWaitlist, toCsv, REFERRAL_BOOST } from "../server/waitlist.js";
-// @ts-expect-error Example server files are plain JavaScript app bundles.
-import { sampleSignups } from "../server/demo.js";
-
-type Row = Record<string, unknown> & { id: string; created_at: string; updated_at: string };
-type CollectionSpec = { fields: Record<string, unknown>; indexes?: Array<{ name: string; fields: string[]; unique?: boolean }> };
-
-const manifest = JSON.parse(readFileSync(new URL("../manifest.userland.json", import.meta.url), "utf8"));
-const collections: Record<string, CollectionSpec> = manifest.resources.data.collections;
-
-const APP = "https://velto.example.test";
-const DEMO = "https://waitlist-demo.apps.userland.fun";
-
-// An in-memory ctx that follows the runtime rules: declared fields only, `where` and
-// `order_by` on indexed fields only, unique indexes, and at most 100 rows per list call.
-function makeCtx() {
-  const tables: Record<string, Row[]> = {};
-  let next = 0;
-  const failure = (code: string, message: string) => Object.assign(new Error(message), { code, status: 400 });
-
-  function collection(name: string) {
-    const spec = collections[name];
-    if (!spec) throw failure("missing_collection", `Data collection ${name} is not declared.`);
-    const rows = (tables[name] ??= []);
-    const indexed = new Set((spec.indexes ?? []).flatMap((index) => index.fields));
-    const checkFields = (input: Record<string, unknown>) => {
-      for (const key of Object.keys(input)) if (!(key in spec.fields)) throw failure("invalid_resource_manifest", `Field ${key} is not declared.`);
-    };
-    const checkUnique = (data: Record<string, unknown>, id: string | null) => {
-      for (const index of (spec.indexes ?? []).filter((item) => item.unique)) {
-        const value = JSON.stringify(index.fields.map((field) => data[field]));
-        if (rows.some((row) => row.id !== id && JSON.stringify(index.fields.map((field) => row[field])) === value)) {
-          throw failure("unique_conflict", `Unique index ${index.name} already contains this value.`);
-        }
-      }
-    };
-    return {
-      async create(input: Record<string, unknown>) {
-        checkFields(input);
-        checkUnique(input, null);
-        const now = new Date().toISOString();
-        const row: Row = { ...input, id: `row_${++next}`, created_at: now, updated_at: now };
-        rows.push(row);
-        return { ...row };
-      },
-      async get(id: string) {
-        const row = rows.find((item) => item.id === id);
-        return row ? { ...row } : null;
-      },
-      async update(id: string, patch: Record<string, unknown>) {
-        checkFields(patch);
-        const index = rows.findIndex((item) => item.id === id);
-        if (index === -1) throw failure("not_found", "Data row not found.");
-        const updated = { ...rows[index], ...patch, updated_at: new Date().toISOString() } as Row;
-        checkUnique(updated, id);
-        rows[index] = updated;
-        return { ...updated };
-      },
-      async delete(id: string) {
-        const index = rows.findIndex((item) => item.id === id);
-        if (index !== -1) rows.splice(index, 1);
-      },
-      async list(
-        query: { where?: Record<string, unknown>; order_by?: Array<{ field: string; direction?: "asc" | "desc" }>; limit?: number; cursor?: string } = {}
-      ) {
-        for (const field of Object.keys(query.where ?? {})) if (!indexed.has(field)) throw failure("unindexed_query", `Query field ${field} is not indexed.`);
-        for (const order of query.order_by ?? []) if (!indexed.has(order.field)) throw failure("unindexed_query", `Order field ${order.field} is not indexed.`);
-        if (query.limit !== undefined && (query.limit < 1 || query.limit > 100)) throw failure("invalid_query", "Query limit must be between 1 and 100.");
-        const matches = rows.filter((row) => Object.entries(query.where ?? {}).every(([key, value]) => row[key] === value));
-        for (const order of [...(query.order_by ?? [])].reverse()) {
-          const direction = order.direction === "desc" ? -1 : 1;
-          matches.sort((a, b) => String(a[order.field] ?? "").localeCompare(String(b[order.field] ?? "")) * direction);
-        }
-        const offset = query.cursor ? Number(atob(query.cursor)) : 0;
-        const page = matches.slice(offset, offset + (query.limit ?? 50));
-        const end = offset + page.length;
-        return { rows: page.map((row) => ({ ...row })), ...(end < matches.length ? { cursor: btoa(String(end)) } : {}) };
-      }
-    };
-  }
-
-  type Data = { collection: typeof collection; transaction<T>(callback: (tx: Data) => Promise<T>): Promise<T> };
-  const data: Data = { collection, async transaction(callback) { return await callback(data); } };
-  const users: Record<string, { id: string; email: string; roles: string[] }> = {
-    owner: { id: "user_owner", email: "owner@example.com", roles: ["owner"] },
-    helper: { id: "user_helper", email: "helper@example.com", roles: [] }
-  };
-  const currentUser = async (request: Request) => {
-    const session = /__Host-ul_session=(\w+)/u.exec(request.headers.get("cookie") ?? "")?.[1];
-    return session ? users[session] ?? null : null;
-  };
-  return {
-    tables,
-    data,
-    auth: {
-      currentUser,
-      async requireRole(request: Request, role: string) {
-        const user = await currentUser(request);
-        if (!user || !user.roles.includes(role)) throw new Error("Required role is missing.");
-        return user;
-      }
-    },
-    log: { info: vi.fn(async () => undefined) }
-  };
-}
-
-type Ctx = ReturnType<typeof makeCtx>;
-
-async function call(ctx: Ctx, url: string, init: RequestInit = {}): Promise<Response> {
-  return await app.fetch(new Request(url, init), ctx);
-}
-
-function post(ctx: Ctx, url: string, fields: Record<string, string>, headers: Record<string, string> = {}) {
-  return call(ctx, url, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", origin: new URL(url).origin, ...headers },
-    body: new URLSearchParams(fields).toString()
-  });
-}
-
-async function join(ctx: Ctx, base: string, fields: Record<string, string>) {
-  const response = await post(ctx, `${base}/join`, fields);
-  expect(response.status).toBe(303);
-  const location = response.headers.get("location") ?? "";
-  expect(location).toMatch(/^\/you\/[^/]+\/[^/]+$/u);
-  return location;
-}
-
-const owner = { cookie: "__Host-ul_session=owner" };
+import { APP, DEMO, call, collections, join, makeCtx, owner, post, type Server } from "./helpers.js";
 
 describe("public visitor", () => {
   it("joins, sees a place in line, and saves optional answers", async () => {
@@ -304,154 +178,6 @@ describe("owner view with demo mode off", () => {
   });
 });
 
-describe("public demo", () => {
-  it("shows sample signups without sign-in and marks every page as a demo", async () => {
-    const ctx = makeCtx();
-    for (const path of ["/", "/admin", "/thanks", "/missing"]) {
-      const html = await (await call(ctx, `${DEMO}${path}`)).text();
-      expect(html).toContain('<meta name="robots" content="noindex,follow">');
-      expect(html).toContain('href="https://userland.fun/examples/waitlist-app/"');
-    }
-    const admin = await (await call(ctx, `${DEMO}/admin`)).text();
-    expect(admin).toContain("@example.com");
-    expect(admin).toContain("people");
-
-    // The landing count leaves out the samples the owner archived.
-    const archived = sampleSignups().filter((row: { status: string }) => row.status === "archived").length;
-    expect(archived).toBeGreaterThan(0);
-    expect(await (await call(ctx, `${DEMO}/`)).text()).toContain(`<b>${sampleSignups().length - archived}</b> runners have already joined.`);
-  });
-
-  it("keeps the visitor's demo on message pages", async () => {
-    const ctx = makeCtx();
-    const path = await join(ctx, DEMO, { email: "gus@example.com" });
-    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
-
-    const repeat = await post(ctx, `${DEMO}/join`, { email: "gus@example.com", demo: key });
-    expect(repeat.headers.get("location")).toBe(`/thanks?demo=${key}`);
-    for (const page of [`/thanks?demo=${key}`, `/missing?demo=${key}`]) {
-      const html = await (await call(ctx, `${DEMO}${page}`)).text();
-      expect(html).toContain(`class="button button--volt" href="/?demo=${key}"`);
-      expect(html).toContain(`<a href="/?demo=${key}">Go to the waitlist page</a>`);
-    }
-    // The answers form carries the demo key, so a failed answers post still links back to it.
-    const statusHtml = await (await call(ctx, `${DEMO}${path}`)).text();
-    expect(statusHtml).toContain(`class="questions"><input type="hidden" name="demo" value="${key}">`);
-    const badAnswers = await post(ctx, `${DEMO}${path.replace(/[^/]+$/u, "wrong-token")}/answers`, { demo: key });
-    expect(badAnswers.status).toBe(404);
-    expect(await badAnswers.text()).toContain(`class="button button--volt" href="/?demo=${key}"`);
-    const badChange = await post(ctx, `${DEMO}/admin/signups/x/status`, { status: "nope", demo: key });
-    expect(badChange.status).toBe(400);
-    expect(await badChange.text()).toContain(`href="/admin?demo=${key}"`);
-  });
-
-  it("deletes visitor signups after a day and caps the demo as a whole", async () => {
-    const ctx = makeCtx();
-    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-09-01T12:00:00Z") });
-    const oldPath = await join(ctx, DEMO, { email: "old@example.com" });
-    const oldKey = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${oldPath}`)).text())?.[1] ?? "";
-    expect(ctx.tables["demo-signups"][0].demo_expires_at).toBe("2026-09-02T12:00:00.000Z");
-
-    // A day later the old signup is gone from its owner's view, and the next write deletes it.
-    vi.setSystemTime(new Date("2026-09-02T12:05:00Z"));
-    expect(await (await call(ctx, `${DEMO}/admin?demo=${oldKey}&sort=newest`)).text()).not.toContain("old@example.com");
-    await join(ctx, DEMO, { email: "new@example.com" });
-    expect(ctx.tables["demo-signups"].map((row) => row.email)).toEqual(["new@example.com"]);
-
-    // Fill the demo to its limit (MAX_DEMO_ROWS = 400) with other visitors' rows.
-    const rows = ctx.data.collection("demo-signups");
-    for (let index = 0; index < 399; index += 1) {
-      await rows.create({ demo_key: `k${index}`, email: `v${index}@example.com`, demo_expires_at: "2026-09-03T12:00:00.000Z" });
-    }
-    const full = await post(ctx, `${DEMO}/join`, { email: "late@example.com" });
-    expect(full.status).toBe(429);
-    expect(await full.text()).toContain("The demo is busy right now.");
-    expect(ctx.tables["demo-signups"]).toHaveLength(400);
-    vi.useRealTimers();
-  });
-
-  it("never shows one visitor's signups to another visitor", async () => {
-    const ctx = makeCtx();
-    const alicePath = await join(ctx, DEMO, { email: "alice@example.com", name: "Alice" });
-    const bobPath = await join(ctx, DEMO, { email: "bob@example.com", name: "Bob" });
-
-    const keyFrom = async (path: string) => /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
-    const aliceKey = await keyFrom(alicePath);
-    const bobKey = await keyFrom(bobPath);
-    expect(aliceKey).not.toBe("");
-    expect(aliceKey).not.toBe(bobKey);
-
-    const aliceView = await (await call(ctx, `${DEMO}/admin?demo=${aliceKey}&sort=newest`)).text();
-    expect(aliceView).toContain("alice@example.com");
-    expect(aliceView).not.toContain("bob@example.com");
-
-    const bobView = await (await call(ctx, `${DEMO}/admin?demo=${bobKey}&sort=newest`)).text();
-    expect(bobView).toContain("bob@example.com");
-    expect(bobView).not.toContain("alice@example.com");
-
-    // The CSV holds every row in the view, so it checks the whole list, not just one page.
-    const exportFor = async (query: string) => await (await call(ctx, `${DEMO}/admin/export.csv${query}`)).text();
-    expect(await exportFor(`?demo=${aliceKey}`)).toContain("alice@example.com");
-    expect(await exportFor(`?demo=${aliceKey}`)).not.toContain("bob@example.com");
-    expect(await exportFor(`?demo=${bobKey}`)).not.toContain("alice@example.com");
-    const anonymous = await exportFor("");
-    expect(anonymous).not.toContain("alice@example.com");
-    expect(anonymous).not.toContain("bob@example.com");
-    for (const path of ["/", "/admin", "/admin?sort=newest"]) {
-      const html = await (await call(ctx, `${DEMO}${path}`)).text();
-      expect(html).not.toContain("alice@example.com");
-      expect(html).not.toContain("bob@example.com");
-    }
-
-    // Bob cannot change Alice's signup even with its id.
-    const aliceId = ctx.tables["demo-signups"].find((row) => row.email === "alice@example.com")?.id;
-    const attempt = await post(ctx, `${DEMO}/admin/signups/${aliceId}/status`, { status: "archived", demo: bobKey });
-    expect(attempt.status).toBe(404);
-    expect(ctx.tables["demo-signups"].find((row) => row.id === aliceId)?.status).toBe("waiting");
-
-    // Nothing from the demo lands in the real signups collection.
-    expect(ctx.tables.signups ?? []).toHaveLength(0);
-  });
-
-  it("keeps status changes on sample signups private to the visitor", async () => {
-    const ctx = makeCtx();
-    const path = await join(ctx, DEMO, { email: "carol@example.com" });
-    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
-    const sample = sampleSignups().find((row: { status: string }) => row.status === "waiting");
-
-    const response = await post(ctx, `${DEMO}/admin/signups/${sample.id}/status`, { status: "invited", demo: key });
-    expect(response.headers.get("location")).toBe(`/admin?done=invited&demo=${key}`);
-
-    const invited = async (query: string) => await (await call(ctx, `${DEMO}/admin/export.csv?status=invited${query}`)).text();
-    expect(await invited(`&demo=${key}`)).toContain(sample.email);
-    expect(await invited("")).not.toContain(sample.email);
-    const otherVisitor = await join(ctx, DEMO, { email: "dave@example.com" });
-    const otherKey = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${otherVisitor}`)).text())?.[1] ?? "";
-    expect(await invited(`&demo=${otherKey}`)).not.toContain(sample.email);
-  });
-
-  it("lets a visitor test their invite link inside their own demo", async () => {
-    const ctx = makeCtx();
-    const path = await join(ctx, DEMO, { email: "dana@example.com", name: "Dana" });
-    const html = await (await call(ctx, `${DEMO}${path}`)).text();
-    const key = /demo=([a-f0-9]{32})/u.exec(html)?.[1] ?? "";
-    const code = /\/r\/([A-Z0-9]+)/u.exec(html)?.[1] ?? "";
-
-    // The private page explains that shared links start a separate demo, and links to the one that works.
-    expect(html).toContain('class="demo-tip"');
-    expect(html).toContain(`href="/?ref=${code}&amp;demo=${key}"`);
-    // The logo keeps the visitor's demo.
-    expect(html).toContain(`class="logo" href="/?demo=${key}"`);
-
-    await join(ctx, DEMO, { email: "erin@example.com", ref: code, demo: key });
-    expect(await (await call(ctx, `${DEMO}${path}`)).text()).toContain("<b>1</b> friend has joined");
-
-    // The same link used by someone without this visitor's demo key does not reach their list.
-    await join(ctx, DEMO, { email: "stranger@example.com", ref: code });
-    expect(await (await call(ctx, `${DEMO}${path}`)).text()).toContain("<b>1</b> friend has joined");
-  });
-});
-
 describe("waitlist rules", () => {
   it("orders by join time and moves people up for referrals", () => {
     const row = (id: string, minute: number, referrals = 0, status = "waiting") => ({
@@ -469,12 +195,47 @@ describe("waitlist rules", () => {
     expect(positions.get("r14")).toBe(4);
     expect(positions.has("r0")).toBe(false);
   });
+});
 
-  it("builds made-up sample signups with example.com emails only", () => {
-    const samples = sampleSignups(new Date("2026-09-27T12:00:00Z"));
-    expect(samples.length).toBeGreaterThan(100);
-    expect(samples.every((row: { email: string }) => row.email.endsWith("@example.com"))).toBe(true);
-    expect(new Set(samples.map((row: { email: string }) => row.email)).size).toBe(samples.length);
-    expect(toCsv([], new Map())).toContain("place_in_line");
+describe("removing demo mode", () => {
+  // Follows the steps in README.md on a copy of server/ and the manifest:
+  // delete demo.js, every line ending in `// demo`, and the demo-signups collection.
+  async function strippedApp(): Promise<Server> {
+    const source = path.resolve(import.meta.dirname, "../server");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "waitlist-app-no-demo-"));
+    for (const name of fs.readdirSync(source)) {
+      if (name === "demo.js") continue;
+      const code = fs.readFileSync(path.join(source, name), "utf8");
+      const kept = code.split("\n").filter((line) => !/\/\/ demo$/u.test(line.trimEnd()));
+      fs.writeFileSync(path.join(target, name), kept.join("\n"));
+    }
+    const stripped = fs.readFileSync(path.join(target, "index.js"), "utf8");
+    expect(stripped).not.toContain("demoMode.");
+    return (await import(pathToFileURL(path.join(target, "index.js")).href)).default;
+  }
+
+  it("keeps the waitlist, private pages, and owner view working, even at the demo address", async () => {
+    const server = await strippedApp();
+    const { "demo-signups": _removed, ...rest } = collections;
+    const ctx = makeCtx(rest);
+
+    const landing = await (await call(ctx, `${DEMO}/`, {}, server)).text();
+    expect(landing).not.toContain("demo-bar");
+    expect(landing).not.toContain("noindex");
+    const adaPath = await join(ctx, DEMO, { email: "ada@example.com", name: "Ada" }, server);
+    expect(ctx.tables.signups).toHaveLength(1);
+    expect((await call(ctx, `${DEMO}${adaPath}`, {}, server)).status).toBe(200);
+    expect((await post(ctx, `${DEMO}${adaPath}/answers`, { frequency: "weekly", goal: "race" }, {}, server)).status).toBe(303);
+
+    const signedOut = await call(ctx, `${DEMO}/admin`, {}, server);
+    expect(signedOut.status).toBe(303);
+    expect(signedOut.headers.get("location")).toContain("/_userland/auth/login");
+
+    const page = await (await call(ctx, `${APP}/admin`, { headers: owner }, server)).text();
+    expect(page).toContain("ada@example.com");
+    const id = ctx.tables.signups[0].id;
+    expect((await post(ctx, `${APP}/admin/signups/${id}/status`, { status: "invited" }, owner, server)).status).toBe(303);
+    expect(ctx.tables.signups[0]).toMatchObject({ status: "invited" });
+    expect(await (await call(ctx, `${APP}/admin/export.csv`, { headers: owner }, server)).text()).toContain("ada@example.com");
   });
 });

@@ -9,6 +9,10 @@
 //   GET  /thanks
 //
 // Static files (CSS, fonts, icons, share.js) are served from public/ before this code runs.
+//
+// Demo mode lives in demo.js. Every line in this file that exists only for the
+// public demo ends with `// demo`; deleting those lines and demo.js removes it
+// (see "Demo mode" in README.md).
 
 import {
   DuplicateSignupError,
@@ -30,20 +34,7 @@ import {
   validateJoin
 } from "./waitlist.js";
 import { landingPage, messagePage, ownerPage, pathWith, statusPage } from "./views.js";
-// Demo mode: delete this import and the `if (demo)` branches below to remove it.
-import {
-  DemoLimitError,
-  demoBanner,
-  demoFooter,
-  demoShareNote,
-  demoKeyForSignup,
-  demoStore,
-  isDemoRequest,
-  newDemoKey,
-  persistParams,
-  readDemoKey,
-  robotsMeta
-} from "./demo.js";
+import * as demoMode from "./demo.js"; // demo
 
 const OWNER_ROLE = "owner";
 const PRIVATE_ROBOTS = '<meta name="robots" content="noindex">';
@@ -79,18 +70,10 @@ function message(site, options) {
   return html(page.html, { status: page.status, privatePage: true });
 }
 
-// Page extras: the demo adds a banner, a footer note, and noindex on every page,
-// and keeps the visitor's demo key on the logo link.
+// Page extras. In the public demo, `demo` is { key } for the visitor (null
+// otherwise) and every page gets a banner, a footer note, and noindex.
 function siteFor(demo, page, { privatePage = false, inviteHref } = {}) {
-  if (demo) {
-    return {
-      robots: robotsMeta(),
-      banner: demoBanner({ page, key: demo.key, inviteHref }),
-      footer: demoFooter(),
-      home: pathWith("/", {}, persistParams(demo.key)),
-      shareNote: inviteHref ? demoShareNote(inviteHref) : ""
-    };
-  }
+  if (demo) return demoMode.demoSite(demo, page, inviteHref); // demo
   return { robots: privatePage ? PRIVATE_ROBOTS : "" };
 }
 
@@ -146,17 +129,24 @@ async function requireOwner(request, ctx, returnTo) {
 // Demo pages that aren't tied to a signup still get the demo banner and noindex
 // tag, and keep the visitor's demo key when the link or form carried one.
 function anyDemo(demoRequest, key) {
-  return demoRequest ? { key: readDemoKey(key) } : null;
+  if (demoRequest) return { key: demoMode.readDemoKey(key) }; // demo
+  return null;
+}
+
+// Query values every link and form keeps: the visitor's demo key, in the demo.
+function keepParams(demo) {
+  if (demo) return demoMode.persistParams(demo.key); // demo
+  return {};
 }
 
 // A link to `path` that keeps the visitor's demo key, if there is one.
 function demoPath(path, demo) {
-  return pathWith(path, {}, demo ? persistParams(demo.key) : {});
+  return pathWith(path, {}, keepParams(demo));
 }
 
 // Picks where signups are read and saved: the real list, or this visitor's demo copy.
 function openStore(ctx, demo) {
-  if (demo) return demoStore(ctx, demo.key);
+  if (demo) return demoMode.demoStore(ctx, demo.key); // demo
   return signupStore(ctx);
 }
 
@@ -175,7 +165,7 @@ async function showLanding(url, ctx, demo, { values = {}, errors = {}, status = 
     errors,
     joined: await store.countJoined(),
     referrer,
-    keep: demo ? persistParams(demo.key) : {}
+    keep: keepParams(demo)
   });
   return html(page, { status });
 }
@@ -193,8 +183,8 @@ async function handleJoin(request, url, ctx, demoRequest) {
     });
   }
 
-  // Demo: keep adding to this visitor's demo list, or start a new one.
-  const demo = demoRequest ? { key: readDemoKey(form.demo) || newDemoKey() } : null;
+  let demo = null;
+  if (demoRequest) demo = { key: demoMode.readDemoKey(form.demo) || demoMode.newDemoKey() }; // demo
 
   // Honeypot: people never see this field, so anything in it came from a bot.
   // Bots get the same answer as people, so they can't tell they were caught.
@@ -214,15 +204,7 @@ async function handleJoin(request, url, ctx, demoRequest) {
       // so the form can't be used to check whether someone's email signed up.
       return redirect(demoPath("/thanks", demo));
     }
-    if (error instanceof DemoLimitError) {
-      return message(siteFor(demo, "other"), {
-        title: "Demo limit",
-        heading: error.heading,
-        message: error.message,
-        action: { href: pathWith("/admin", {}, persistParams(demo.key)), label: "Open the owner view" },
-        status: 429
-      });
-    }
+    if (error instanceof demoMode.DemoLimitError) return message(siteFor(demo, "other"), demoMode.limitMessage(error, demo, "Open the owner view")); // demo
     throw error;
   }
 }
@@ -230,7 +212,8 @@ async function handleJoin(request, url, ctx, demoRequest) {
 // Finds a signup by id and checks the private token from its link.
 async function loadOwnSignup(ctx, demoRequest, id, token) {
   if (!isValidId(id) || !token || token.length > 64) return null;
-  const demo = demoRequest ? { key: await demoKeyForSignup(ctx, id) } : null;
+  let demo = null;
+  if (demoRequest) demo = { key: await demoMode.demoKeyForSignup(ctx, id) }; // demo
   const store = openStore(ctx, demo);
   const signup = await store.get(id);
   if (!signup || !safeEqual(token, signup.status_token)) return null;
@@ -255,7 +238,8 @@ async function showStatus(url, ctx, demoRequest, id, token) {
   // The copy from the full list carries this person's referral count.
   const signup = rows.find((row) => row.id === found.signup.id) ?? found.signup;
   const { positions, waitingCount } = rankWaitlist(rows);
-  const inviteHref = demo ? pathWith("/", { ref: signup.referral_code }, persistParams(demo.key)) : undefined;
+  let inviteHref;
+  if (demo) inviteHref = pathWith("/", { ref: signup.referral_code }, keepParams(demo)); // demo
   const page = statusPage({
     site: siteFor(demo, "status", { privatePage: true, inviteHref }),
     signup,
@@ -265,7 +249,7 @@ async function showStatus(url, ctx, demoRequest, id, token) {
     statusPath: `/you/${signup.id}/${token}`,
     saved: url.searchParams.get("saved") === "1",
     // Lets a failed answers post still link back to this visitor's own demo.
-    keep: demo ? persistParams(demo.key) : {}
+    keep: keepParams(demo)
   });
   return html(page, { privatePage: true });
 }
@@ -295,11 +279,9 @@ async function loadOwnerData(store, url) {
 const DONE_NOTICES = { invited: "Marked as invited.", waiting: "Moved back to the line.", archived: "Archived." };
 
 async function showOwner(request, url, ctx, demoRequest) {
-  let demo = null;
+  const demo = anyDemo(demoRequest, url.searchParams.get("demo")); // The demo skips sign-in.
   let user = null;
-  if (demoRequest) {
-    demo = { key: readDemoKey(url.searchParams.get("demo")) };
-  } else {
+  if (!demo) {
     const gate = await requireOwner(request, ctx, pathWith(url.pathname, Object.fromEntries(url.searchParams)));
     if (gate.response) return gate.response;
     user = gate.user;
@@ -314,7 +296,7 @@ async function showOwner(request, url, ctx, demoRequest) {
     stats: summarize(rows),
     referrers: topReferrers(rows),
     activity: recentActivity(rows),
-    keep: demo ? persistParams(demo.key) : {},
+    keep: keepParams(demo),
     user,
     notice: DONE_NOTICES[url.searchParams.get("done")] ?? ""
   });
@@ -322,10 +304,8 @@ async function showOwner(request, url, ctx, demoRequest) {
 }
 
 async function exportCsv(request, url, ctx, demoRequest) {
-  let demo = null;
-  if (demoRequest) {
-    demo = { key: readDemoKey(url.searchParams.get("demo")) };
-  } else {
+  const demo = anyDemo(demoRequest, url.searchParams.get("demo")); // The demo skips sign-in.
+  if (!demo) {
     const gate = await requireOwner(request, ctx, "/admin");
     if (gate.response) return gate.response;
   }
@@ -354,11 +334,10 @@ async function changeStatus(request, url, ctx, demoRequest, id) {
       status: 400
     });
   }
+  // The demo skips sign-in. A visitor who hasn't joined yet gets a demo key on their first change.
   let demo = null;
-  if (demoRequest) {
-    // A visitor who hasn't joined yet gets a demo key on their first change.
-    demo = { key: readDemoKey(form.demo) || newDemoKey() };
-  } else {
+  if (demoRequest) demo = { key: demoMode.readDemoKey(form.demo) || demoMode.newDemoKey() }; // demo
+  if (!demo) {
     const gate = await requireOwner(request, ctx, "/admin");
     if (gate.response) return gate.response;
   }
@@ -371,15 +350,7 @@ async function changeStatus(request, url, ctx, demoRequest, id) {
   try {
     updated = await store.update(current.id, patch);
   } catch (error) {
-    if (error instanceof DemoLimitError) {
-      return message(siteFor(demo, "owner", { privatePage: true }), {
-        title: "Demo limit",
-        heading: error.heading,
-        message: error.message,
-        action: { href: demoPath("/admin", demo), label: "Back to the owner view" },
-        status: 429
-      });
-    }
+    if (error instanceof demoMode.DemoLimitError) return message(siteFor(demo, "owner", { privatePage: true }), demoMode.limitMessage(error, demo, "Back to the owner view")); // demo
     throw error;
   }
   await ctx.log.info("waitlist status changed", { signup_id: updated.id, status: updated.status });
@@ -387,7 +358,7 @@ async function changeStatus(request, url, ctx, demoRequest, id) {
   const back = typeof form.back === "string" && /^\/admin(\?|$)/u.test(form.back) ? form.back : "/admin";
   const next = new URL(back, url.origin);
   next.searchParams.set("done", updated.status);
-  if (demo) next.searchParams.set("demo", demo.key);
+  if (demo) next.searchParams.set("demo", demo.key); // demo
   return redirect(`${next.pathname}${next.search}`);
 }
 
@@ -398,7 +369,8 @@ async function changeStatus(request, url, ctx, demoRequest, id) {
 export default {
   async fetch(request, ctx) {
     const url = new URL(request.url);
-    const demoRequest = isDemoRequest(url);
+    let demoRequest = false;
+    demoRequest = demoMode.isDemoRequest(url); // demo
     const method = request.method;
     const path = url.pathname.replace(/\/+$/u, "") || "/";
     const statusMatch = path.match(/^\/you\/([^/]+)\/([^/]+)(\/answers)?$/u);
@@ -406,8 +378,7 @@ export default {
     const refMatch = path.match(/^\/r\/([^/]+)$/u);
 
     if (path === "/" && method === "GET") {
-      const demo = demoRequest ? { key: readDemoKey(url.searchParams.get("demo")) } : null;
-      return await showLanding(url, ctx, demo);
+      return await showLanding(url, ctx, anyDemo(demoRequest, url.searchParams.get("demo")));
     }
     if (path === "/join" && method === "POST") return await handleJoin(request, url, ctx, demoRequest);
     if (refMatch && method === "GET") {

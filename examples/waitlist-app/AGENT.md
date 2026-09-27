@@ -18,7 +18,7 @@ Outputs:
 Steps:
 
 1. Rename the app in `manifest.userland.json` and replace the Velto copy, logo, and color tokens.
-2. Remove demo mode unless the user wants a public demo: delete `server/demo.js`, its import and `if (demo)` branches in `server/index.js`, the `demo-signups` collection, and the demo tests.
+2. Remove demo mode unless the user wants a public demo: delete `server/demo.js` and `tests/demo.test.ts`, delete every line ending in `// demo` in `server/index.js`, and delete the `demo-signups` collection. The "removing demo mode" test runs these steps on a copy, so run the tests afterwards.
 3. Edit `QUESTIONS` in `server/waitlist.js`. Store keys, show labels, and drop unknown answers.
 4. Keep every owner route behind `requireOwner()`, which calls `ctx.auth.requireRole(request, "owner")`.
 5. Query only indexed fields in `where` (`email`, `referral_code`), and page with `limit` of at most 100. Filter and sort the rest in code.

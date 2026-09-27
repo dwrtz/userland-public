@@ -21,14 +21,13 @@
 // as a normal waitlist with a signed-in owner.
 //
 // To remove the demo from your own copy:
-//   1. Delete this file.
-//   2. In server/index.js, delete the demo import and every `if (demo)` branch.
+//   1. Delete this file and tests/demo.test.ts.
+//   2. In server/index.js, delete every line that ends with `// demo`.
 //   3. In manifest.userland.json, delete the "demo-signups" collection.
-//   4. In tests/, delete the "public demo" tests.
 // -----------------------------------------------------------------------------
 
 import { STATUSES, listAll, toSignup, withReferralCounts } from "./waitlist.js";
-import { escapeHtml } from "./views.js";
+import { escapeHtml, pathWith } from "./views.js";
 
 // Both belong to the Userland demo deployment only; replace them if you publish your own demo.
 export const DEMO_HOSTS = new Set(["waitlist-demo.apps.userland.fun", "2yuafo8fwc1sdrlhysh.apps.userland.fun"]);
@@ -189,6 +188,23 @@ async function countUpTo(collection, max) {
 
 export function robotsMeta() {
   return '<meta name="robots" content="noindex,follow">';
+}
+
+// Page extras for every demo page: noindex, the demo banner and footer note, and
+// a logo link that keeps the visitor's demo key.
+export function demoSite(demo, page, inviteHref) {
+  return {
+    robots: robotsMeta(),
+    banner: demoBanner({ page, key: demo.key, inviteHref }),
+    footer: demoFooter(),
+    home: pathWith("/", {}, persistParams(demo.key)),
+    shareNote: inviteHref ? demoShareNote(inviteHref) : ""
+  };
+}
+
+// Message page options for a DemoLimitError, with a link back to the owner view.
+export function limitMessage(error, demo, label) {
+  return { title: "Demo limit", heading: error.heading, message: error.message, action: { href: pathWith("/admin", {}, persistParams(demo.key)), label }, status: 429 };
 }
 
 // Query values that must stay on every link and form so the visitor keeps their demo.
