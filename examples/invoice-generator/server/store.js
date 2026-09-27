@@ -82,6 +82,11 @@ export function isQuotaExceeded(error) {
   return error?.code === "quota_exceeded";
 }
 
+/** True when so many saves arrived at once that this one gave up (see withNextNumber). Callers ask the visitor to try again. */
+export function isBusy(error) {
+  return error?.code === "busy";
+}
+
 // ---------------------------------------------------------------------------
 // Input helpers
 
@@ -245,7 +250,8 @@ export function parseDocumentForm(form) {
   else if (values.title.length > LIMITS.title) errors.title = `Keep the title under ${LIMITS.title} characters.`;
   if (values.issue_date && !isDate(values.issue_date)) errors.issue_date = "Use a date like 2026-09-30.";
   if (values.due_date && !isDate(values.due_date)) errors.due_date = "Use a date like 2026-10-14.";
-  else if (values.due_date && isDate(values.issue_date) && values.due_date < values.issue_date) errors.due_date = "Pick a date on or after the first date.";
+  // A blank first date is saved as today, so the due date is checked against today then.
+  else if (values.due_date && !errors.issue_date && values.due_date < (values.issue_date || today())) errors.due_date = "Pick a date on or after the first date.";
   if (values.notes.length > LIMITS.notes) errors.notes = `Keep notes under ${LIMITS.notes} characters.`;
 
   const taxPercent = parsePercent(values.tax_percent);
@@ -309,10 +315,21 @@ async function listWhile(collection, query, keep) {
   return rows;
 }
 
-/** One page of a query. `cursor` comes from the previous page's `next`. */
-async function listPage(collection, query, cursor) {
-  const page = await collection.list({ ...query, limit: LIMITS.pageSize, ...(isCursor(cursor) ? { cursor } : {}) });
-  return { rows: page.rows, next: page.cursor ?? null };
+/**
+ * One page of a query. `cursor` comes from the previous page's `next`. With
+ * `keep`, rows it rejects are skipped and more are read to fill the page; each
+ * read asks for exactly the rows still needed, so `next` starts right after the
+ * last row read and no row is skipped or shown twice.
+ */
+async function listPage(collection, query, cursor, keep = null) {
+  const rows = [];
+  let next = isCursor(cursor) ? cursor : null;
+  do {
+    const page = await collection.list({ ...query, limit: LIMITS.pageSize - rows.length, ...(next ? { cursor: next } : {}) });
+    rows.push(...(keep ? page.rows.filter(keep) : page.rows));
+    next = page.cursor ?? null;
+  } while (next && rows.length < LIMITS.pageSize);
+  return { rows, next };
 }
 
 export function isCursor(value) {
@@ -364,12 +381,14 @@ export async function createClient(db, workspace, values) {
 
 /** The client with this email, adding them first if they are new. */
 export async function findOrCreateClient(db, workspace, values) {
-  const existing = await findClientByEmail(db, workspace, values.email);
-  if (existing) return { client: existing, existed: true };
-  const created = await createClient(db, workspace, values);
-  if (created) return { client: created, existed: false };
-  // Someone added the same email a moment ago (a double submit, say): use that client.
-  return { client: await findClientByEmail(db, workspace, values.email), existed: true };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existing = await findClientByEmail(db, workspace, values.email);
+    if (existing) return { client: existing, existed: true };
+    const created = await createClient(db, workspace, values);
+    if (created) return { client: created, existed: false };
+    // Someone added the same email a moment ago (a double submit, say): look again and use that client.
+  }
+  throw Object.assign(new Error("Client email kept changing."), { code: "busy" });
 }
 
 /** Saves client details. Returns { client }, { conflict: true } for a taken email, or null. */
@@ -419,17 +438,20 @@ const NEWEST_FIRST = [
   { field: "number", direction: "desc" }
 ];
 
-const VIEW_FILTERS = {
-  all: {},
-  quotes: { kind: "quote" },
-  invoices: { kind: "invoice" },
-  requests: { kind: "quote", status: "requested" }
+// `where` matches exact values only, so a view that leaves some rows out (the
+// Quotes tab skips new requests, which have their own tab) also has a `keep` test.
+const VIEWS = {
+  all: { where: {} },
+  quotes: { where: { kind: "quote" }, keep: (row) => row.status !== "requested" },
+  invoices: { where: { kind: "invoice" } },
+  requests: { where: { kind: "quote", status: "requested" } }
 };
 
 /** One page of the desk's document list for a view: all, quotes, invoices, or requests. */
 export async function listDocumentsPage(db, workspace, { view = "all", clientId = null, cursor = null } = {}) {
-  const where = { workspace, ...(VIEW_FILTERS[view] ?? {}), ...(clientId ? { client_id: clientId } : {}) };
-  return await listPage(db.collection("documents"), { where, order_by: NEWEST_FIRST }, cursor);
+  const { where: filter, keep } = VIEWS[view] ?? VIEWS.all;
+  const where = { workspace, ...filter, ...(clientId ? { client_id: clientId } : {}) };
+  return await listPage(db.collection("documents"), { where, order_by: NEWEST_FIRST }, cursor, keep);
 }
 
 /** Every document of one kind in one status, such as all sent invoices. */
@@ -501,7 +523,8 @@ async function withNextNumber(db, workspace, kind, write) {
       next = attempt === 3 ? Math.max(next + 1, (await highestNumber(db, workspace, kind, { everything: true })) + 1) : next + 1;
     }
   }
-  throw new Error("No free document number found.");
+  // Only a flood of saves at the same moment gets here. Callers show a "try again" message.
+  throw Object.assign(new Error("No free document number found."), { code: "busy" });
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +570,8 @@ export async function createDocument(db, workspace, kind, fields, { now = new Da
 export async function updateDocument(db, workspace, id, fields, { now = new Date() } = {}) {
   const document = await getDocument(db, workspace, id);
   if (!document || !isEditable(document)) return null;
-  const issueDate = fields.issue_date || document.issue_date || today(now);
+  // A blank date means today, the same as for a new document (parseDocumentForm checks the due date against it).
+  const issueDate = fields.issue_date || today(now);
   const defaultDays = document.kind === "quote" ? STUDIO.quoteValidDays : STUDIO.paymentTermsDays;
   return await db.collection("documents").update(id, {
     status: document.status === "requested" ? "draft" : document.status,
@@ -692,6 +716,80 @@ export async function deleteDocument(db, workspace, id) {
     clientRemoved = Boolean(await deleteClient(db, workspace, document.client_id));
   }
   return { document, clientRemoved };
+}
+
+// ---------------------------------------------------------------------------
+// Public quote requests
+
+/**
+ * Saves a quote request from the public form: the client (found by email, or
+ * added) and a quote waiting to be priced. Returns { quote, client } or
+ * { refused: "full" | "client", waiting } when a cap in LIMITS is reached.
+ *
+ * The caps hold even when a bot sends many requests at the same moment. A
+ * count taken before saving can't see requests that are being saved alongside
+ * it, so each request counts again after it is saved and takes itself back out
+ * if it went over. The last request saved always sees every other one, so no
+ * more than the cap can stay. Anything this request added is removed again when
+ * it is refused or fails, so refused requests leave no rows behind.
+ *
+ * `maxDocuments` optionally caps all quotes and invoices in the workspace too.
+ */
+export async function createRequest(db, workspace, { values, title }, { maxDocuments = null } = {}) {
+  const cap = LIMITS.pendingRequests;
+  const perClient = LIMITS.requestsPerClient;
+  if ((await countPendingRequests(db, workspace, { upTo: cap })) >= cap) return { refused: "full", waiting: cap };
+  if (maxDocuments !== null && (await countDocuments(db, workspace, maxDocuments)) >= maxDocuments) return { refused: "documents", waiting: maxDocuments };
+
+  const { client, existed } = await findOrCreateClient(db, workspace, { name: values.name, company: values.company, email: values.email });
+  let quote = null;
+  const undo = async () => {
+    if (quote) await db.collection("documents").delete(quote.id);
+    if (!existed) await deleteClient(db, workspace, client.id);
+  };
+  try {
+    if (existed) {
+      const theirs = await countPendingRequests(db, workspace, { clientId: client.id, upTo: perClient });
+      if (theirs >= perClient) return { refused: "client", waiting: theirs };
+    }
+    // Anyone can type a client's email, so flag a request whose name doesn't match the client on file.
+    const differs = existed && (client.name.toLowerCase() !== values.name.toLowerCase() || (values.company && client.company.toLowerCase() !== values.company.toLowerCase()));
+    quote = await createDocument(db, workspace, "quote", {
+      client_id: client.id,
+      title,
+      status: "requested",
+      lines: [],
+      request_message: values.message,
+      request_note: differs ? `Sent with this client's email but the name "${values.name}"${values.company ? ` and business "${values.company}"` : ""}. Check with the client that the request is theirs.` : ""
+    });
+    // Count again, now that this request is saved (see above).
+    const [all, theirs, documents] = await Promise.all([
+      countPendingRequests(db, workspace, { upTo: cap + 1 }),
+      countPendingRequests(db, workspace, { clientId: client.id, upTo: perClient + 1 }),
+      maxDocuments !== null ? countDocuments(db, workspace, maxDocuments + 1) : 0
+    ]);
+    const refused = all > cap ? "full" : theirs > perClient ? "client" : maxDocuments !== null && documents > maxDocuments ? "documents" : null;
+    if (refused) {
+      await undo();
+      return { refused, waiting: refused === "client" ? perClient : refused === "full" ? cap : maxDocuments };
+    }
+    return { quote, client };
+  } catch (error) {
+    await undo().catch(() => {});
+    throw error;
+  }
+}
+
+/** How many quotes and invoices a workspace has, counting at most `upTo`. */
+async function countDocuments(db, workspace, upTo) {
+  let count = 0;
+  let cursor;
+  do {
+    const page = await db.collection("documents").list({ where: { workspace }, limit: Math.min(100, upTo - count), ...(cursor ? { cursor } : {}) });
+    count += page.rows.length;
+    cursor = page.cursor;
+  } while (cursor && count < upTo);
+  return count;
 }
 
 // ---------------------------------------------------------------------------

@@ -40,8 +40,12 @@ const CLEAR_AFTER_SECONDS = 6 * 60 * 60;
 // Caps per visitor so the public demo can't be used to store lots of data.
 export const DEMO_LIMITS = { clients: 25, documents: 40 };
 
-// At most this many demo desks are open at once. More visitors see a "busy" page.
+// At most this many demo desks are open at once. When all of them are taken, a
+// new visitor's desk replaces the oldest one that has been open for at least
+// MIN_DESK_SECONDS, so a burst of new desks can't lock everyone else out for
+// six hours. If every desk is newer than that, visitors see a "busy" page.
 export const MAX_OPEN_DESKS = 50;
+export const MIN_DESK_SECONDS = 60 * 60;
 
 // Each "clear-demo" run also deletes up to this many rows left behind by
 // workspaces whose own cleanup never ran.
@@ -115,36 +119,54 @@ function newKey(now) {
   return Math.floor(now.getTime() / 1000).toString(36).padStart(7, "0") + randomToken(12);
 }
 
+/** When a demo workspace was opened, in milliseconds, or null for an old-style key. */
+function openedAt(workspace) {
+  const key = workspace.slice(WORKSPACE_PREFIX.length);
+  return KEY_PATTERN.test(key) ? Number.parseInt(key.slice(0, 7), 36) * 1000 : null;
+}
+
 /** True for a demo workspace older than six hours, or one named with an old-style key. */
 function isExpired(workspace, now) {
   if (!workspace.startsWith(WORKSPACE_PREFIX)) return false;
-  const key = workspace.slice(WORKSPACE_PREFIX.length);
-  if (!KEY_PATTERN.test(key)) return true;
-  const issued = Number.parseInt(key.slice(0, 7), 36);
-  return (issued + CLEAR_AFTER_SECONDS) * 1000 <= now.getTime();
+  const opened = openedAt(workspace);
+  return opened === null || opened + CLEAR_AFTER_SECONDS * 1000 <= now.getTime();
 }
 
 // Every workspace gets the sample paid invoice first, so it always holds the
-// first invoice number. Counting that number across workspaces counts open desks.
-async function openDeskCount(ctx, now) {
-  const marker = formatNumber("invoice", STUDIO.numbering.invoice.start + 1);
-  const result = await ctx.data.collection("documents").list({
-    where: { kind: "invoice", number: marker },
-    order_by: [{ field: "workspace", direction: "desc" }],
-    limit: 100
-  });
-  return result.rows.filter((row) => row.workspace.startsWith(WORKSPACE_PREFIX) && !isExpired(row.workspace, now)).length;
+// first invoice number. Listing that number across workspaces lists open desks.
+const MARKER = formatNumber("invoice", STUDIO.numbering.invoice.start + 1);
+
+/** Open (not yet expired) demo workspaces, oldest first. Reads every page. */
+async function openDesks(ctx, now) {
+  const desks = new Set();
+  let cursor;
+  do {
+    const page = await ctx.data.collection("documents").list({ where: { kind: "invoice", number: MARKER }, limit: 100, ...(cursor ? { cursor } : {}) });
+    for (const row of page.rows) if (row.workspace.startsWith(WORKSPACE_PREFIX) && !isExpired(row.workspace, now)) desks.add(row.workspace);
+    cursor = page.cursor;
+  } while (cursor);
+  return [...desks].sort((a, b) => openedAt(a) - openedAt(b));
 }
 
 /**
  * Creates a new visitor workspace with sample data. The cleanup job is
  * scheduled first: if it can't be (for example, the month's job runs are used
  * up), no workspace is created. Returns { key } or { busy: message }.
+ *
+ * The desk cap holds even when many visitors start at the same moment: a count
+ * taken first can't see desks being opened alongside it, so each new desk counts
+ * again once its first sample invoice is saved, and clears itself if it went over.
  */
 export async function startDemo(ctx, now = new Date()) {
-  if ((await openDeskCount(ctx, now)) >= MAX_OPEN_DESKS) {
-    await ctx.log.warn("demo is full", { limit: MAX_OPEN_DESKS });
-    return { busy: BUSY_MESSAGE };
+  const desks = await openDesks(ctx, now);
+  if (desks.length >= MAX_OPEN_DESKS) {
+    const oldest = desks[0];
+    if (openedAt(oldest) + MIN_DESK_SECONDS * 1000 > now.getTime()) {
+      await ctx.log.warn("demo is full", { limit: MAX_OPEN_DESKS });
+      return { busy: BUSY_MESSAGE };
+    }
+    await clearWorkspace(ctx, oldest);
+    await ctx.log.info("oldest demo workspace replaced", {});
   }
   const key = newKey(now);
   const workspace = WORKSPACE_PREFIX + key;
@@ -154,10 +176,34 @@ export async function startDemo(ctx, now = new Date()) {
     await ctx.log.warn("demo cleanup not scheduled", { reason: error instanceof Error ? error.message : "unknown" });
     return { busy: BUSY_MESSAGE };
   }
-  // The transaction only groups the sample writes. If one fails, the job above still clears the rest.
-  await ctx.data.transaction(async (tx) => await addSamples(tx, workspace, now));
+  // If a sample write fails, the job above still clears the rest.
+  const fits = async () => (await openDesks(ctx, now)).length <= MAX_OPEN_DESKS;
+  if (!(await addSamples(ctx.data, workspace, now, fits))) {
+    await clearWorkspace(ctx, workspace);
+    await ctx.log.warn("demo is full", { limit: MAX_OPEN_DESKS });
+    return { busy: BUSY_MESSAGE };
+  }
   await ctx.log.info("demo workspace opened", {});
   return { key };
+}
+
+/** Deletes every row in one demo workspace. Returns how many were deleted. */
+async function clearWorkspace(ctx, workspace) {
+  if (!workspace.startsWith(WORKSPACE_PREFIX) || workspace === MAIN_WORKSPACE) return 0;
+  let removed = 0;
+  for (const name of ["documents", "clients"]) {
+    const collection = ctx.data.collection(name);
+    // Always read the first page again: the rows just deleted are gone from it.
+    for (let page = 0; page < 10; page += 1) {
+      const result = await collection.list({ where: { workspace }, limit: 100 });
+      if (result.rows.length === 0) break;
+      for (const row of result.rows) {
+        await collection.delete(row.id);
+        removed += 1;
+      }
+    }
+  }
+  return removed;
 }
 
 /**
@@ -166,42 +212,28 @@ export async function startDemo(ctx, now = new Date()) {
  */
 export async function clearDemo(event, ctx, now = new Date()) {
   const workspace = event.payload?.workspace;
-  let removed = 0;
-  if (typeof workspace === "string" && workspace.startsWith(WORKSPACE_PREFIX) && workspace !== MAIN_WORKSPACE) {
-    for (const name of ["documents", "clients"]) {
-      const collection = ctx.data.collection(name);
-      for (let page = 0; page < 10; page += 1) {
-        const result = await collection.list({ where: { workspace }, limit: 100 });
-        if (result.rows.length === 0) break;
-        for (const row of result.rows) {
-          await collection.delete(row.id);
-          removed += 1;
-        }
-      }
-    }
-  }
+  const removed = typeof workspace === "string" ? await clearWorkspace(ctx, workspace) : 0;
   const swept = await sweepExpired(ctx, now);
   await ctx.log.info("demo workspace cleared", { rows: removed, swept });
 }
 
-// Demo workspace names start with the issue time, so sorting by workspace
-// lists the oldest demo rows first.
+// Reads every row (a Free app holds at most 1,000, so this is a few
+// pages), notes the expired demo rows, and deletes up to SWEEP_ROWS of them
+// after reading, so deleting never shifts the pages still to be read.
 async function sweepExpired(ctx, now) {
   let budget = SWEEP_ROWS;
   for (const name of ["documents", "clients"]) {
     const collection = ctx.data.collection(name);
+    const expired = [];
     let cursor;
-    for (let page = 0; page < 3 && budget > 0; page += 1) {
-      const result = await collection.list({ order_by: [{ field: "workspace", direction: "asc" }], limit: 100, ...(cursor ? { cursor } : {}) });
-      for (const row of result.rows) {
-        if (budget <= 0) break;
-        if (!isExpired(row.workspace, now)) continue;
-        await collection.delete(row.id);
-        budget -= 1;
-      }
-      cursor = result.cursor;
-      if (!cursor) break;
-    }
+    do {
+      const page = await collection.list({ order_by: [{ field: "workspace", direction: "asc" }], limit: 100, ...(cursor ? { cursor } : {}) });
+      for (const row of page.rows) if (isExpired(row.workspace, now)) expired.push(row.id);
+      cursor = page.cursor;
+    } while (cursor && expired.length < budget);
+    for (const id of expired.slice(0, budget)) await collection.delete(id);
+    budget -= Math.min(budget, expired.length);
+    if (budget === 0) break;
   }
   return SWEEP_ROWS - budget;
 }
@@ -211,7 +243,24 @@ export async function limitMessage(ctx, workspace, kind) {
   const limit = DEMO_LIMITS[kind];
   const result = await ctx.data.collection(kind).list({ where: { workspace }, limit: 100 });
   if (result.rows.length < limit) return null;
-  return `The demo stops at ${limit} ${kind}. Your own app has no limit like this.`;
+  return capMessage(kind);
+}
+
+/**
+ * Called right after a desk save. Saves sent at the same moment all pass
+ * limitMessage, so each one counts again here; when the visitor went over the
+ * cap, the new row is deleted and the message is returned. Otherwise null.
+ */
+export async function undoIfOverLimit(ctx, workspace, kind, id) {
+  const limit = DEMO_LIMITS[kind];
+  const result = await ctx.data.collection(kind).list({ where: { workspace }, limit: limit + 1 });
+  if (result.rows.length <= limit) return null;
+  await ctx.data.collection(kind).delete(id);
+  return capMessage(kind);
+}
+
+function capMessage(kind) {
+  return `The demo stops at ${DEMO_LIMITS[kind]} ${kind}. Your own app has no limit like this.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +269,7 @@ export async function limitMessage(ctx, workspace, kind) {
 /** The page shown at /desk before a visitor has a demo desk. */
 export function startPage(rc) {
   const message = rc.keyCleared
-    ? "That demo desk has been cleared. Demo desks are deleted after six hours. Open a new one with fresh sample clients, quotes, and invoices."
+    ? "That demo desk has been cleared. Demo desks are deleted after six hours, or after an hour when the demo is busy. Open a new one with fresh sample clients, quotes, and invoices."
     : "Open a private copy of the studio desk with sample clients, quotes, and invoices. Price a request, send a quote, and turn it into an invoice.";
   return messagePage(rc, {
     title: "Try the owner's side",
@@ -316,7 +365,10 @@ function sampleDocuments(date) {
   ];
 }
 
-async function addSamples(db, workspace, now) {
+// Saves the sample clients and documents. After the first document (the paid
+// invoice that marks an open desk), it calls `fits`; when that says the demo is
+// full, it stops and returns false.
+async function addSamples(db, workspace, now, fits) {
   const clientIds = {};
   for (const client of SAMPLE_CLIENTS) {
     const row = await createClient(db, workspace, { ...client, notes: "" });
@@ -335,6 +387,7 @@ async function addSamples(db, workspace, now) {
       },
       { now }
     );
+    if (document.number === MARKER && !(await fits())) return false;
     if (sample.converts) {
       // The accepted menu quote became an invoice, which is now waiting on payment.
       const invoice = await createDocument(
@@ -357,4 +410,5 @@ async function addSamples(db, workspace, now) {
       await db.collection("documents").update(document.id, { invoice_id: invoice.id });
     }
   }
+  return true;
 }

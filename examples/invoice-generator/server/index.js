@@ -190,6 +190,11 @@ function storageFull(rc) {
   );
 }
 
+/** Shown when so many saves arrived at the same moment that this one gave up. */
+function tryAgain(rc) {
+  return html(views.messagePage(rc, { title: "Please try again", message: "A lot of changes arrived at the same moment. Go back and save again." }), 503);
+}
+
 // ---------------------------------------------------------------------------
 // Public handlers
 
@@ -204,36 +209,22 @@ async function submitRequest(request, ctx, rc) {
 
   if (rc.demo && !rc.workspace) rc = await demo.openWorkspace(rc, ctx); // demo
   if (rc.demoBusy) return refuse(rc.demoBusy, 503); // demo
-  const limit = rc.demo ? await demo.limitMessage(ctx, rc.workspace, "documents") : null; // demo
-  if (limit) return refuse(limit, 422); // demo
 
-  // Soft caps so a bot can't fill the app's storage (see LIMITS in store.js).
-  const pending = await store.countPendingRequests(ctx.data, rc.workspace, { upTo: store.LIMITS.pendingRequests });
-  if (pending >= store.LIMITS.pendingRequests) return refuse(`We have more requests than we can answer right now. Please email us at ${STUDIO.email} instead.`, 429);
-
+  // Caps so a bot can't fill the app's storage (see LIMITS and createRequest in store.js).
+  const caps = {};
+  if (rc.demo) caps.maxDocuments = demo.DEMO_LIMITS.documents; // demo
+  let result;
   try {
-    const { client, existed } = await store.findOrCreateClient(ctx.data, rc.workspace, { name: values.name, company: values.company, email: values.email });
-    if (existed) {
-      const theirs = await store.countPendingRequests(ctx.data, rc.workspace, { clientId: client.id, upTo: store.LIMITS.requestsPerClient });
-      if (theirs >= store.LIMITS.requestsPerClient) {
-        return refuse(`You already have ${theirs} requests waiting for a reply. We'll be in touch soon, or email us at ${STUDIO.email} to add details.`, 429);
-      }
-    }
-    // Anyone can type a client's email, so flag a request whose name doesn't match the client on file.
-    const differs = existed && (client.name.toLowerCase() !== values.name.toLowerCase() || (values.company && client.company.toLowerCase() !== values.company.toLowerCase()));
-    const quote = await store.createDocument(ctx.data, rc.workspace, "quote", {
-      client_id: client.id,
-      title: service.name,
-      status: "requested",
-      lines: [],
-      request_message: values.message,
-      request_note: differs ? `Sent with this client's email but the name "${values.name}"${values.company ? ` and business "${values.company}"` : ""}. Check with the client that the request is theirs.` : ""
-    });
-    await ctx.log.info("quote requested", { document_id: quote.id, number: quote.number, service: service.id });
+    result = await store.createRequest(ctx.data, rc.workspace, { values, title: service.name }, caps);
   } catch (error) {
     if (store.isQuotaExceeded(error)) return refuse(`We can't take new requests online right now. Please email us at ${STUDIO.email}.`, 503);
+    if (store.isBusy(error)) return refuse("A lot of requests arrived at once. Please send yours again in a minute.", 503);
     throw error;
   }
+  if (result.refused === "full") return refuse(`We have more requests than we can answer right now. Please email us at ${STUDIO.email} instead.`, 429);
+  if (result.refused === "client") return refuse(`You already have ${result.waiting} requests waiting for a reply. We'll be in touch soon, or email us at ${STUDIO.email} to add details.`, 429);
+  if (result.refused === "documents") return refuse(`The demo stops at ${result.waiting} documents. Your own app has no limit like this.`, 422); // demo
+  await ctx.log.info("quote requested", { document_id: result.quote.id, number: result.quote.number, service: service.id });
   return redirect(rc.link("/request/sent"));
 }
 
@@ -311,6 +302,8 @@ async function createDocument(request, ctx, rc) {
     return html(views.documentFormPage(rc, { kind, clients, values: parsed.values, errors: parsed.errors }), 422);
   }
   const document = await store.createDocument(ctx.data, rc.workspace, kind, { ...parsed.values, lines: parsed.lines, taxPercent: parsed.taxPercent });
+  const over = rc.demo ? await demo.undoIfOverLimit(ctx, rc.workspace, "documents", document.id) : null; // demo
+  if (over) return html(views.documentFormPage(rc, { kind, clients: await store.listClients(ctx.data, rc.workspace), values: parsed.values, errors: { limit: over } }), 422); // demo
   await ctx.log.info(`${kind} created`, { document_id: document.id, number: document.number, total_cents: document.total_cents });
   return redirect(rc.link(`/desk/documents/${document.id}?done=created`));
 }
@@ -425,6 +418,8 @@ async function addClient(request, ctx, rc) {
   if (Object.keys(errors).length) return await clients(ctx, rc, { values, errors, status: 422 });
   const client = await store.createClient(ctx.data, rc.workspace, values);
   if (!client) return await clients(ctx, rc, { values, errors: { email: taken }, status: 422 });
+  const over = rc.demo ? await demo.undoIfOverLimit(ctx, rc.workspace, "clients", client.id) : null; // demo
+  if (over) return await clients(ctx, rc, { values, errors: { limit: over }, status: 422 }); // demo
   await ctx.log.info("client added", { client_id: client.id });
   return redirect(rc.link(`/desk/clients/${client.id}?done=client-added`));
 }
@@ -543,6 +538,7 @@ const app = {
     } catch (error) {
       if (error instanceof Response) return error; // readForm throws ready-made responses
       if (store.isQuotaExceeded(error)) return storageFull(requestContext(request));
+      if (store.isBusy(error)) return tryAgain(requestContext(request));
       await ctx.log.error("request failed", { path: new URL(request.url).pathname, message: error instanceof Error ? error.message : String(error) });
       const rc = requestContext(request);
       return html(views.messagePage(rc, { title: "Something went wrong", message: "Please try again in a moment." }), 500);

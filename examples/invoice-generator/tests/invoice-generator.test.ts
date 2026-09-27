@@ -307,6 +307,57 @@ describe("spam and storage limits", () => {
     expect(rows(ctx, "clients")).toHaveLength(0);
   });
 
+  it("keeps the 50-request cap when a bot sends bursts at the same moment, and leaves no extra clients", async () => {
+    const ctx = makeCtx();
+    let sent = 0;
+    for (let burst = 0; burst < 6; burst += 1) {
+      const responses = await Promise.all(Array.from({ length: 150 }, () => requestQuote(ctx, SITE, { name: "Bot", email: `bot${sent++}@example.com` })));
+      // Refused or asked to try again, never "Something went wrong".
+      expect(responses.filter((response: Response) => ![303, 429, 503].includes(response.status))).toEqual([]);
+      const pending = rows(ctx, "documents").filter((item) => item.status === "requested");
+      expect(pending.length).toBeLessThanOrEqual(50);
+      // A refused request takes its new client back out, so every client left has a request.
+      expect(rows(ctx, "clients").map((client) => client.id).sort()).toEqual(pending.map((item) => item.client_id).sort());
+      expect(new Set(pending.map((item) => item.number)).size).toBe(pending.length);
+    }
+    // Sent one at a time afterwards, requests fill the cap exactly.
+    let late = 0;
+    while ((await requestQuote(ctx, SITE, { email: `late${late}@example.com` })).status === 303) late += 1;
+    expect(rows(ctx, "documents").filter((item) => item.status === "requested")).toHaveLength(50);
+    expect(rows(ctx, "clients")).toHaveLength(50);
+  });
+
+  it("keeps one email to three waiting requests when many arrive together", async () => {
+    const ctx = makeCtx();
+    const responses = await Promise.all(Array.from({ length: 20 }, (_, index) => requestQuote(ctx, SITE, { message: `Burst ${index}` })));
+    expect(responses.filter((response: Response) => ![303, 429, 503].includes(response.status))).toEqual([]);
+    const saved = responses.filter((response: Response) => response.status === 303).length;
+    expect(saved).toBeLessThanOrEqual(3);
+    expect(rows(ctx, "documents")).toHaveLength(saved);
+    expect(rows(ctx, "clients").length).toBe(saved > 0 ? 1 : 0);
+    // Once the burst is over, the email can still send up to three.
+    while (rows(ctx, "documents").length < 3) expect((await requestQuote(ctx, SITE)).status).toBe(303);
+    expect((await requestQuote(ctx, SITE)).status).toBe(429);
+  });
+
+  it("asks the visitor to send again, and saves nothing, when no free number can be found", async () => {
+    const ctx = makeCtx();
+    const original = ctx.data.collection;
+    vi.spyOn(ctx.data, "collection").mockImplementation((name: string) => {
+      const collection = original(name);
+      if (name !== "documents") return collection;
+      const clash = async () => {
+        throw Object.assign(new Error("Unique index by_number already contains this value."), { code: "unique_conflict" });
+      };
+      return { ...collection, create: clash };
+    });
+    const response = await requestQuote(ctx, SITE);
+    expect(response.status).toBe(503);
+    expect(await text(response)).toContain("Please send yours again in a minute.");
+    expect(rows(ctx, "clients")).toHaveLength(0);
+    expect(rows(ctx, "documents")).toHaveLength(0);
+  });
+
   it("shows a clear message instead of an error when the app's storage is full", async () => {
     const visitor = makeCtx();
     fillStorage(visitor);
@@ -546,6 +597,22 @@ describe("quote to invoice", () => {
     );
     expect(response.status).toBe(422);
     expect(await text(response)).toContain("Pick a date on or after the first date.");
+
+    // A blank first date means today, so a past due date is refused then too.
+    const blank = await send(
+      ctx,
+      post(`${SITE}/desk/documents`, { kind: "invoice", client_id: client.id, title: "X", issue_date: "", due_date: "2020-01-01", item_description: ["Thing"], item_quantity: ["1"], item_rate: ["10"] })
+    );
+    expect(blank.status).toBe(422);
+    expect(await text(blank)).toContain("Pick a date on or after the first date.");
+    expect(rows(ctx, "documents")).toHaveLength(0);
+
+    // Editing a draft: clearing its date also means today.
+    const { quote } = await pricedQuote(ctx, { issue_date: "2020-01-01", due_date: "2020-01-05" });
+    const edit = await send(ctx, post(`${SITE}/desk/documents/${quote.id}`, { client_id: String(quote.client_id), title: "Labels", issue_date: "", due_date: "2020-01-05", item_description: ["Label design"], item_quantity: ["1"], item_rate: ["100"] }));
+    expect(edit.status).toBe(422);
+    expect(row(ctx, "documents", quote.id)?.due_date).toBe("2020-01-05");
+    expect(row(ctx, "documents", quote.id)?.issue_date).toBe("2020-01-01");
   });
 });
 
@@ -611,6 +678,29 @@ describe("long lists", () => {
     expect(last.match(/class="kind-label"/g)).toHaveLength(21);
     expect(last).toContain("Oldest overdue");
     expect(last).not.toContain("Older documents");
+  });
+
+  it("leaves new requests off the Quotes tab, and still fills every page", async () => {
+    const ctx = makeCtx({ user: OWNER });
+    const requests = new Set<string>();
+    for (let index = 0; index < 70; index += 1) {
+      const number = `Q-${String(1000 + index)}`;
+      if (index % 7 === 0) requests.add(number);
+      // Dated requests sort between the quotes, so skipping them happens mid-page.
+      await seedDocument(ctx, { kind: "quote", status: index % 7 === 0 ? "requested" : "sent", number, issue_date: `2026-01-${String((index % 28) + 1).padStart(2, "0")}` });
+    }
+    const numbers = (html: string) => [...html.matchAll(/>(Q-\d+)<\/a><span class="kind-label">/g)].map((match) => match[1]);
+    const first = await text(await send(ctx, `${SITE}/desk?view=quotes`));
+    const older = first.match(/href="(\/desk\?view=quotes&amp;after=[^"]+)"/)![1].replaceAll("&amp;", "&");
+    const second = await text(await send(ctx, `${SITE}${older}`));
+    expect(numbers(first)).toHaveLength(50);
+    expect(numbers(second)).toHaveLength(10);
+    expect(second).not.toContain("Older documents");
+    const shown = [...numbers(first), ...numbers(second)];
+    expect(new Set(shown).size).toBe(60);
+    expect(shown.filter((number) => requests.has(number))).toEqual([]);
+    // The Requests tab still lists them.
+    expect(numbers(await text(await send(ctx, `${SITE}/desk?view=requests`))).sort()).toEqual([...requests].sort());
   });
 
   it("picks the next number after the highest, even with many documents", async () => {

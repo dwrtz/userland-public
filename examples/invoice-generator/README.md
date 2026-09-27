@@ -14,7 +14,7 @@ For the business's clients (no account needed):
 
 For the owner (app user with the `owner` role):
 
-- **Documents** (`/desk`): totals for outstanding, overdue, open quotes, and paid in the last 30 days; new quote requests; every quote and invoice with its status, 50 per page, newest first.
+- **Documents** (`/desk`): totals for outstanding, overdue, open quotes, and paid in the last 30 days; new quote requests; every quote and invoice with its status, 50 per page, newest first. Tabs show all documents, quotes (new requests have their own tab), invoices, or requests.
 - **Clients** (`/desk/clients`): add and edit clients with a billing address. A client with no quotes or invoices can be deleted.
 - **Quotes and invoices** (`/desk/new`, `/desk/documents/:id`): line items with quantity and price, tax, totals, terms, and dates. Status moves from draft to sent to accepted or paid, and an accepted quote becomes an invoice in one click. A document needs at least one priced line before it can be sent or invoiced.
 - **Spam clean-up**: a new request (or a quote that was never sent) can be deleted. Deleting a request also deletes its client when they have nothing else on file.
@@ -45,7 +45,7 @@ tests/                   vitest tests on the shared fake runtime (scripts/runtim
 - **Private client links** use a random 24-character token. Drafts and new requests are never visible through a link.
 - **App events.** Requests, new documents, status changes, client answers, and conversions are logged with `ctx.log.info` using ids and numbers only, never emails or names. Read them with `userland apps events <app-id>`.
 - **Safety.** All output is escaped, inputs have length limits (a form body over 64 KB is refused even without a `Content-Length`), and pages send a strict Content-Security-Policy. Form posts must come from this app's own pages: every app on `*.apps.userland.fun` counts as the same site for cookies, so the `Origin` header has to match exactly (`null` and other Userland apps are refused), with `Sec-Fetch-Site` as a fallback. Desk forms need one of the two.
-- **Spam and storage limits.** The public form has a hidden honeypot field and soft caps in `LIMITS` (`server/store.js`): no new requests while 50 are waiting for a reply, or while one email address has 3 waiting. Userland doesn't pass visitor IP addresses to app code, so there is no per-address limit. A request that uses a known client's email with a different name is flagged on the desk. If the app reaches its plan's row limit, visitors and the owner see a plain "can't be saved right now" page instead of an error; delete spam requests to make room.
+- **Spam and storage limits.** The public form has a hidden honeypot field and caps in `LIMITS` (`server/store.js`): no new requests while 50 are waiting for a reply, or while one email address has 3 waiting. The caps hold when a bot sends many requests at the same moment: each request counts again after it is saved and takes itself (and a client it just added) back out if it went over, so refused requests leave no rows behind (see `createRequest`). When so many arrive at once that no free number is found, the visitor is asked to send again. Userland doesn't pass visitor IP addresses to app code, so there is no per-address limit. A request that uses a known client's email with a different name is flagged on the desk. If the app reaches its plan's row limit, visitors and the owner see a plain "can't be saved right now" page instead of an error; delete spam requests to make room.
 
 ## The owner sign-in
 
@@ -83,7 +83,7 @@ See https://docs.userland.fun/guides/auth for invites and sessions.
 
 On the demo host, anyone can open the studio desk. Each visitor gets a private workspace named by a random key in the page address (`?demo=...`), filled with fictional sample clients and documents. Userland only passes its own sign-in cookie to app code, so the key travels in links and forms instead of a cookie. Visitors only ever see their own workspace, and the `clear-demo` job deletes it six hours later.
 
-Only keys the server handed out work: a key starts with the time it was issued, and its workspace must exist, so a made-up or expired key shows the start page and stores nothing. The cleanup job is scheduled before a workspace is created (no job, no workspace), at most 50 demo desks are open at once, and each `clear-demo` run also sweeps a few rows from expired workspaces whose own cleanup never ran.
+Only keys the server handed out work: a key starts with the time it was issued, and its workspace must exist, so a made-up or expired key shows the start page and stores nothing. The cleanup job is scheduled before a workspace is created (no job, no workspace). At most 50 demo desks are open at once, even when many visitors start together (each new desk counts again once its first sample is saved and clears itself if it went over). When all 50 are taken, a new visitor's desk replaces the oldest one that has been open for at least an hour, so a burst of new desks can't lock the demo for six hours. Each visitor's desk stops at 25 clients and 40 documents. Each `clear-demo` run also reads every row and deletes up to 60 left behind by expired workspaces whose own cleanup never ran.
 
 To remove demo mode from your copy:
 
