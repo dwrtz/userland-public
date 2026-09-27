@@ -2,10 +2,39 @@
 // forms post to the server, and the server does all the money math.
 
 function parseNumber(value) {
-  const text = String(value ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
+  const text = String(value ?? "").trim().replace(/^\p{Sc}\s*/u, "").replace(/,/g, "");
   if (text === "" || !/^\d*(\.\d*)?$/.test(text)) return null;
   return Number(text);
 }
+
+// The same whole-number math as lineCents and taxCents in server/store.js,
+// so the preview matches the saved document to the cent.
+function lineCents(quantity, unitCents) {
+  const hundredths = Math.round(quantity * 100);
+  return Math.floor((hundredths * unitCents + 50) / 100);
+}
+
+function taxCents(subtotalCents, percent) {
+  const thousandths = BigInt(Math.round(percent * 1000));
+  return Number((BigInt(subtotalCents) * thousandths + 50000n) / 100000n);
+}
+
+// Send each form once: a double click on "Create invoice from quote" or
+// "Send request" would otherwise post it twice. (The server copes either way.)
+for (const form of document.querySelectorAll('form[method="post"]')) {
+  form.addEventListener("submit", (event) => {
+    const submitter = event.submitter;
+    if (submitter?.name === "intent") return; // "Add a line" without JavaScript
+    if (form.dataset.sending) {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.sending = "true";
+  });
+}
+window.addEventListener("pageshow", () => {
+  for (const form of document.querySelectorAll("form[data-sending]")) delete form.dataset.sending;
+});
 
 // Print buttons on quotes and invoices.
 for (const button of document.querySelectorAll("[data-print]")) {
@@ -48,7 +77,7 @@ if (form) {
       const rate = parseNumber(row.querySelector('[name="item_rate"]').value);
       const cell = row.querySelector("[data-line-amount]");
       if (quantity !== null && rate !== null && (description || rate > 0)) {
-        const cents = Math.round(quantity * Math.round(rate * 100));
+        const cents = lineCents(quantity, Math.round(rate * 100));
         subtotal += cents;
         cell.textContent = amountFormat.format(cents / 100);
         delete cell.dataset.empty;
@@ -58,7 +87,7 @@ if (form) {
       }
     }
     const taxPercent = parseNumber(taxInput?.value) ?? 0;
-    const tax = Math.round((subtotal * taxPercent) / 100);
+    const tax = taxCents(subtotal, taxPercent);
     output("[data-subtotal]").textContent = amountFormat.format(subtotal / 100);
     output("[data-tax]").textContent = amountFormat.format(tax / 100);
     output("[data-total]").textContent = moneyFormat.format((subtotal + tax) / 100);

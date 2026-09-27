@@ -5,7 +5,12 @@
 // travels in the page address (?demo=...). Userland only passes its own sign-in
 // cookie to app code, so links and forms carry the key instead of a cookie.
 // A new workspace starts with the fictional sample clients and documents below,
-// and the "clear-demo" job deletes it a few hours later.
+// and the "clear-demo" job deletes it six hours later.
+//
+// Only keys this server handed out open a desk: a key starts with the time it
+// was issued, and its workspace must exist. A made-up or expired key gets the
+// start page, so nobody can share a link to a workspace they chose and read
+// what visitors type into it.
 //
 // Nothing here runs on any other host, so a copy of this example published at
 // its own address always requires the owner sign-in. The one exception is the
@@ -17,7 +22,9 @@
 //   2. In server/index.js, delete every line marked `// demo`.
 //   3. In manifest.userland.json, delete the "clear-demo" job.
 
-import { MAIN_WORKSPACE, addDays, createClient, createDocument, randomToken, today } from "./store.js";
+import { STUDIO } from "./studio.js";
+import { MAIN_WORKSPACE, addDays, createClient, createDocument, formatNumber, randomToken, today } from "./store.js";
+import { esc, messagePage } from "./views.js";
 
 export const DEMO_HOSTS = new Set(["invoice-demo.apps.userland.fun"]);
 export const SHOWCASE_HOSTS = new Set(["3ls259ymzm94r65h4v4.apps.userland.fun"]);
@@ -25,12 +32,22 @@ const DEMO_ORIGIN = "https://invoice-demo.apps.userland.fun";
 export const DEMO_ROBOTS = "noindex,follow";
 export const EXAMPLE_PAGE = "https://userland.fun/examples/invoice-generator/";
 
-const KEY_PATTERN = /^[A-Za-z0-9_-]{20}$/;
+// A key is the issue time (seconds, base 36, 7 characters) plus 16 random characters.
+const KEY_PATTERN = /^[0-9a-z]{7}[A-Za-z0-9_-]{16}$/;
 const WORKSPACE_PREFIX = "demo-";
 const CLEAR_AFTER_SECONDS = 6 * 60 * 60;
 
 // Caps per visitor so the public demo can't be used to store lots of data.
 export const DEMO_LIMITS = { clients: 25, documents: 40 };
+
+// At most this many demo desks are open at once. More visitors see a "busy" page.
+export const MAX_OPEN_DESKS = 50;
+
+// Each "clear-demo" run also deletes up to this many rows left behind by
+// workspaces whose own cleanup never ran.
+const SWEEP_ROWS = 60;
+
+const BUSY_MESSAGE = "A lot of people are trying the demo right now. Please try again in a few minutes.";
 
 /**
  * Called for every request. Outside the demo hosts it returns the request
@@ -44,14 +61,33 @@ export function applyDemo(rc) {
   return withKey(rc, key && KEY_PATTERN.test(key) ? key : null);
 }
 
+/**
+ * Drops a key that this server didn't issue, or whose workspace was cleared.
+ * The visitor then sees the start page instead of an empty, never-cleared desk.
+ */
+export async function checkKey(rc, ctx, now = new Date()) {
+  if (!rc.demo || !rc.workspace) return rc;
+  const key = rc.workspace.slice(WORKSPACE_PREFIX.length);
+  if (!isExpired(rc.workspace, now)) {
+    const rows = await ctx.data.collection("documents").list({ where: { workspace: rc.workspace }, limit: 1 });
+    if (rows.rows.length > 0) return rc;
+  }
+  return { ...withKey(rc, null), keyCleared: Boolean(key) };
+}
+
 /** Where a public page on the app's own Userland address sends the visitor. */
 export function showcaseTarget(rc, method) {
   return method === "GET" ? DEMO_ORIGIN + rc.url.pathname + rc.url.search : `${DEMO_ORIGIN}/`;
 }
 
-/** Opens a new workspace for this visitor and returns the updated request context. */
+/**
+ * Opens a new workspace for this visitor and returns the updated request
+ * context. When the demo is full or cleanup can't be scheduled, the context
+ * has no workspace and `demoBusy` holds a message for the visitor.
+ */
 export async function openWorkspace(rc, ctx) {
-  return withKey(rc, await startDemo(ctx));
+  const result = await startDemo(ctx);
+  return result.key ? withKey(rc, result.key) : { ...withKey(rc, null), demoBusy: result.busy };
 }
 
 function withKey(rc, key) {
@@ -75,52 +111,132 @@ export function demoLink(path, key) {
   return `${base}${separator}demo=${key}${hash ? `#${hash}` : ""}`;
 }
 
-/** Creates a new visitor workspace with sample data and schedules its cleanup. */
+function newKey(now) {
+  return Math.floor(now.getTime() / 1000).toString(36).padStart(7, "0") + randomToken(12);
+}
+
+/** True for a demo workspace older than six hours, or one named with an old-style key. */
+function isExpired(workspace, now) {
+  if (!workspace.startsWith(WORKSPACE_PREFIX)) return false;
+  const key = workspace.slice(WORKSPACE_PREFIX.length);
+  if (!KEY_PATTERN.test(key)) return true;
+  const issued = Number.parseInt(key.slice(0, 7), 36);
+  return (issued + CLEAR_AFTER_SECONDS) * 1000 <= now.getTime();
+}
+
+// Every workspace gets the sample paid invoice first, so it always holds the
+// first invoice number. Counting that number across workspaces counts open desks.
+async function openDeskCount(ctx, now) {
+  const marker = formatNumber("invoice", STUDIO.numbering.invoice.start + 1);
+  const result = await ctx.data.collection("documents").list({
+    where: { kind: "invoice", number: marker },
+    order_by: [{ field: "workspace", direction: "desc" }],
+    limit: 100
+  });
+  return result.rows.filter((row) => row.workspace.startsWith(WORKSPACE_PREFIX) && !isExpired(row.workspace, now)).length;
+}
+
+/**
+ * Creates a new visitor workspace with sample data. The cleanup job is
+ * scheduled first: if it can't be (for example, the month's job runs are used
+ * up), no workspace is created. Returns { key } or { busy: message }.
+ */
 export async function startDemo(ctx, now = new Date()) {
-  const key = randomToken(15);
+  if ((await openDeskCount(ctx, now)) >= MAX_OPEN_DESKS) {
+    await ctx.log.warn("demo is full", { limit: MAX_OPEN_DESKS });
+    return { busy: BUSY_MESSAGE };
+  }
+  const key = newKey(now);
   const workspace = WORKSPACE_PREFIX + key;
-  await ctx.data.transaction(async (tx) => await addSamples(tx, workspace, now));
   try {
     await ctx.jobs.enqueue("clear-demo", { workspace }, { delay_seconds: CLEAR_AFTER_SECONDS });
   } catch (error) {
     await ctx.log.warn("demo cleanup not scheduled", { reason: error instanceof Error ? error.message : "unknown" });
+    return { busy: BUSY_MESSAGE };
   }
+  // The transaction only groups the sample writes. If one fails, the job above still clears the rest.
+  await ctx.data.transaction(async (tx) => await addSamples(tx, workspace, now));
   await ctx.log.info("demo workspace opened", {});
-  return key;
+  return { key };
 }
 
-/** The "clear-demo" job: deletes one visitor workspace. Never touches real data. */
-export async function clearDemo(event, ctx) {
+/**
+ * The "clear-demo" job: deletes one visitor workspace, then sweeps a few rows
+ * from any expired workspace whose own job never ran. Never touches real data.
+ */
+export async function clearDemo(event, ctx, now = new Date()) {
   const workspace = event.payload?.workspace;
-  if (typeof workspace !== "string" || !workspace.startsWith(WORKSPACE_PREFIX) || workspace === MAIN_WORKSPACE) return;
   let removed = 0;
-  for (const name of ["documents", "clients"]) {
-    const collection = ctx.data.collection(name);
-    for (let page = 0; page < 10; page += 1) {
-      const result = await collection.list({ where: { workspace }, limit: 100 });
-      if (result.rows.length === 0) break;
-      for (const row of result.rows) {
-        await collection.delete(row.id);
-        removed += 1;
+  if (typeof workspace === "string" && workspace.startsWith(WORKSPACE_PREFIX) && workspace !== MAIN_WORKSPACE) {
+    for (const name of ["documents", "clients"]) {
+      const collection = ctx.data.collection(name);
+      for (let page = 0; page < 10; page += 1) {
+        const result = await collection.list({ where: { workspace }, limit: 100 });
+        if (result.rows.length === 0) break;
+        for (const row of result.rows) {
+          await collection.delete(row.id);
+          removed += 1;
+        }
       }
     }
   }
-  await ctx.log.info("demo workspace cleared", { rows: removed });
+  const swept = await sweepExpired(ctx, now);
+  await ctx.log.info("demo workspace cleared", { rows: removed, swept });
+}
+
+// Demo workspace names start with the issue time, so sorting by workspace
+// lists the oldest demo rows first.
+async function sweepExpired(ctx, now) {
+  let budget = SWEEP_ROWS;
+  for (const name of ["documents", "clients"]) {
+    const collection = ctx.data.collection(name);
+    let cursor;
+    for (let page = 0; page < 3 && budget > 0; page += 1) {
+      const result = await collection.list({ order_by: [{ field: "workspace", direction: "asc" }], limit: 100, ...(cursor ? { cursor } : {}) });
+      for (const row of result.rows) {
+        if (budget <= 0) break;
+        if (!isExpired(row.workspace, now)) continue;
+        await collection.delete(row.id);
+        budget -= 1;
+      }
+      cursor = result.cursor;
+      if (!cursor) break;
+    }
+  }
+  return SWEEP_ROWS - budget;
 }
 
 /** Returns a message when this visitor has reached the demo cap, otherwise null. */
-export function demoLimitMessage(counts, kind) {
+export async function limitMessage(ctx, workspace, kind) {
   const limit = DEMO_LIMITS[kind];
-  if (counts[kind] < limit) return null;
+  const result = await ctx.data.collection(kind).list({ where: { workspace }, limit: 100 });
+  if (result.rows.length < limit) return null;
   return `The demo stops at ${limit} ${kind}. Your own app has no limit like this.`;
 }
 
 // ---------------------------------------------------------------------------
-// Page chrome shown only in the demo: a notice at the top and a footer line.
+// Pages and page chrome shown only in the demo.
+
+/** The page shown at /desk before a visitor has a demo desk. */
+export function startPage(rc) {
+  const message = rc.keyCleared
+    ? "That demo desk has been cleared. Demo desks are deleted after six hours. Open a new one with fresh sample clients, quotes, and invoices."
+    : "Open a private copy of the studio desk with sample clients, quotes, and invoices. Price a request, send a quote, and turn it into an invoice.";
+  return messagePage(rc, {
+    title: "Try the owner's side",
+    message,
+    actionHtml: `<form method="post" action="/demo/start"><button class="button button-primary" type="submit">Open the studio desk</button></form>`
+  });
+}
+
+/** The page shown when no new demo desk can be opened right now. */
+export function busyPage(rc) {
+  return messagePage(rc, { title: "The demo is busy", message: BUSY_MESSAGE, actionHtml: `<p><a href="/">Back to the studio page</a></p>` });
+}
 
 export function demoBanner(section, key) {
-  const desk = demoLink("/desk", key);
-  const home = demoLink("/", key);
+  const desk = esc(demoLink("/desk", key));
+  const home = esc(demoLink("/", key));
   const next =
     section === "desk"
       ? `<a href="${home}">See the client side</a>`

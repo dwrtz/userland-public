@@ -8,7 +8,7 @@
 //   rc.signOut         show a sign-out link on desk pages
 
 import { STUDIO } from "./studio.js";
-import { LIMITS, allowedTransitions, canConvert, isEditable, isOverdue, parseMoney, parsePercent, parseQuantity, today } from "./store.js";
+import { LIMITS, allowedTransitions, canConvert, displayNumber, hasLines, isEditable, isExpired, isOverdue, lineCents, parseMoney, parsePercent, parseQuantity, taxCents, today } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -22,13 +22,20 @@ export function esc(value) {
     .replaceAll("'", "&#39;");
 }
 
-const money = new Intl.NumberFormat(STUDIO.locale, { style: "currency", currency: STUDIO.currency });
+// Amounts print in the currency stored on each document, so changing the
+// studio's currency later doesn't relabel old invoices. Amounts are stored in
+// hundredths, so use a currency with two decimal places (see README.md).
+const moneyFormats = new Map();
+function moneyFormat(currency) {
+  if (!moneyFormats.has(currency)) moneyFormats.set(currency, new Intl.NumberFormat(STUDIO.locale, { style: "currency", currency }));
+  return moneyFormats.get(currency);
+}
 const amount = new Intl.NumberFormat(STUDIO.locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const quantity = new Intl.NumberFormat(STUDIO.locale, { maximumFractionDigits: 2 });
 const shortDate = new Intl.DateTimeFormat(STUDIO.locale, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 const longDate = new Intl.DateTimeFormat(STUDIO.locale, { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-export const fmtMoney = (cents) => money.format((cents ?? 0) / 100);
+export const fmtMoney = (cents, currency = STUDIO.currency) => moneyFormat(currency || STUDIO.currency).format((cents ?? 0) / 100);
 export const fmtAmount = (cents) => amount.format((cents ?? 0) / 100);
 const fmtQuantity = (value) => quantity.format(value ?? 0);
 const fmtDate = (value) => (value ? shortDate.format(new Date(`${value}T00:00:00Z`)) : "");
@@ -51,6 +58,7 @@ const STATUS = {
 
 function statusOf(document) {
   if (isOverdue(document)) return { key: "overdue", label: "Overdue" };
+  if (isExpired(document)) return { key: "expired", label: "Expired" };
   return { key: document.status, label: STATUS[document.status] ?? document.status };
 }
 
@@ -223,10 +231,12 @@ export function requestSentPage(rc, { deskHref }) {
 
 // The private client view of a quote or invoice: /p/:token
 export function clientDocumentPage(rc, { document, client, deskHref = null, flash = "" }) {
-  const answer =
-    document.kind === "quote" && document.status === "sent"
-      ? `<form class="respond" method="post" action="${esc(rc.link(`/p/${document.public_token}/respond`))}"><p>Happy with this quote? Accepting it books the work. We'll confirm dates by email.</p><div class="button-row"><button class="button button-primary" name="answer" value="accept" type="submit">Accept quote</button><button class="button button-quiet" name="answer" value="decline" type="submit">Decline</button></div></form>`
-      : "";
+  const open = document.kind === "quote" && document.status === "sent" && !document.invoice_id;
+  const answer = !open
+    ? ""
+    : isExpired(document)
+      ? `<div class="respond"><p>This quote was valid until ${esc(fmtDate(document.due_date))}, so it can't be accepted online any more. Email <a href="mailto:${esc(STUDIO.email)}">${esc(STUDIO.email)}</a> for an updated quote.</p></div>`
+      : `<form class="respond" method="post" action="${esc(rc.link(`/p/${document.public_token}/respond`))}"><p>Happy with this quote? Accepting it books the work. We'll confirm dates by email.</p><div class="button-row"><button class="button button-primary" name="answer" value="accept" type="submit">Accept quote</button><button class="button button-quiet" name="answer" value="decline" type="submit">Decline</button></div></form>`;
   const body = `
 <div class="wrap doc-wrap">
   <div class="doc-toolbar no-print">
@@ -237,7 +247,7 @@ export function clientDocumentPage(rc, { document, client, deskHref = null, flas
   ${answer}
   ${sheet(document, client)}
 </div>`;
-  return page(rc, { title: `${KIND[document.kind]} ${document.number} · ${STUDIO.name}`, section: "client", body, robots: "noindex,nofollow" });
+  return page(rc, { title: `${KIND[document.kind]} ${displayNumber(document)} · ${STUDIO.name}`, section: "client", body, robots: "noindex,nofollow" });
 }
 
 // ---------------------------------------------------------------------------
@@ -253,11 +263,13 @@ function sheet(document, client) {
         ? `Overdue since ${fmtDate(document.due_date)}`
         : status.key === "accepted" || status.key === "converted"
           ? `Accepted ${fmtDate(document.accepted_on)}`
-          : status.key === "void"
-            ? "Void"
-            : status.key === "declined"
-              ? "Declined"
-              : "";
+          : status.key === "expired"
+            ? `Expired ${fmtDate(document.due_date)}`
+            : status.key === "void"
+              ? "Void"
+              : status.key === "declined"
+                ? "Declined"
+                : "";
   const rows = (document.line_items ?? [])
     .map(
       (item) => `<tr><td class="col-desc">${esc(item.description)}<span class="line-meta" aria-hidden="true">${fmtQuantity(item.quantity)} × ${fmtAmount(item.unit_cents)}</span></td><td class="num col-qty">${fmtQuantity(item.quantity)}</td><td class="num col-rate">${fmtAmount(item.unit_cents)}</td><td class="num col-amount">${fmtAmount(item.amount_cents)}</td></tr>`
@@ -274,7 +286,7 @@ function sheet(document, client) {
   <tfoot>
     <tr class="subtotal"><th scope="row" colspan="3">Subtotal</th><td class="num">${fmtAmount(document.subtotal_cents)}</td></tr>
     ${tax}
-    <tr class="total"><th scope="row" colspan="3">${isQuote ? "Total" : "Total due"} <span class="currency">${esc(document.currency)}</span></th><td class="num">${fmtMoney(document.total_cents)}</td></tr>
+    <tr class="total"><th scope="row" colspan="3">${isQuote ? "Total" : "Total due"} <span class="currency">${esc(document.currency)}</span></th><td class="num">${fmtMoney(document.total_cents, document.currency)}</td></tr>
   </tfoot>
 </table>`;
   const who = client
@@ -283,7 +295,7 @@ function sheet(document, client) {
   return `<article class="sheet" aria-labelledby="sheet-${esc(document.id)}">
   <header class="sheet-head">
     <div class="sheet-brand">${MARK}<div><p class="sheet-studio">${esc(STUDIO.name)}</p><p class="sheet-from">${STUDIO.address.map(esc).join("<br>")}<br>${esc(STUDIO.email)}</p></div></div>
-    <div class="sheet-kind"><h1 id="sheet-${esc(document.id)}">${KIND[document.kind]}</h1><p class="sheet-number">${esc(document.number)}</p>${stamp ? `<p class="stamp stamp-${status.key}">${esc(stamp)}</p>` : ""}</div>
+    <div class="sheet-kind"><h1 id="sheet-${esc(document.id)}">${KIND[document.kind]}</h1><p class="sheet-number">${esc(displayNumber(document))}</p>${stamp ? `<p class="stamp stamp-${status.key}">${esc(stamp)}</p>` : ""}</div>
   </header>
   <div class="sheet-meta">
     <div><h2>${isQuote ? "Prepared for" : "Billed to"}</h2>${who}</div>
@@ -291,7 +303,7 @@ function sheet(document, client) {
     <dl class="sheet-dates">
       <div><dt>${isQuote ? "Date" : "Issued"}</dt><dd>${fmtDate(document.issue_date) || "Not set"}</dd></div>
       <div><dt>${isQuote ? "Valid until" : "Due"}</dt><dd>${fmtDate(document.due_date) || "Not set"}</dd></div>
-      <div><dt>Amount</dt><dd class="num">${fmtMoney(document.total_cents)}</dd></div>
+      <div><dt>Amount</dt><dd class="num">${fmtMoney(document.total_cents, document.currency)}</dd></div>
     </dl>
   </div>
   ${items}
@@ -310,7 +322,7 @@ function ledger(rc, documents, clientsById, { showClient = true } = {}) {
       const client = clientsById.get(document.client_id);
       const href = esc(rc.link(`/desk/documents/${document.id}`));
       return `<tr>
-  <td class="col-no"><a href="${href}">${esc(document.number)}</a><span class="kind-label">${KIND[document.kind]}</span></td>
+  <td class="col-no"><a href="${href}">${esc(displayNumber(document))}</a><span class="kind-label">${KIND[document.kind]}</span></td>
   ${showClient ? `<td class="col-client"><span class="client-name">${esc(client?.company || client?.name || "Client removed")}</span><span class="project">${esc(document.title)}</span></td>` : `<td class="col-client"><span class="client-name">${esc(document.title)}</span></td>`}
   <td class="col-date">${fmtDate(document.issue_date) || "—"}</td>
   <td class="col-date">${fmtDate(document.due_date) || "—"}</td>
@@ -325,6 +337,14 @@ function ledger(rc, documents, clientsById, { showClient = true } = {}) {
 </table></div>`;
 }
 
+/** Links to the next page of a long list, and back to the first page. */
+function pager(rc, path, { next, later, newer = "Back to the newest", older = "Older documents" }) {
+  if (!next && !later) return "";
+  const withCursor = (cursor) => `${path}${path.includes("?") ? "&" : "?"}after=${encodeURIComponent(cursor)}`;
+  const links = [later ? `<a href="${esc(rc.link(path))}">${newer}</a>` : "", next ? `<a href="${esc(rc.link(withCursor(next)))}">${older}</a>` : ""];
+  return `<nav class="pager" aria-label="More pages">${links.filter(Boolean).join("")}</nav>`;
+}
+
 const VIEWS = [
   ["all", "All"],
   ["quotes", "Quotes"],
@@ -332,18 +352,15 @@ const VIEWS = [
   ["requests", "Requests"]
 ];
 
-export function deskPage(rc, { documents, clients, view, summary, flash }) {
+export function deskPage(rc, { documents, next = null, later = false, clients, view, summary, flash }) {
   const clientsById = new Map(clients.map((client) => [client.id, client]));
-  const shown = documents.filter((document) =>
-    view === "quotes" ? document.kind === "quote" && document.status !== "requested" : view === "invoices" ? document.kind === "invoice" : view === "requests" ? document.status === "requested" : true
-  );
   const tabs = VIEWS.map(([key, label]) => {
     const count = key === "requests" && summary.requests ? ` <span class="count">${summary.requests}</span>` : "";
     return `<a href="${esc(rc.link(key === "all" ? "/desk" : `/desk?view=${key}`))}"${view === key ? ' aria-current="page"' : ""}>${label}${count}</a>`;
   }).join("");
   const figure = (label, data, detail, tone = "") =>
     `<div class="figure${tone ? ` figure-${tone}` : ""}"><dt>${label}</dt><dd><span class="figure-value">${fmtMoney(data.cents)}</span><span class="figure-detail">${detail}</span></dd></div>`;
-  const requests = documents.filter((document) => document.status === "requested");
+  const requests = summary.requestRows ?? [];
   const inbox = requests.length
     ? `<section class="inbox" aria-labelledby="inbox-title"><h2 id="inbox-title">${plural(requests.length, "new quote request", "new quote requests")}</h2><ul>${requests
         .map((document) => {
@@ -367,12 +384,13 @@ export function deskPage(rc, { documents, clients, view, summary, flash }) {
   </dl>
   ${inbox}
   <nav class="tabs" aria-label="Filter documents">${tabs}</nav>
-  ${ledger(rc, shown, clientsById)}
+  ${ledger(rc, documents, clientsById)}
+  ${pager(rc, view === "all" ? "/desk" : `/desk?view=${view}`, { next, later })}
 </div>`;
   return page(rc, { title: `Quotes and invoices · ${STUDIO.name}`, section: "desk", body, robots: "noindex,nofollow" });
 }
 
-export function documentPage(rc, { document, client, related, clientUrl, clientViewHref, flash, error }) {
+export function documentPage(rc, { document, client, related, clientUrl, clientViewHref, deleteLabel = null, flash, error }) {
   const transitions = allowedTransitions(document);
   const primary = document.status === "requested" ? null : transitions[0];
   const statusButtons = transitions
@@ -391,10 +409,15 @@ export function documentPage(rc, { document, client, related, clientUrl, clientV
     ? `<div class="panel-block"><h2>Client link</h2><p>Send this private link from your own email. Your client can view${document.kind === "quote" && document.status === "sent" ? ", accept," : ""} and print it.</p><div class="copy-field"><label class="visually-hidden" for="client-link">Client link</label><input id="client-link" readonly value="${esc(clientUrl)}"><button class="button button-small" type="button" data-copy="#client-link">Copy</button></div><p class="copy-status" role="status" aria-live="polite"></p><a href="${esc(clientViewHref)}">Open the client view</a></div>`
     : `<div class="panel-block"><h2>Client link</h2><p>The private link for your client works once you mark this ${document.kind} as sent.</p></div>`;
   const link = related
-    ? `<p class="related">${related.kind === "invoice" ? "Invoiced as" : "Created from quote"} <a href="${esc(rc.link(`/desk/documents/${related.id}`))}">${esc(related.number)}</a></p>`
+    ? `<p class="related">${related.kind === "invoice" ? "Invoiced as" : "Created from quote"} <a href="${esc(rc.link(`/desk/documents/${related.id}`))}">${esc(displayNumber(related))}</a></p>`
     : "";
   const request = document.request_message
-    ? `<div class="panel-block"><h2>Client's request</h2><p class="request-quote">“${lines(document.request_message)}”</p></div>`
+    ? `<div class="panel-block"><h2>Client's request</h2>${requestNote(document)}<p class="request-quote">“${lines(document.request_message)}”</p></div>`
+    : "";
+  const needsLines =
+    document.status === "draft" && !hasLines(document) ? `<p class="hint">Add at least one priced line (Edit) before you send this ${document.kind}.</p>` : "";
+  const remove = deleteLabel
+    ? `<div class="panel-block"><h2>Delete</h2><p class="hint">${document.status === "requested" ? "For spam or requests you won't answer." : "Quotes that were never sent can be deleted."} This can't be undone.</p><form method="post" action="${esc(rc.link(`/desk/documents/${document.id}/delete`))}"><button class="button button-quiet" type="submit">${esc(deleteLabel)}</button></form></div>`
     : "";
   const dates = [
     ["Sent", document.sent_on],
@@ -416,21 +439,28 @@ export function documentPage(rc, { document, client, related, clientUrl, clientV
     <aside class="panel no-print" aria-label="${KIND[document.kind]} actions">
       <div class="panel-block panel-status"><h2>Status</h2><p>${statusTag(document)}</p>${dates ? `<dl class="panel-dates">${dates}</dl>` : ""}${link}</div>
       ${request}
-      ${convert || statusButtons || editLink ? `<div class="panel-block"><h2>Next step</h2><div class="stack">${convert}${editLink}${statusButtons ? `<form method="post" action="${esc(rc.link(`/desk/documents/${document.id}/status`))}" class="stack">${statusButtons}</form>` : ""}</div></div>` : ""}
+      ${convert || statusButtons || editLink ? `<div class="panel-block"><h2>Next step</h2>${needsLines}<div class="stack">${convert}${editLink}${statusButtons ? `<form method="post" action="${esc(rc.link(`/desk/documents/${document.id}/status`))}" class="stack">${statusButtons}</form>` : ""}</div></div>` : ""}
       ${share}
+      ${remove}
       ${client ? `<div class="panel-block"><h2>Client</h2><p><a href="${esc(rc.link(`/desk/clients/${client.id}`))}">${esc(client.name)}</a>${client.company ? `<br>${esc(client.company)}` : ""}</p></div>` : ""}
     </aside>
   </div>
 </div>`;
-  return page(rc, { title: `${KIND[document.kind]} ${document.number} · ${STUDIO.name}`, section: "desk", body, robots: "noindex,nofollow" });
+  return page(rc, { title: `${KIND[document.kind]} ${displayNumber(document)} · ${STUDIO.name}`, section: "desk", body, robots: "noindex,nofollow" });
+}
+
+/** A warning when a public request used a known client's email with a different name. */
+function requestNote(document) {
+  return document.request_note ? `<p class="notice notice-error">${esc(document.request_note)}</p>` : "";
 }
 
 export function documentFormPage(rc, { kind, document = null, clients, values = {}, errors = {}, requestMessage = "", extraRow = false }) {
   const isQuote = kind === "quote";
   const editing = Boolean(document);
   const action = editing ? `/desk/documents/${document.id}` : "/desk/documents";
-  const heading = editing ? (document.status === "requested" ? `Price request ${document.number}` : `Edit ${document.number}`) : `New ${kind}`;
-  const headingHtml = editing ? `${document.status === "requested" ? "Price request" : "Edit"} <span class="nowrap">${esc(document.number)}</span>` : esc(heading);
+  const heading = editing ? (document.status === "requested" ? `Price request ${displayNumber(document)}` : `Edit ${displayNumber(document)}`) : `New ${kind}`;
+  const headingHtml = editing ? `${document.status === "requested" ? "Price request" : "Edit"} <span class="nowrap">${esc(displayNumber(document))}</span>` : esc(heading);
+  const currency = document?.currency || STUDIO.currency;
   const rows = values.rows?.length ? values.rows : [];
   const blanks = Math.min(LIMITS.lines - rows.length, Math.max(0, Math.max(3, rows.length + 1) - rows.length) + (extraRow ? 1 : 0));
   const allRows = [...rows, ...Array.from({ length: blanks }, () => ({ description: "", quantity: "1", rate: "" }))];
@@ -440,11 +470,11 @@ export function documentFormPage(rc, { kind, document = null, clients, values = 
     const qty = parseQuantity(row.quantity || "1");
     const unit = parseMoney(row.rate);
     if (qty === null || unit === null || row.rate === "") return null;
-    const cents = Math.round(qty * unit);
+    const cents = lineCents(qty, unit);
     subtotal += cents;
     return fmtAmount(cents);
   });
-  const taxCents = Math.round((subtotal * (parsePercent(values.tax_percent ?? "") ?? 0)) / 100);
+  const tax = taxCents(subtotal, parsePercent(values.tax_percent ?? "") ?? 0);
   const lineRow = (row, index) => `<tr class="line-row">
   <td class="col-desc"><label class="visually-hidden" for="item-description-${index}">Line ${index + 1} description</label><input id="item-description-${index}" name="item_description" maxlength="${LIMITS.lineDescription}" value="${esc(row.description)}" placeholder="What you'll deliver"></td>
   <td class="col-qty"><label class="visually-hidden" for="item-quantity-${index}">Line ${index + 1} quantity</label><input id="item-quantity-${index}" name="item_quantity" inputmode="decimal" value="${esc(row.quantity || "1")}"></td>
@@ -456,10 +486,10 @@ export function documentFormPage(rc, { kind, document = null, clients, values = 
     .join("");
   const body = `
 <div class="wrap narrow-wide">
-  <div class="doc-toolbar"><a class="back" href="${esc(rc.link(editing ? `/desk/documents/${document.id}` : "/desk"))}">${editing ? `Back to ${document.number}` : "All documents"}</a></div>
+  <div class="doc-toolbar"><a class="back" href="${esc(rc.link(editing ? `/desk/documents/${document.id}` : "/desk"))}">${editing ? `Back to ${esc(displayNumber(document))}` : "All documents"}</a></div>
   <h1>${headingHtml}</h1>
-  ${requestMessage ? `<div class="card request-card"><h2>What the client asked for</h2><p class="request-quote">“${lines(requestMessage)}”</p></div>` : ""}
-  <form class="card doc-form" method="post" action="${esc(rc.link(action))}" novalidate data-line-form data-locale="${esc(STUDIO.locale)}" data-currency="${esc(STUDIO.currency)}">
+  ${requestMessage ? `<div class="card request-card"><h2>What the client asked for</h2>${editing ? requestNote(document) : ""}<p class="request-quote">“${lines(requestMessage)}”</p></div>` : ""}
+  <form class="card doc-form" method="post" action="${esc(rc.link(action))}" novalidate data-line-form data-locale="${esc(STUDIO.locale)}" data-currency="${esc(currency)}">
     <input type="hidden" name="kind" value="${esc(kind)}">
     <button class="visually-hidden" type="submit" tabindex="-1" aria-hidden="true">Save draft</button>
     ${errorSummary(errors)}
@@ -477,14 +507,14 @@ export function documentFormPage(rc, { kind, document = null, clients, values = 
       <legend>Line items</legend>
       ${fieldError(errors, "line_items")}
       <div class="table-scroll"><table class="lines lines-edit">
-        <thead><tr><th scope="col" class="col-desc">Description</th><th scope="col" class="col-qty">Qty</th><th scope="col" class="col-rate">Price (${esc(STUDIO.currency)})</th><th scope="col" class="num col-amount">Amount</th></tr></thead>
+        <thead><tr><th scope="col" class="col-desc">Description</th><th scope="col" class="col-qty">Qty</th><th scope="col" class="col-rate">Price (${esc(currency)})</th><th scope="col" class="num col-amount">Amount</th></tr></thead>
         <tbody data-line-body>${allRows.map(lineRow).join("")}</tbody>
       </table></div>
       ${allRows.length < LIMITS.lines ? `<button class="button button-small add-line" type="submit" name="intent" value="add-line" formnovalidate data-add-line data-max-lines="${LIMITS.lines}">Add a line</button>` : ""}
     </fieldset>
     <div class="form-grid totals-grid">
       <div class="field"><label for="tax_percent">Tax (%)</label><input id="tax_percent" name="tax_percent" inputmode="decimal" value="${esc(values.tax_percent ?? String(STUDIO.defaultTaxPercent))}"${describedBy(errors, "tax_percent")}>${fieldError(errors, "tax_percent")}</div>
-      <dl class="live-totals"><div><dt>Subtotal</dt><dd class="num" data-subtotal>${fmtAmount(subtotal)}</dd></div><div><dt>Tax</dt><dd class="num" data-tax>${fmtAmount(taxCents)}</dd></div><div class="grand"><dt>Total</dt><dd class="num" data-total>${fmtMoney(subtotal + taxCents)}</dd></div></dl>
+      <dl class="live-totals"><div><dt>Subtotal</dt><dd class="num" data-subtotal>${fmtAmount(subtotal)}</dd></div><div><dt>Tax</dt><dd class="num" data-tax>${fmtAmount(tax)}</dd></div><div class="grand"><dt>Total</dt><dd class="num" data-total>${fmtMoney(subtotal + tax, currency)}</dd></div></dl>
     </div>
     <div class="field notes-field"><label for="notes">${isQuote ? "Terms" : "Payment instructions"}</label><textarea id="notes" name="notes" rows="3" maxlength="${LIMITS.notes}"${describedBy(errors, "notes")}>${esc(values.notes)}</textarea>${fieldError(errors, "notes")}</div>
     <div class="button-row"><button class="button button-primary" type="submit">Save draft</button><a class="button button-quiet" href="${esc(rc.link(editing ? `/desk/documents/${document.id}` : "/desk"))}">Cancel</a></div>
@@ -516,22 +546,23 @@ function clientFields(values, errors, prefix = "") {
     <div class="field"><label for="${id("notes")}">Notes <span class="optional">only you see these</span></label><textarea id="${id("notes")}" name="notes" rows="2" maxlength="${LIMITS.clientNotes}"${describedBy(errors, "notes")}>${esc(values.notes)}</textarea>${fieldError(errors, "notes")}</div>`;
 }
 
-export function clientsPage(rc, { clients, documents, values = {}, errors = {}, flash }) {
+export function clientsPage(rc, { clients, next = null, later = false, unpaid = [], values = {}, errors = {}, flash }) {
+  const owed = new Map();
+  for (const invoice of unpaid) owed.set(invoice.client_id, (owed.get(invoice.client_id) ?? 0) + invoice.total_cents);
   const rows = clients
     .map((client) => {
-      const theirs = documents.filter((document) => document.client_id === client.id);
-      const open = theirs.filter((document) => document.kind === "invoice" && document.status === "sent").reduce((sum, document) => sum + document.total_cents, 0);
-      return `<tr><td class="col-client"><a class="client-name" href="${esc(rc.link(`/desk/clients/${client.id}`))}">${esc(client.name)}</a><span class="project">${esc(client.company)}</span></td><td class="col-email">${esc(client.email)}</td><td class="num col-count">${theirs.length}</td><td class="num col-total">${open ? fmtAmount(open) : "—"}</td></tr>`;
+      const open = owed.get(client.id) ?? 0;
+      return `<tr><td class="col-client"><a class="client-name" href="${esc(rc.link(`/desk/clients/${client.id}`))}">${esc(client.name)}</a><span class="project">${esc(client.company)}</span></td><td class="col-email">${esc(client.email)}</td><td class="num col-total">${open ? fmtAmount(open) : "—"}</td></tr>`;
     })
     .join("");
   const body = `
 <div class="wrap desk">
-  <div class="desk-head"><div><p class="eyebrow">${plural(clients.length, "client", "clients")}</p><h1>Clients</h1></div></div>
+  <div class="desk-head"><div><p class="eyebrow">${next || later ? "Sorted by name" : plural(clients.length, "client", "clients")}</p><h1>Clients</h1></div></div>
   ${notice(flash)}
   <div class="split">
     <div>${
       clients.length
-        ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col" class="col-client">Client</th><th scope="col" class="col-email">Email</th><th scope="col" class="num col-count">Documents</th><th scope="col" class="num col-total">Unpaid</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col" class="col-client">Client</th><th scope="col" class="col-email">Email</th><th scope="col" class="num col-total">Unpaid</th></tr></thead><tbody>${rows}</tbody></table></div>${pager(rc, "/desk/clients", { next, later, newer: "Back to the start", older: "More clients" })}`
         : `<p class="empty">No clients yet. Add your first one.</p>`
     }</div>
     <form class="card" id="new-client" method="post" action="${esc(rc.link("/desk/clients"))}" novalidate>
@@ -545,7 +576,7 @@ export function clientsPage(rc, { clients, documents, values = {}, errors = {}, 
   return page(rc, { title: `Clients · ${STUDIO.name}`, section: "desk", body, robots: "noindex,nofollow" });
 }
 
-export function clientPage(rc, { client, documents, values, errors = {}, flash }) {
+export function clientPage(rc, { client, documents, next = null, later = false, canDelete = false, values, errors = {}, flash, error = "" }) {
   const body = `
 <div class="wrap desk">
   <div class="doc-toolbar"><a class="back" href="${esc(rc.link("/desk/clients"))}">All clients</a></div>
@@ -553,9 +584,13 @@ export function clientPage(rc, { client, documents, values, errors = {}, flash }
     <div><p class="eyebrow">${esc(client.company || "Client")}</p><h1>${esc(client.name)}</h1></div>
     <div class="button-row"><a class="button button-primary" href="${esc(rc.link(`/desk/new?kind=quote&client=${client.id}`))}">New quote</a><a class="button" href="${esc(rc.link(`/desk/new?kind=invoice&client=${client.id}`))}">New invoice</a></div>
   </div>
-  ${notice(flash)}
+  ${notice(flash)}${notice(error, "error")}
   <div class="split">
-    <div><h2 class="section-title">Documents</h2>${ledger(rc, documents, new Map([[client.id, client]]), { showClient: false })}</div>
+    <div><h2 class="section-title">Documents</h2>${ledger(rc, documents, new Map([[client.id, client]]), { showClient: false })}${pager(rc, `/desk/clients/${client.id}`, { next, later })}${
+      canDelete
+        ? `<form class="delete-client" method="post" action="${esc(rc.link(`/desk/clients/${client.id}/delete`))}"><p class="hint">This client has no quotes or invoices, so you can delete them. This can't be undone.</p><button class="button button-quiet" type="submit">Delete client</button></form>`
+        : ""
+    }</div>
     <form class="card" method="post" action="${esc(rc.link(`/desk/clients/${client.id}`))}" novalidate>
       <h2>Details</h2>
       ${errorSummary(errors)}
@@ -573,9 +608,4 @@ export function clientPage(rc, { client, documents, values, errors = {}, flash }
 export function messagePage(rc, { title, message, section = "public", actionHtml = "" }) {
   const body = `<section class="wrap narrow confirm"><h1>${esc(title)}</h1><p class="lead">${esc(message)}</p>${actionHtml}</section>`;
   return page(rc, { title: `${title} · ${STUDIO.name}`, section, body, robots: "noindex,nofollow" });
-}
-
-export function demoStartPage(rc) {
-  const body = `<section class="wrap narrow confirm"><p class="eyebrow">Studio desk</p><h1>Try the owner's side</h1><p class="lead">Open a private copy of the studio desk with sample clients, quotes, and invoices. Price a request, send a quote, and turn it into an invoice.</p><form method="post" action="/demo/start"><button class="button button-primary" type="submit">Open the studio desk</button></form></section>`;
-  return page(rc, { title: `Studio desk · ${STUDIO.name}`, section: "public", body });
 }

@@ -6,6 +6,14 @@
 //
 // Money is always whole cents (integers). Totals are computed on the server and
 // stored with the document, so a printed invoice never depends on browser math.
+//
+// Rules that must hold even when two requests arrive at the same moment are
+// enforced by unique indexes in manifest.userland.json, not by reading first:
+//   clients.by_email    one client per email address in a workspace
+//   documents.by_number one document per number (per workspace and kind); it
+//                       also makes a quote convert into only one invoice (see
+//                       convertQuote)
+// A clashing write throws a `unique_conflict` error, which the code below catches.
 
 import { STUDIO } from "./studio.js";
 
@@ -24,7 +32,14 @@ export const LIMITS = {
   lines: 20,
   maxQuantity: 100000,
   maxUnitCents: 100000000, // $1,000,000.00
-  maxTaxPercent: 50
+  maxTaxPercent: 50,
+  // Public form caps, so a bot can't fill the app's storage with requests.
+  // New requests are refused (with a friendly message) while this many are
+  // waiting for a reply, or while one email address has this many waiting.
+  pendingRequests: 50,
+  requestsPerClient: 3,
+  // Rows per page on the desk, the client list, and a client's documents.
+  pageSize: 50
 };
 
 // Allowed status changes. The owner moves documents along these edges; the
@@ -48,6 +63,24 @@ const TRANSITIONS = {
 
 // Statuses a client may see through their private link.
 const CLIENT_VISIBLE = new Set(["sent", "accepted", "declined", "converted", "paid"]);
+
+// An invoice made from a quote holds this placeholder number for a moment,
+// until it gets its real number (see convertQuote).
+const PENDING_NUMBER = "pending-";
+
+// ---------------------------------------------------------------------------
+// Errors from ctx.data
+
+/** True for a write that clashed with a unique index. */
+export function isUniqueConflict(error) {
+  // Userland reports `unique_conflict`; the local test runtime calls it `unique_violation`.
+  return error?.code === "unique_conflict" || error?.code === "unique_violation";
+}
+
+/** True when the app has reached a plan limit, such as its row count. */
+export function isQuotaExceeded(error) {
+  return error?.code === "quota_exceeded";
+}
 
 // ---------------------------------------------------------------------------
 // Input helpers
@@ -73,9 +106,12 @@ export function isToken(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{20,64}$/.test(value);
 }
 
-/** Parses "1,250.50" or "$1250.5" into cents. Returns null when invalid. */
+/** Parses "1,250.50", "$1250.5", or "€40" into cents. Returns null when invalid. */
 export function parseMoney(value) {
-  const text = String(value ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
+  const text = String(value ?? "")
+    .trim()
+    .replace(/^\p{Sc}\s*/u, "")
+    .replace(/,/g, "");
   if (!/^\d{1,9}(\.\d{0,2})?$/.test(text)) return null;
   const [whole, fraction = ""] = text.split(".");
   return Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
@@ -125,17 +161,32 @@ export function randomToken(bytes = 18) {
 }
 
 // ---------------------------------------------------------------------------
-// Money math
+// Money math, in whole numbers only. Quantities have at most two decimals and
+// tax rates at most three, so both are scaled to integers before multiplying;
+// halves round up (0.57 × $1.50 = $0.855 → $0.86). public/assets/app.js
+// repeats these two functions for the live preview.
+
+/** Cents for one line: quantity × unit price, rounded to the nearest cent. */
+export function lineCents(quantity, unitCents) {
+  const hundredths = Math.round(quantity * 100);
+  return Math.floor((hundredths * unitCents + 50) / 100);
+}
+
+/** Tax in cents for a subtotal at a percent such as 8.25, rounded to the nearest cent. */
+export function taxCents(subtotalCents, percent) {
+  const thousandths = BigInt(Math.round(percent * 1000));
+  return Number((BigInt(subtotalCents) * thousandths + 50000n) / 100000n);
+}
 
 export function computeTotals(lineItems, taxPercent) {
   const items = lineItems.map((item) => ({
     description: item.description,
     quantity: item.quantity,
     unit_cents: item.unit_cents,
-    amount_cents: Math.round(item.quantity * item.unit_cents)
+    amount_cents: lineCents(item.quantity, item.unit_cents)
   }));
   const subtotal = items.reduce((sum, item) => sum + item.amount_cents, 0);
-  const tax = Math.round((subtotal * taxPercent) / 100);
+  const tax = taxCents(subtotal, taxPercent);
   return { line_items: items, subtotal_cents: subtotal, tax_cents: tax, total_cents: subtotal + tax };
 }
 
@@ -194,6 +245,7 @@ export function parseDocumentForm(form) {
   else if (values.title.length > LIMITS.title) errors.title = `Keep the title under ${LIMITS.title} characters.`;
   if (values.issue_date && !isDate(values.issue_date)) errors.issue_date = "Use a date like 2026-09-30.";
   if (values.due_date && !isDate(values.due_date)) errors.due_date = "Use a date like 2026-10-14.";
+  else if (values.due_date && isDate(values.issue_date) && values.due_date < values.issue_date) errors.due_date = "Pick a date on or after the first date.";
   if (values.notes.length > LIMITS.notes) errors.notes = `Keep notes under ${LIMITS.notes} characters.`;
 
   const taxPercent = parsePercent(values.tax_percent);
@@ -228,23 +280,58 @@ export function parseDocumentForm(form) {
 }
 
 // ---------------------------------------------------------------------------
-// Queries
+// Queries. `list` returns at most 100 rows and a `cursor` when there are more.
 
-async function listAll(collection, where) {
+/** Every row matching the query, reading page after page until the last one. */
+async function listEvery(collection, query) {
   const rows = [];
   let cursor;
-  for (let page = 0; page < 10; page += 1) {
-    const result = await collection.list({ where, limit: 100, ...(cursor ? { cursor } : {}) });
-    rows.push(...result.rows);
-    cursor = result.cursor;
-    if (!cursor) break;
-  }
+  do {
+    const page = await collection.list({ ...query, limit: 100, ...(cursor ? { cursor } : {}) });
+    rows.push(...page.rows);
+    cursor = page.cursor;
+  } while (cursor);
   return rows;
 }
 
+/** Rows from the start of a sorted query for as long as `keep(row)` is true. */
+async function listWhile(collection, query, keep) {
+  const rows = [];
+  let cursor;
+  do {
+    const page = await collection.list({ ...query, limit: 100, ...(cursor ? { cursor } : {}) });
+    for (const row of page.rows) {
+      if (!keep(row)) return rows;
+      rows.push(row);
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  return rows;
+}
+
+/** One page of a query. `cursor` comes from the previous page's `next`. */
+async function listPage(collection, query, cursor) {
+  const page = await collection.list({ ...query, limit: LIMITS.pageSize, ...(isCursor(cursor) ? { cursor } : {}) });
+  return { rows: page.rows, next: page.cursor ?? null };
+}
+
+export function isCursor(value) {
+  return typeof value === "string" && /^[A-Za-z0-9+/=_-]{1,200}$/.test(value);
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+
+const BY_NAME = [{ field: "name", direction: "asc" }];
+
+/** Every client, sorted by name. Used for the client picker and name lookups. */
 export async function listClients(db, workspace) {
-  const rows = await listAll(db.collection("clients"), { workspace });
-  return rows.sort((a, b) => a.name.localeCompare(b.name));
+  return await listEvery(db.collection("clients"), { where: { workspace }, order_by: BY_NAME });
+}
+
+/** One page of the client list, sorted by name. */
+export async function listClientsPage(db, workspace, cursor) {
+  return await listPage(db.collection("clients"), { where: { workspace }, order_by: BY_NAME }, cursor);
 }
 
 export async function getClient(db, workspace, id) {
@@ -258,33 +345,96 @@ export async function findClientByEmail(db, workspace, email) {
   return result.rows[0] ?? null;
 }
 
+/** Adds a client. Returns null when another client already has this email. */
 export async function createClient(db, workspace, values) {
-  return await db.collection("clients").create({
-    workspace,
-    name: values.name,
-    company: values.company ?? "",
-    email: values.email,
-    address: values.address ?? "",
-    notes: values.notes ?? ""
-  });
+  try {
+    return await db.collection("clients").create({
+      workspace,
+      name: values.name,
+      company: values.company ?? "",
+      email: values.email,
+      address: values.address ?? "",
+      notes: values.notes ?? ""
+    });
+  } catch (error) {
+    if (isUniqueConflict(error)) return null;
+    throw error;
+  }
 }
 
+/** The client with this email, adding them first if they are new. */
+export async function findOrCreateClient(db, workspace, values) {
+  const existing = await findClientByEmail(db, workspace, values.email);
+  if (existing) return { client: existing, existed: true };
+  const created = await createClient(db, workspace, values);
+  if (created) return { client: created, existed: false };
+  // Someone added the same email a moment ago (a double submit, say): use that client.
+  return { client: await findClientByEmail(db, workspace, values.email), existed: true };
+}
+
+/** Saves client details. Returns { client }, { conflict: true } for a taken email, or null. */
 export async function updateClient(db, workspace, id, values) {
   const client = await getClient(db, workspace, id);
   if (!client) return null;
-  return await db.collection("clients").update(id, {
-    name: values.name,
-    company: values.company,
-    email: values.email,
-    address: values.address,
-    notes: values.notes
-  });
+  try {
+    const updated = await db.collection("clients").update(id, {
+      name: values.name,
+      company: values.company,
+      email: values.email,
+      address: values.address,
+      notes: values.notes
+    });
+    return { client: updated };
+  } catch (error) {
+    if (isUniqueConflict(error)) return { conflict: true };
+    throw error;
+  }
 }
 
-export async function listDocuments(db, workspace, where = {}) {
-  const rows = await listAll(db.collection("documents"), { workspace, ...where });
-  // Newest first: sort by issue date, then by number.
-  return rows.sort((a, b) => (b.issue_date || "9999").localeCompare(a.issue_date || "9999") || b.number.localeCompare(a.number));
+/** How many quotes and invoices a client has, counting at most `upTo`. */
+export async function countClientDocuments(db, workspace, clientId, upTo = 1) {
+  const result = await db.collection("documents").list({ where: { workspace, client_id: clientId }, limit: upTo });
+  return result.rows.length;
+}
+
+/** A client can be deleted once they have no quotes or invoices. */
+export async function clientHasDocuments(db, workspace, clientId) {
+  return (await countClientDocuments(db, workspace, clientId)) > 0;
+}
+
+export async function deleteClient(db, workspace, id) {
+  const client = await getClient(db, workspace, id);
+  if (!client || (await clientHasDocuments(db, workspace, id))) return null;
+  await db.collection("clients").delete(id);
+  return client;
+}
+
+// ---------------------------------------------------------------------------
+// Document lists
+
+// Newest first: by issue date, then by number. New requests have no date yet
+// and come last; the desk lists them separately.
+const NEWEST_FIRST = [
+  { field: "issue_date", direction: "desc" },
+  { field: "number", direction: "desc" }
+];
+
+const VIEW_FILTERS = {
+  all: {},
+  quotes: { kind: "quote" },
+  invoices: { kind: "invoice" },
+  requests: { kind: "quote", status: "requested" }
+};
+
+/** One page of the desk's document list for a view: all, quotes, invoices, or requests. */
+export async function listDocumentsPage(db, workspace, { view = "all", clientId = null, cursor = null } = {}) {
+  const where = { workspace, ...(VIEW_FILTERS[view] ?? {}), ...(clientId ? { client_id: clientId } : {}) };
+  return await listPage(db.collection("documents"), { where, order_by: NEWEST_FIRST }, cursor);
+}
+
+/** Every document of one kind in one status, such as all sent invoices. */
+export async function listByStatus(db, workspace, kind, status) {
+  return await listEvery(db.collection("documents"), { where: { workspace, kind, status } });
 }
 
 export async function getDocument(db, workspace, id) {
@@ -301,39 +451,69 @@ export async function getDocumentByToken(db, token) {
   return row && CLIENT_VISIBLE.has(row.status) ? row : null;
 }
 
-export async function countRows(db, workspace) {
-  const [clients, documents] = await Promise.all([
-    listAll(db.collection("clients"), { workspace }),
-    listAll(db.collection("documents"), { workspace })
-  ]);
-  return { clients: clients.length, documents: documents.length };
+/** How many quote requests are waiting for a reply, counting at most `upTo`. */
+export async function countPendingRequests(db, workspace, { clientId = null, upTo = 100 } = {}) {
+  const where = { workspace, kind: "quote", status: "requested", ...(clientId ? { client_id: clientId } : {}) };
+  const result = await db.collection("documents").list({ where, limit: Math.min(100, upTo) });
+  return result.rows.length;
+}
+
+// ---------------------------------------------------------------------------
+// Document numbers
+
+export function formatNumber(kind, value) {
+  return `${STUDIO.numbering[kind].prefix}${String(value).padStart(4, "0")}`;
+}
+
+function numberValue(kind, number) {
+  const { prefix } = STUDIO.numbering[kind];
+  const digits = String(number ?? "").startsWith(prefix) ? String(number).slice(prefix.length) : "";
+  return /^\d+$/.test(digits) ? Number(digits) : 0;
+}
+
+/** The number to show: a converted invoice's placeholder shows as "Number pending". */
+export function displayNumber(document) {
+  return String(document.number ?? "").startsWith(PENDING_NUMBER) ? "Number pending" : document.number;
+}
+
+/**
+ * The highest number in use for a kind. Numbers sort as text, so the quick
+ * check reads the top of the sorted list; `everything` reads every number
+ * (needed once numbers grow past four digits and stop sorting in order).
+ */
+async function highestNumber(db, workspace, kind, { everything = false } = {}) {
+  const query = { where: { workspace, kind }, order_by: [{ field: "number", direction: "desc" }] };
+  const rows = everything ? await listEvery(db.collection("documents"), query) : (await db.collection("documents").list({ ...query, limit: 25 })).rows;
+  return rows.reduce((max, row) => Math.max(max, numberValue(kind, row.number)), STUDIO.numbering[kind].start);
+}
+
+/**
+ * Runs `write(number)` with the next free number, trying the one after when
+ * the unique index says another request just took it.
+ */
+async function withNextNumber(db, workspace, kind, write) {
+  let next = (await highestNumber(db, workspace, kind)) + 1;
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    try {
+      return await write(formatNumber(kind, next));
+    } catch (error) {
+      if (!isUniqueConflict(error)) throw error;
+      next = attempt === 3 ? Math.max(next + 1, (await highestNumber(db, workspace, kind, { everything: true })) + 1) : next + 1;
+    }
+  }
+  throw new Error("No free document number found.");
 }
 
 // ---------------------------------------------------------------------------
 // Documents
 
-async function nextNumber(db, workspace, kind) {
-  const { prefix, start } = STUDIO.numbering[kind];
-  const rows = await listAll(db.collection("documents"), { workspace, kind });
-  const highest = rows.reduce((max, row) => {
-    const value = Number.parseInt(String(row.number).slice(prefix.length), 10);
-    return Number.isFinite(value) && value > max ? value : max;
-  }, start);
-  return `${prefix}${String(highest + 1).padStart(4, "0")}`;
-}
-
-/**
- * Creates a quote or invoice. `fields` holds the parsed form values plus
- * `lines` and `taxPercent`; totals are computed here.
- */
-export async function createDocument(db, workspace, kind, fields, { now = new Date() } = {}) {
+function documentRow(workspace, kind, fields, now) {
   const issueDate = fields.issue_date || today(now);
   const defaultDays = kind === "quote" ? STUDIO.quoteValidDays : STUDIO.paymentTermsDays;
   const totals = computeTotals(fields.lines ?? [], fields.taxPercent ?? STUDIO.defaultTaxPercent);
-  return await db.collection("documents").create({
+  return {
     workspace,
     kind,
-    number: await nextNumber(db, workspace, kind),
     status: fields.status ?? "draft",
     client_id: fields.client_id,
     title: fields.title,
@@ -344,13 +524,23 @@ export async function createDocument(db, workspace, kind, fields, { now = new Da
     currency: STUDIO.currency,
     notes: fields.notes ?? (kind === "quote" ? STUDIO.quoteNotes : STUDIO.invoiceNotes),
     request_message: fields.request_message ?? "",
+    request_note: fields.request_note ?? "",
     public_token: randomToken(),
     quote_id: fields.quote_id ?? "",
     invoice_id: "",
     sent_on: fields.sent_on ?? "",
     accepted_on: fields.accepted_on ?? "",
     paid_on: fields.paid_on ?? ""
-  });
+  };
+}
+
+/**
+ * Creates a quote or invoice with the next number. `fields` holds the parsed
+ * form values plus `lines` and `taxPercent`; totals are computed here.
+ */
+export async function createDocument(db, workspace, kind, fields, { now = new Date() } = {}) {
+  const row = documentRow(workspace, kind, fields, now);
+  return await withNextNumber(db, workspace, kind, async (number) => await db.collection("documents").create({ ...row, number }));
 }
 
 /** Saves edits to a draft (or a new request being priced, which becomes a draft). */
@@ -375,17 +565,33 @@ export function isEditable(document) {
   return document.status === "draft" || document.status === "requested";
 }
 
+export function hasLines(document) {
+  return Array.isArray(document.line_items) && document.line_items.length > 0;
+}
+
+/** Status changes the owner can make now. A document needs priced lines before it is sent. */
 export function allowedTransitions(document) {
-  return TRANSITIONS[document.kind]?.[document.status] ?? [];
+  const moves = TRANSITIONS[document.kind]?.[document.status] ?? [];
+  return hasLines(document) ? moves : moves.filter((status) => status !== "sent");
 }
 
 export function canConvert(document) {
-  return document.kind === "quote" && (document.status === "sent" || document.status === "accepted");
+  return document.kind === "quote" && (document.status === "sent" || document.status === "accepted") && !document.invoice_id && hasLines(document);
+}
+
+/** Quotes that were never sent can be deleted, for example spam requests. Invoices are voided instead. */
+export function canDelete(document) {
+  return document.kind === "quote" && ["requested", "draft", "declined"].includes(document.status) && !document.sent_on && !document.invoice_id;
 }
 
 /** True when a sent invoice is past its due date. */
 export function isOverdue(document, now = new Date()) {
   return document.kind === "invoice" && document.status === "sent" && Boolean(document.due_date) && document.due_date < today(now);
+}
+
+/** True when a sent quote is past its "valid until" date. Clients can no longer accept it. */
+export function isExpired(document, now = new Date()) {
+  return document.kind === "quote" && document.status === "sent" && Boolean(document.due_date) && document.due_date < today(now);
 }
 
 function statusPatch(document, status, now) {
@@ -399,66 +605,122 @@ function statusPatch(document, status, now) {
   return patch;
 }
 
-/** Owner status change. Returns the updated row, or null when the move isn't allowed. */
-export async function changeStatus(db, workspace, id, status, { now = new Date() } = {}) {
-  const document = await getDocument(db, workspace, id);
-  if (!document || !allowedTransitions(document).includes(status)) return null;
-  return await db.collection("documents").update(id, statusPatch(document, status, now));
+/**
+ * A quote that has an invoice stays "converted". If a status change raced a
+ * conversion and landed after it, put the status back.
+ */
+async function keepConverted(db, updated) {
+  if (updated.kind !== "quote") return updated;
+  const current = await db.collection("documents").get(updated.id);
+  if (current?.invoice_id && current.status !== "converted") return await db.collection("documents").update(updated.id, { status: "converted" });
+  return current ?? updated;
 }
 
-/** Client answer on a sent quote, through the private link. */
+/** Owner status change. Returns { document } or { error: "not-allowed" | "needs-lines" }. */
+export async function changeStatus(db, workspace, id, status, { now = new Date() } = {}) {
+  const document = await getDocument(db, workspace, id);
+  if (!document) return { error: "not-allowed" };
+  if (!allowedTransitions(document).includes(status)) {
+    return { error: status === "sent" && (TRANSITIONS[document.kind]?.[document.status] ?? []).includes("sent") ? "needs-lines" : "not-allowed" };
+  }
+  const updated = await db.collection("documents").update(id, statusPatch(document, status, now));
+  return { document: await keepConverted(db, updated) };
+}
+
+/** Client answer on a sent quote, through the private link. Returns { document } or { error }. */
 export async function respondToQuote(db, token, answer, { now = new Date() } = {}) {
+  if (answer !== "accept" && answer !== "decline") return { error: "not-allowed" };
   const document = await getDocumentByToken(db, token);
-  if (!document || document.kind !== "quote" || document.status !== "sent") return null;
-  const status = answer === "accept" ? "accepted" : "declined";
-  return await db.collection("documents").update(document.id, statusPatch(document, status, now));
+  if (!document || document.kind !== "quote" || document.status !== "sent" || document.invoice_id) return { error: "not-allowed" };
+  if (isExpired(document, now)) return { error: "expired" };
+  const updated = await db.collection("documents").update(document.id, statusPatch(document, answer === "accept" ? "accepted" : "declined", now));
+  return { document: await keepConverted(db, updated) };
 }
 
 /**
  * Turns a sent or accepted quote into a draft invoice with the same client,
- * title, line items, and tax. Runs in a transaction so a quote converts once.
+ * title, line items, and tax. Returns { invoice, already } or { error }.
+ *
+ * A quote converts once, even when two requests arrive together (a double
+ * click, or two tabs). The new invoice is first saved with a placeholder
+ * number made from the quote's id, and the unique number index lets only one
+ * request save it. The winner marks the quote as converted and then gives the
+ * invoice its real number. A request that saves its placeholder after the
+ * winner already renamed its own sees the quote's invoice_id and removes its copy.
  */
 export async function convertQuote(db, workspace, id, { now = new Date() } = {}) {
-  return await db.transaction(async (tx) => {
-    const quote = await getDocument(tx, workspace, id);
-    if (!quote || !canConvert(quote)) return null;
-    const invoice = await createDocument(
-      tx,
-      workspace,
-      "invoice",
-      {
-        client_id: quote.client_id,
-        title: quote.title,
-        lines: quote.line_items,
-        taxPercent: quote.tax_percent,
-        notes: STUDIO.invoiceNotes,
-        quote_id: quote.id,
-        status: "draft"
-      },
-      { now }
-    );
-    await tx.collection("documents").update(quote.id, {
-      status: "converted",
-      invoice_id: invoice.id,
-      accepted_on: quote.accepted_on || today(now)
-    });
-    return invoice;
-  });
+  const documents = db.collection("documents");
+  const quote = await getDocument(db, workspace, id);
+  if (!quote || quote.kind !== "quote") return { error: "not-allowed" };
+  if (quote.invoice_id) return { invoice: await getDocument(db, workspace, quote.invoice_id), already: true };
+  if (!canConvert(quote)) return { error: hasLines(quote) ? "not-allowed" : "needs-lines" };
+
+  const placeholder = `${PENDING_NUMBER}${quote.id}`;
+  const row = documentRow(workspace, "invoice", { client_id: quote.client_id, title: quote.title, lines: quote.line_items, taxPercent: quote.tax_percent, notes: STUDIO.invoiceNotes, quote_id: quote.id, status: "draft" }, now);
+  let invoice;
+  try {
+    invoice = await documents.create({ ...row, number: placeholder });
+  } catch (error) {
+    if (!isUniqueConflict(error)) throw error;
+    // Another request is converting this quote right now: show its invoice.
+    const pending = await documents.list({ where: { workspace, kind: "invoice", number: placeholder }, limit: 1 });
+    const latest = await getDocument(db, workspace, quote.id);
+    const invoiceId = pending.rows[0]?.id ?? latest?.invoice_id;
+    return invoiceId ? { invoice: await getDocument(db, workspace, invoiceId), already: true } : { error: "not-allowed" };
+  }
+
+  const latest = await getDocument(db, workspace, quote.id);
+  if (!latest || latest.invoice_id || !(latest.status === "sent" || latest.status === "accepted")) {
+    await documents.delete(invoice.id);
+    return latest?.invoice_id ? { invoice: await getDocument(db, workspace, latest.invoice_id), already: true } : { error: "not-allowed" };
+  }
+  await documents.update(quote.id, { status: "converted", invoice_id: invoice.id, accepted_on: latest.accepted_on || today(now) });
+  invoice = await withNextNumber(db, workspace, "invoice", async (number) => await documents.update(invoice.id, { number }));
+  return { invoice, already: false };
 }
 
-/** Figures for the desk overview. */
-export function summarize(documents, now = new Date()) {
+/**
+ * Deletes a quote that was never sent. For a new request whose client has
+ * nothing else on file (usually spam), the client is deleted too.
+ */
+export async function deleteDocument(db, workspace, id) {
+  const document = await getDocument(db, workspace, id);
+  if (!document || !canDelete(document)) return null;
+  await db.collection("documents").delete(id);
+  let clientRemoved = false;
+  if (document.status === "requested" && !(await clientHasDocuments(db, workspace, document.client_id))) {
+    clientRemoved = Boolean(await deleteClient(db, workspace, document.client_id));
+  }
+  return { document, clientRemoved };
+}
+
+// ---------------------------------------------------------------------------
+// Desk overview
+
+/**
+ * Figures for the desk overview, read with one query per status so the totals
+ * cover every document, not just the first page.
+ */
+export async function summarize(db, workspace, now = new Date()) {
   const since = addDays(today(now), -30);
+  const documents = db.collection("documents");
+  const [invoicesOut, sentQuotes, acceptedQuotes, requests, paid] = await Promise.all([
+    listByStatus(db, workspace, "invoice", "sent"),
+    listByStatus(db, workspace, "quote", "sent"),
+    listByStatus(db, workspace, "quote", "accepted"),
+    listByStatus(db, workspace, "quote", "requested"),
+    listWhile(documents, { where: { workspace, kind: "invoice", status: "paid" }, order_by: [{ field: "paid_on", direction: "desc" }] }, (row) => row.paid_on >= since)
+  ]);
   const sum = (rows) => rows.reduce((total, row) => total + row.total_cents, 0);
-  const invoicesOut = documents.filter((row) => row.kind === "invoice" && row.status === "sent");
   const overdue = invoicesOut.filter((row) => isOverdue(row, now));
-  const openQuotes = documents.filter((row) => row.kind === "quote" && (row.status === "sent" || row.status === "accepted"));
-  const paid = documents.filter((row) => row.kind === "invoice" && row.status === "paid" && row.paid_on >= since);
+  const openQuotes = [...sentQuotes, ...acceptedQuotes];
   return {
     outstanding: { cents: sum(invoicesOut), count: invoicesOut.length },
     overdue: { cents: sum(overdue), count: overdue.length },
     openQuotes: { cents: sum(openQuotes), count: openQuotes.length },
     paid30: { cents: sum(paid), count: paid.length },
-    requests: documents.filter((row) => row.status === "requested").length
+    requests: requests.length,
+    requestRows: requests.sort((a, b) => a.number.localeCompare(b.number)),
+    unpaidInvoices: invoicesOut
   };
 }

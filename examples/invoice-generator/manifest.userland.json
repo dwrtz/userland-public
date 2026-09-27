@@ -29,8 +29,13 @@
           },
           "indexes": [
             {
-              "name": "by_workspace",
-              "fields": ["workspace", "email"]
+              "name": "by_email",
+              "fields": ["workspace", "email"],
+              "unique": true
+            },
+            {
+              "name": "by_name",
+              "fields": ["workspace", "name"]
             }
           ],
           "access": {
@@ -65,6 +70,7 @@
             "currency": "string",
             "notes": "string",
             "request_message": "string",
+            "request_note": "string",
             "public_token": "string",
             "quote_id": "string",
             "invoice_id": "string",
@@ -74,13 +80,13 @@
           },
           "indexes": [
             {
-              "name": "by_workspace",
-              "fields": ["workspace", "kind", "status", "client_id"]
+              "name": "by_number",
+              "fields": ["workspace", "kind", "number"],
+              "unique": true
             },
             {
-              "name": "by_public_token",
-              "fields": ["public_token"],
-              "unique": true
+              "name": "for_lists",
+              "fields": ["public_token", "status", "client_id", "issue_date", "paid_on"]
             }
           ],
           "access": {

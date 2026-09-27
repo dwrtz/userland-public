@@ -1098,6 +1098,29 @@ input[readonly] {
   border-color: var(--accent);
 }
 
+.status-expired {
+  color: var(--ink-2);
+}
+
+.status-expired .status-dot {
+  border-style: dotted;
+  border-color: var(--ink-2);
+  border-radius: 50%;
+}
+
+/* Links to more pages of a long list */
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 16px;
+  font-size: 15px;
+}
+
+.delete-client {
+  margin-top: 32px;
+}
+
 /* ------------------------------------------------------------------ */
 /* Document page */
 
