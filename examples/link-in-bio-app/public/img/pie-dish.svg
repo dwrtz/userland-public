@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240">
+  <defs><clipPath id="pie"><ellipse cx="160" cy="130" rx="84" ry="31"/></clipPath></defs>
+  <rect width="320" height="240" fill="#F2542D"/>
+  <circle cx="276" cy="34" r="54" fill="#FF7A52"/>
+  <circle cx="36" cy="214" r="40" fill="#FF7A52"/>
+  <ellipse cx="160" cy="160" rx="124" ry="50" fill="#1E32A8"/>
+  <ellipse cx="160" cy="140" rx="124" ry="52" fill="#2B45D8"/>
+  <ellipse cx="160" cy="136" rx="108" ry="42" fill="#F3E3C8"/>
+  <ellipse cx="160" cy="132" rx="86" ry="32" fill="#E0A21B"/>
+  <ellipse cx="160" cy="129" rx="84" ry="30" fill="#FFD84D"/>
+  <g clip-path="url(#pie)" stroke="#E0A21B" stroke-width="8" stroke-linecap="round">
+    <path d="M90 80 L150 180 M125 80 L185 180 M160 80 L220 180 M195 80 L255 180"/>
+    <path d="M230 80 L170 180 M195 80 L135 180 M160 80 L100 180 M125 80 L65 180"/>
+  </g>
+  <g fill="#2A1433" opacity=".35">
+    <circle cx="74" cy="140" r="2"/><circle cx="92" cy="160" r="1.6"/><circle cx="248" cy="146" r="2"/><circle cx="230" cy="162" r="1.6"/><circle cx="120" cy="170" r="1.5"/><circle cx="206" cy="170" r="1.8"/><circle cx="84" cy="118" r="1.4"/><circle cx="240" cy="116" r="1.4"/>
+  </g>
+</svg>
