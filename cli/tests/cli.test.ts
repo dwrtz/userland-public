@@ -1494,6 +1494,70 @@ recent_errors:
     ]);
   });
 
+  test("refuses . and .. as app ids, slugs, domains, and other path parts without sending a request", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/%252e%252e": { app_id: "%2e%2e" }
+    });
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ account_id: ".." }));
+
+    // URL parsing drops "." and ".." parts, so `slugs remove app_1 ..` would become DELETE /v0/apps/app_1/,
+    // which unpublishes the whole app, and `--app .` would become PUT /v0/apps/, which creates a new app.
+    const cases: Array<{ args: string[]; stdin?: string; message: string }> = [
+      { args: ["apps", "slugs", "remove", "app_1", ".."], message: 'Invalid slug: "..".' },
+      { args: ["apps", "domains", "remove", "app_1", ".."], message: 'Invalid domain: "..".' },
+      { args: ["apps", "domains", "verify", "app_1", "."], message: 'Invalid domain: ".".' },
+      { args: ["apps", "secrets", "set", "..", "MODEL_KEY"], stdin: "v", message: 'Invalid app id: "..".' },
+      { args: ["apps", "status", "."], message: 'Invalid app id: ".".' },
+      { args: ["apps", "rollback", "..", "rel_1"], message: 'Invalid app id: "..".' },
+      { args: ["apps", "analytics", ".."], message: 'Invalid app id: "..".' },
+      { args: ["apps", "publish", "examples/hello-static", "--app", "."], message: 'Invalid app id: ".".' },
+      { args: ["apps", "publish", "examples/hello-static", "--app", "..", "--plan", "free"], message: 'Invalid app id: "..".' },
+      { args: ["auth", "api-keys", "revoke", "..", "--yes"], message: 'Invalid API key id: "..".' },
+      { args: ["accounts", "limits", "--account", "."], message: 'Invalid account id: ".".' },
+      // A saved account id is checked too.
+      { args: ["accounts", "status"], message: 'Invalid account id: "..".' }
+    ];
+    for (const { args, stdin, message } of cases) {
+      const result = await runCli(args, api.baseUrl, { stdin, credentialsFile });
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain(message);
+      expect(result.stdout, args.join(" ")).not.toContain("Published");
+    }
+    expect(requests).toHaveLength(0);
+
+    // Anything else, including a percent-encoded dot, is sent encoded and keeps its place in the path.
+    const encoded = await runCli(["apps", "status", "%2e%2e"], api.baseUrl, { credentialsFile });
+    expect(encoded.code).toBe(0);
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/apps/%252e%252e"]);
+  });
+
+  test("accepts --value and other free-text values that start with dashes, such as a PEM key", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps/app_1/secrets/GITHUB_APP_PRIVATE_KEY": { name: "GITHUB_APP_PRIVATE_KEY", present: true, updated_at: "2026-05-05T00:00:00.000Z" },
+      "POST /v0/support/requests": { correlation_id: "sup_1", reply_to_email: "owner@example.com" }
+    });
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIEabc\n-----END PRIVATE KEY-----";
+
+    const secret = await runCli(["apps", "secrets", "set", "app_1", "GITHUB_APP_PRIVATE_KEY", "--value", pem], api.baseUrl);
+    expect(secret.code).toBe(0);
+    expect(secret.stderr).toContain("warning=secret_on_command_line");
+    expect(requests.at(-1)?.body).toEqual({ value: pem });
+
+    const support = await runCli(["support", "open", "--subject", "--help did not work", "--message", "-- see logs"], api.baseUrl);
+    expect(support.code).toBe(0);
+    expect(requests.at(-1)?.body).toEqual({ subject: "--help did not work", message: "-- see logs" });
+
+    // A value that is exactly another option is still a mistake, such as a forgotten value before --account.
+    const forgotten = await runCli(["apps", "secrets", "set", "app_1", "API_TOKEN", "--value", "--account", "acct_1"], api.baseUrl);
+    expect(forgotten.code).toBe(1);
+    expect(forgotten.stderr).toContain("--value requires a value. The next argument (--account) looks like another option.");
+    expect(requests).toHaveLength(2);
+  });
+
   test("warns when a secret or API key is passed on the command line and reads them from stdin", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
@@ -1641,6 +1705,31 @@ recent_errors:
     const third = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
     expect(third.code).toBe(0);
     expect(requests.filter((request) => request.method === "DELETE")).toHaveLength(deletesBefore);
+  });
+
+  test("a login revokes the key it actually replaces when another login saved one while it waited", async () => {
+    const requests: RequestRecord[] = [];
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    const api = await startMockApi(requests, {
+      // While this login waits for approval, another login (for example a parallel agent) saves its key.
+      "POST /v0/auth/device/start": async () => {
+        await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "other_login_key", api_key_id: "apk_other", api_base_url: api.baseUrl }));
+        return deviceStartResponse();
+      },
+      "POST /v0/auth/device/poll": { ok: true, status: "approved", api_key: "new_key", api_key_id: "apk_new", default_account_id: "acct_1" },
+      "DELETE /v0/auth/api-keys/apk_other": { ok: true, revoked: true, api_key_id: "apk_other" },
+      "DELETE /v0/auth/api-keys/apk_old": { ok: true, revoked: true, api_key_id: "apk_old" }
+    });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_key_id: "apk_old", api_base_url: api.baseUrl }));
+
+    const result = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
+
+    expect(result.code).toBe(0);
+    // The key this login overwrote is apk_other; apk_old was already replaced by the other login.
+    expect(result.stdout).toContain("revoked_previous_api_key_id=apk_other");
+    expect(requests.filter((request) => request.method === "DELETE").map((request) => request.url)).toEqual(["/v0/auth/api-keys/apk_other"]);
+    expect(JSON.parse(await fs.readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: "new_key", api_key_id: "apk_new" });
   });
 
   test("logout says when the saved API key stays active", async () => {
@@ -1937,7 +2026,9 @@ async function handleRequest(
   }
 
   const configuredRoute = routes[key];
-  const route = Array.isArray(configuredRoute) ? configuredRoute.shift() : configuredRoute;
+  const picked = Array.isArray(configuredRoute) ? configuredRoute.shift() : configuredRoute;
+  // A function route runs when the request arrives (for example to change files mid-command).
+  const route = typeof picked === "function" ? await (picked as () => unknown)() : picked;
   if (typeof route === "object" && route !== null && "__status" in route) {
     const { __status, ...body } = route as { __status: number; [key: string]: unknown };
     response.writeHead(__status, { "content-type": "application/json" });

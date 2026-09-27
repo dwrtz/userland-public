@@ -613,7 +613,10 @@ async function loginCommand(args: string[]): Promise<void> {
 }
 
 async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: boolean }): Promise<void> {
-  const previous = await readCredentials();
+  if (options.save !== false) {
+    // Stop on an unreadable credentials file now, not after the browser approval has created a key.
+    await readCredentials();
+  }
   // Log in to --api-base-url, USERLAND_API_BASE_URL, or the default API. A URL saved by an earlier
   // login is not reused, so one login against another API does not stick for later logins.
   const baseUrl = options.apiBaseUrl ?? envValue("USERLAND_API_BASE_URL") ?? DEFAULT_API_BASE_URL;
@@ -651,7 +654,9 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
   const response = terminalSafeValue(await pollDeviceAuthorization(baseUrl, start));
 
   if (options.save !== false) {
-    const filePath = await saveCredentials({
+    // Approval can take minutes, and another login may save a key meanwhile. Revoke the key this save
+    // actually overwrites, read right before the write, not the one saved when this login started.
+    const { filePath, replaced } = await replaceCredentials({
       api_key: response.api_key,
       api_key_id: response.api_key_id ?? null,
       api_base_url: baseUrl,
@@ -666,7 +671,7 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
     if (response.default_account_id) {
       console.log(`selected_account_id=${response.default_account_id}`);
     }
-    await revokeReplacedLoginKey(previous, { apiKey: response.api_key, apiKeyId: response.api_key_id, baseUrl });
+    await revokeReplacedLoginKey(replaced, { apiKey: response.api_key, apiKeyId: response.api_key_id, baseUrl });
     return;
   }
 
@@ -693,7 +698,7 @@ async function revokeReplacedLoginKey(previous: CredentialsFile | undefined, cur
     return;
   }
   try {
-    await requestJson<ApiKeyRevokeResponse>(current.baseUrl, `/v0/auth/api-keys/${encodeURIComponent(previousKeyId)}`, {
+    await requestJson<ApiKeyRevokeResponse>(current.baseUrl, `/v0/auth/api-keys/${pathSegment(previousKeyId, "API key id")}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${current.apiKey}` }
     });
@@ -799,7 +804,7 @@ async function logoutCommand(args: string[]): Promise<void> {
       }
       await requestJson<ApiKeyRevokeResponse>(
         savedBaseUrl,
-        `/v0/auth/api-keys/${encodeURIComponent(credentials.api_key_id)}`,
+        `/v0/auth/api-keys/${pathSegment(credentials.api_key_id, "API key id")}`,
         {
           method: "DELETE",
           headers: {
@@ -865,7 +870,7 @@ async function apiKeysRenameCommand(apiKeyId: string, args: string[]): Promise<v
     throw new Error("--name is required.");
   }
 
-  const response = await apiFetch<ApiKeyRenameResponse>(`/v0/auth/api-keys/${encodeURIComponent(apiKeyId)}`, {
+  const response = await apiFetch<ApiKeyRenameResponse>(`/v0/auth/api-keys/${pathSegment(apiKeyId, "API key id")}`, {
     method: "PATCH",
     body: JSON.stringify({ name: options.name })
   });
@@ -876,6 +881,7 @@ async function apiKeysRenameCommand(apiKeyId: string, args: string[]): Promise<v
 
 async function apiKeysRevokeCommand(apiKeyId: string, args: string[]): Promise<void> {
   const options = parseApiKeyOptions(args);
+  const keyPath = `/v0/auth/api-keys/${pathSegment(apiKeyId, "API key id")}`;
   const credentials = await readCredentials();
   if (credentials?.api_key_id === apiKeyId) {
     console.log("This is the API key saved for the current CLI credentials. Subsequent saved-credential commands may fail.");
@@ -891,7 +897,7 @@ async function apiKeysRevokeCommand(apiKeyId: string, args: string[]): Promise<v
     }
   }
 
-  const response = await apiFetch<ApiKeyRevokeResponse>(`/v0/auth/api-keys/${encodeURIComponent(apiKeyId)}`, {
+  const response = await apiFetch<ApiKeyRevokeResponse>(keyPath, {
     method: "DELETE"
   });
   if (response.revoked) {
@@ -925,7 +931,7 @@ async function useAccountCommand(args: string[]): Promise<void> {
 async function accountStatusCommand(args: string[]): Promise<void> {
   const options = parseAccountOptions(args);
   const accountId = await resolveAccountId(options.account);
-  const response = await apiFetch<AccountStatusResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/status`, {
+  const response = await apiFetch<AccountStatusResponse>(`/v0/accounts/${pathSegment(accountId, "account id")}/status`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -943,7 +949,7 @@ async function accountStatusCommand(args: string[]): Promise<void> {
 async function accountLimitsCommand(args: string[]): Promise<void> {
   const options = parseAccountOptions(args);
   const accountId = await resolveAccountId(options.account);
-  const response = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/limits`, {
+  const response = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${pathSegment(accountId, "account id")}/limits`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -971,7 +977,7 @@ async function downgradePreviewCommand(args: string[]): Promise<void> {
   const targetPlanKey = requirePlanKey(options.to);
   const accountId = await resolveAccountId(options.account);
   const params = new URLSearchParams({ plan: targetPlanKey });
-  const response = await apiFetch<DowngradePreviewResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/downgrade-preview?${params.toString()}`, {
+  const response = await apiFetch<DowngradePreviewResponse>(`/v0/accounts/${pathSegment(accountId, "account id")}/downgrade-preview?${params.toString()}`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -1052,6 +1058,8 @@ async function publishCommand(args: string[]): Promise<void> {
   if (!dir) {
     usage(1);
   }
+  // Checked before anything else: an --app of "." or ".." would otherwise publish a new app.
+  const publishPath = options.app !== undefined ? `/v0/apps/${pathSegment(options.app, "app id")}` : "/v0/apps";
 
   if (options.skipLocalValidation) {
     console.log("local_validation=skipped");
@@ -1060,7 +1068,7 @@ async function publishCommand(args: string[]): Promise<void> {
   }
 
   const body = await readPublishDirectory(dir, options);
-  const response = await apiFetch<PublishResponse>(options.app !== undefined ? `/v0/apps/${encodeURIComponent(options.app)}` : "/v0/apps", {
+  const response = await apiFetch<PublishResponse>(publishPath, {
     method: "PUT",
     body: JSON.stringify(body)
   }, { accountId: options.account, accountScoped: true });
@@ -1141,13 +1149,13 @@ async function publishPreflight(dir: string, options: CliOptions): Promise<boole
 async function fetchAccountEntitlements(options: CliOptions): Promise<{ planKey: string; config: EntitlementConfig }> {
   let accountId: string | undefined;
   if (options.app) {
-    const app = await apiFetch<AppStatusResponse>(`/v0/apps/${encodeURIComponent(options.app)}`, {
+    const app = await apiFetch<AppStatusResponse>(`/v0/apps/${pathSegment(options.app, "app id")}`, {
       method: "GET"
     }, { accountId: options.account, accountScoped: true });
     accountId = app.account_id ?? undefined;
   }
   accountId ??= await resolveAccountId(options.account);
-  const limits = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/limits`, {
+  const limits = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${pathSegment(accountId, "account id")}/limits`, {
     method: "GET"
   }, { accountId, accountScoped: true });
   if (typeof limits.plan_key !== "string" || !isPlainObject(limits.features) || !isPlainObject(limits.manifest_limits)) {
@@ -1189,7 +1197,7 @@ async function analyticsCommand(args: string[]): Promise<void> {
   const suffix = options.range ? `?${new URLSearchParams({ range: options.range }).toString()}` : "";
   let response: AppAnalyticsResponse;
   try {
-    response = await apiFetch<AppAnalyticsResponse>(`/v0/apps/${encodeURIComponent(appId)}/analytics${suffix}`, {
+    response = await apiFetch<AppAnalyticsResponse>(`/v0/apps/${pathSegment(appId, "app id")}/analytics${suffix}`, {
       method: "GET"
     }, { accountId: options.account, accountScoped: true, raw: options.json === true });
   } catch (error) {
@@ -1313,7 +1321,7 @@ async function releasesCommand(args: string[]): Promise<void> {
   }
   const options = parseAccountOptions(args.slice(1));
 
-  const response = await apiFetch<VersionResponse>(`/v0/apps/${encodeURIComponent(appId)}/releases`, {
+  const response = await apiFetch<VersionResponse>(`/v0/apps/${pathSegment(appId, "app id")}/releases`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -1330,7 +1338,7 @@ async function rollbackCommand(args: string[]): Promise<void> {
   }
   const options = parseAccountOptions(args.slice(2));
 
-  const response = await apiFetch<RollbackResponse>(`/v0/apps/${encodeURIComponent(appId)}/rollback`, {
+  const response = await apiFetch<RollbackResponse>(`/v0/apps/${pathSegment(appId, "app id")}/rollback`, {
     method: "POST",
     body: JSON.stringify({ release_id: releaseId })
   }, { accountId: options.account, accountScoped: true });
@@ -1351,6 +1359,7 @@ async function setSecretCommand(args: string[]): Promise<void> {
   if (!SECRET_NAME_PATTERN.test(name)) {
     throw new Error(`Invalid secret name: ${name}. Secret names use capital letters, numbers, and underscores, start with a letter, and are at most 64 characters (for example MODEL_API_KEY).`);
   }
+  const secretPath = `/v0/apps/${pathSegment(appId, "app id")}/secrets/${pathSegment(name, "secret name")}`;
   if (options.value !== undefined) {
     console.error(`warning=secret_on_command_line A value passed with --value can be kept in shell history and seen by other programs on this computer. Pipe it on stdin instead: printf '%s' "$VALUE" | userland apps secrets set ${appId} ${name}`);
   }
@@ -1359,7 +1368,7 @@ async function setSecretCommand(args: string[]): Promise<void> {
     throw new Error("Secret value is required on stdin, for example: printf '%s' \"$VALUE\" | userland apps secrets set <app-id> <NAME>");
   }
 
-  const response = await apiFetch<{ name: string; present: boolean; updated_at: string }>(`/v0/apps/${encodeURIComponent(appId)}/secrets/${encodeURIComponent(name)}`, {
+  const response = await apiFetch<{ name: string; present: boolean; updated_at: string }>(secretPath, {
     method: "PUT",
     body: JSON.stringify({ value })
   }, { accountId: options.account, accountScoped: true });
@@ -1381,7 +1390,7 @@ async function eventsCommand(args: string[]): Promise<void> {
   if (options.releaseId) params.set("release_id", options.releaseId);
   if (options.limit) params.set("limit", options.limit);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  const response = await apiFetch<EventsResponse>(`/v0/apps/${encodeURIComponent(appId)}/events${suffix}`, {
+  const response = await apiFetch<EventsResponse>(`/v0/apps/${pathSegment(appId, "app id")}/events${suffix}`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -1399,7 +1408,7 @@ async function appStatusCommand(args: string[]): Promise<void> {
     usage(1);
   }
   const options = parseAccountOptions(args.slice(1));
-  const response = await apiFetch<AppStatusResponse>(`/v0/apps/${encodeURIComponent(appId)}`, {
+  const response = await apiFetch<AppStatusResponse>(`/v0/apps/${pathSegment(appId, "app id")}`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
   const state = objectValue((response as unknown as Record<string, unknown>).operational_state) ?? {};
@@ -1428,7 +1437,7 @@ async function routesListCommand(args: string[]): Promise<void> {
     usage(1);
   }
   const options = parseAccountOptions(args.slice(1));
-  const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/routes`, {
+  const response = await apiFetch<RoutesResponse>(`/v0/apps/${pathSegment(appId, "app id")}/routes`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
   printRoutes(response.routes);
@@ -1438,7 +1447,7 @@ async function appSlugsCommand(args: string[]): Promise<void> {
   const [action, appId, slug, ...optionArgs] = args;
   if (action === "list" && appId) {
     const options = parseAccountOptions([slug, ...optionArgs].filter((value): value is string => value !== undefined));
-    const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs`, {
+    const response = await apiFetch<RoutesResponse>(`/v0/apps/${pathSegment(appId, "app id")}/slugs`, {
       method: "GET"
     }, { accountId: options.account, accountScoped: true });
     printRoutes(response.routes);
@@ -1446,7 +1455,7 @@ async function appSlugsCommand(args: string[]): Promise<void> {
   }
   if (action === "add" && appId && slug) {
     const options = parseAccountOptions(optionArgs);
-    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs`, {
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${pathSegment(appId, "app id")}/slugs`, {
       method: "POST",
       body: JSON.stringify({ slug })
     }, { accountId: options.account, accountScoped: true });
@@ -1455,7 +1464,7 @@ async function appSlugsCommand(args: string[]): Promise<void> {
   }
   if (action === "remove" && appId && slug) {
     const options = parseAccountOptions(optionArgs);
-    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/slugs/${encodeURIComponent(slug)}`, {
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${pathSegment(appId, "app id")}/slugs/${pathSegment(slug, "slug")}`, {
       method: "DELETE"
     }, { accountId: options.account, accountScoped: true });
     printRoute(response.route);
@@ -1468,7 +1477,7 @@ async function appDomainsCommand(args: string[]): Promise<void> {
   const [action, appId, hostname, ...optionArgs] = args;
   if (action === "list" && appId) {
     const options = parseAccountOptions([hostname, ...optionArgs].filter((value): value is string => value !== undefined));
-    const response = await apiFetch<RoutesResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains`, {
+    const response = await apiFetch<RoutesResponse>(`/v0/apps/${pathSegment(appId, "app id")}/domains`, {
       method: "GET"
     }, { accountId: options.account, accountScoped: true });
     printRoutes(response.routes);
@@ -1476,7 +1485,7 @@ async function appDomainsCommand(args: string[]): Promise<void> {
   }
   if (action === "add" && appId && hostname) {
     const options = parseAccountOptions(optionArgs);
-    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains`, {
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${pathSegment(appId, "app id")}/domains`, {
       method: "POST",
       body: JSON.stringify({ hostname })
     }, { accountId: options.account, accountScoped: true });
@@ -1485,7 +1494,7 @@ async function appDomainsCommand(args: string[]): Promise<void> {
   }
   if (action === "verify" && appId && hostname) {
     const options = parseAccountOptions(optionArgs);
-    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains/${encodeURIComponent(hostname)}/verify`, {
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${pathSegment(appId, "app id")}/domains/${pathSegment(hostname, "domain")}/verify`, {
       method: "POST",
       body: JSON.stringify({})
     }, { accountId: options.account, accountScoped: true });
@@ -1494,7 +1503,7 @@ async function appDomainsCommand(args: string[]): Promise<void> {
   }
   if (action === "remove" && appId && hostname) {
     const options = parseAccountOptions(optionArgs);
-    const response = await apiFetch<RouteResponse>(`/v0/apps/${encodeURIComponent(appId)}/domains/${encodeURIComponent(hostname)}`, {
+    const response = await apiFetch<RouteResponse>(`/v0/apps/${pathSegment(appId, "app id")}/domains/${pathSegment(hostname, "domain")}`, {
       method: "DELETE"
     }, { accountId: options.account, accountScoped: true });
     printRoute(response.route);
@@ -1689,6 +1698,20 @@ async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accoun
     headers
   });
   return options.raw ? body : terminalSafeValue(body);
+}
+
+/**
+ * One part of an API path taken from the command line or the credentials file (an app id, slug,
+ * domain, API key id, or account id), URL-encoded. "." and ".." are refused: URL parsing drops them
+ * before the request is sent, so `apps slugs remove <app-id> ..` would become DELETE /v0/apps/<app-id>,
+ * which unpublishes the app, and `--app .` would become PUT /v0/apps/, which creates a new app.
+ * Encoding turns "%" into "%25", so a percent-encoded dot such as "%2e" cannot become a dot again.
+ */
+function pathSegment(value: string, label: string): string {
+  if (value === "" || value === "." || value === "..") {
+    throw new Error(`Invalid ${label}: ${JSON.stringify(value)}. It cannot be ".", "..", or empty.`);
+  }
+  return encodeURIComponent(value);
 }
 
 function selectedAccountId(explicitAccountId: string | undefined, credentials: CredentialsFile | undefined): string | undefined {
@@ -1929,11 +1952,27 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
  * default ~/.userland folder, never a shared folder named by USERLAND_CREDENTIALS_FILE.
  */
 async function saveCredentials(update: CredentialsUpdate): Promise<string> {
+  return (await replaceCredentials(update)).filePath;
+}
+
+/**
+ * saveCredentials, also returning what the file held right before this write. Login uses it to
+ * revoke the key it actually overwrites, which can differ from the key saved when the login started
+ * if another login (for example a parallel agent) saved one while this one waited for approval.
+ */
+async function replaceCredentials(update: CredentialsUpdate): Promise<{ filePath: string; replaced: CredentialsFile | undefined }> {
   const filePath = credentialsPath();
-  const existing = (await readCredentials()) ?? {};
+  const dir = path.dirname(filePath);
+  const created = await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (created !== undefined || path.resolve(filePath) === path.resolve(defaultCredentialsPath())) {
+    await fs.chmod(dir, 0o700).catch(() => undefined);
+  }
+
+  // Read as late as possible, so what this write replaces is what is actually in the file.
+  const replaced = await readCredentials();
   const sanitizedUpdate = Object.fromEntries(Object.entries(update).filter(([, value]) => value !== undefined && value !== null)) as CredentialsFile;
   const credentials: CredentialsFile = {
-    ...existing,
+    ...replaced,
     ...sanitizedUpdate,
     updated_at: new Date().toISOString()
   };
@@ -1943,11 +1982,6 @@ async function saveCredentials(update: CredentialsUpdate): Promise<string> {
     }
   }
 
-  const dir = path.dirname(filePath);
-  const created = await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  if (created !== undefined || path.resolve(filePath) === path.resolve(defaultCredentialsPath())) {
-    await fs.chmod(dir, 0o700).catch(() => undefined);
-  }
   const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   try {
     await fs.writeFile(tempPath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600, flag: "wx" });
@@ -1957,7 +1991,7 @@ async function saveCredentials(update: CredentialsUpdate): Promise<string> {
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
   }
-  return filePath;
+  return { filePath, replaced };
 }
 
 function parseOptions(args: string[]): CliOptions {
@@ -1967,7 +2001,7 @@ function parseOptions(args: string[]): CliOptions {
     if (arg === "--app") {
       options.app = requireOptionValue(arg, args[++index]);
     } else if (arg === "--message") {
-      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true });
+      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true, freeText: true });
     } else if (arg === "--account") {
       options.account = requireOptionValue(arg, args[++index]);
     } else if (arg === "--plan") {
@@ -2018,14 +2052,54 @@ function parseAnalyticsOptions(args: string[]): AnalyticsOptions {
   return options;
 }
 
+/** Every option the CLI accepts. A free-text value that is exactly one of these is a forgotten value. */
+const CLI_OPTION_NAMES = new Set([
+  "--account",
+  "--api-base-url",
+  "--api-key",
+  "--app",
+  "--console-url",
+  "--email",
+  "--help",
+  "--json",
+  "--limit",
+  "--message",
+  "--name",
+  "--no-browser",
+  "--no-save",
+  "--password",
+  "--plan",
+  "--range",
+  "--release",
+  "--revoke",
+  "--save=false",
+  "--severity",
+  "--skip-local-validation",
+  "--strict",
+  "--subject",
+  "--to",
+  "--type",
+  "--username",
+  "--value",
+  "--yes",
+  "-y"
+]);
+
 /**
  * Returns a flag's value. A missing value, a value that is another flag, and (unless allowEmpty) an
  * empty or blank value are usage errors: `--app "$APP_ID"` with an unset variable must not publish
  * a new app, and `--account ""` must not fall back to the default account.
+ *
+ * Ids, URLs, emails, plans, and filters never start with "--", so for those any value starting with
+ * "--" counts as another flag. Free text and secret values (freeText) can start with dashes, such as
+ * a PEM key's "-----BEGIN", so for them only an exact option name such as `--account` counts.
  */
-function requireOptionValue(flag: string, value: string | undefined, options: { allowEmpty?: boolean } = {}): string {
-  if (value === undefined || value.startsWith("--")) {
+function requireOptionValue(flag: string, value: string | undefined, options: { allowEmpty?: boolean; freeText?: boolean } = {}): string {
+  if (value === undefined) {
     throw new Error(`${flag} requires a value.`);
+  }
+  if (options.freeText ? CLI_OPTION_NAMES.has(value) : value.startsWith("--")) {
+    throw new Error(`${flag} requires a value. The next argument (${value}) looks like another option.`);
   }
   if (!options.allowEmpty && value.trim() === "") {
     throw new Error(`${flag} requires a value, but it was empty. If you passed a variable such as "$APP_ID", check that it is set.`);
@@ -2038,9 +2112,9 @@ function parseSupportOptions(args: string[]): SupportOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--subject") {
-      options.subject = requireOptionValue(arg, args[++index]);
+      options.subject = requireOptionValue(arg, args[++index], { freeText: true });
     } else if (arg === "--message") {
-      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true });
+      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true, freeText: true });
     } else if (arg === "--app") {
       options.app = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
@@ -2090,7 +2164,7 @@ function parseApiKeyOptions(args: string[]): ApiKeyOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--name") {
-      options.name = requireOptionValue(arg, args[++index]);
+      options.name = requireOptionValue(arg, args[++index], { freeText: true });
     } else if (arg === "--yes" || arg === "-y") {
       options.yes = true;
     } else {
@@ -2105,7 +2179,7 @@ function parseSecretSetOptions(args: string[]): SecretSetOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--value") {
-      options.value = requireOptionValue(arg, args[++index]);
+      options.value = requireOptionValue(arg, args[++index], { freeText: true });
     } else if (arg === "--account") {
       options.account = requireOptionValue(arg, args[++index]);
     } else {
