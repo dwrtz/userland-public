@@ -30,6 +30,15 @@ export const QUESTIONS = {
   }
 };
 
+// The honeypot field on the join form. People never see it, so only bots fill
+// it in. The name is one browsers don't recognize, so autofill leaves it empty
+// (a name like "company" or "website" can get filled in for real people).
+export const TRAP_FIELD = "leave_blank";
+
+// Bulk archive and delete in the owner view change at most this many people
+// per click, so one request stays well inside the plan's time limits.
+export const BULK_LIMIT = 50;
+
 export const LIMITS = {
   email: 254,
   name: 40,
@@ -136,14 +145,43 @@ export function safeEqual(left, right) {
 // friends who name their code in referred_by, so two friends joining at the
 // same moment can never overwrite each other's credit. Archived friends don't
 // count, which lets the owner undo credit from fake signups by archiving them.
+// Each inbox counts once (see emailKey), so ada+1@, ada+2@... add nothing.
 // ---------------------------------------------------------------------------
 
-export function withReferralCounts(rows) {
-  const counts = new Map();
-  for (const row of rows) {
-    if (row.referred_by && row.status !== "archived") counts.set(row.referred_by, (counts.get(row.referred_by) ?? 0) + 1);
+// One inbox can have many spellings: ada+1@gmail.com, a.da@gmail.com, and
+// ada@googlemail.com all reach ada@gmail.com. emailKey() reduces an address to
+// one spelling so referral credit counts each inbox once, and nobody earns
+// credit by referring their own inbox under another spelling.
+const DOTLESS_DOMAINS = new Map([
+  ["gmail.com", "gmail.com"],
+  ["googlemail.com", "gmail.com"]
+]);
+
+export function emailKey(email) {
+  const text = String(email ?? "").trim().toLowerCase();
+  const at = text.lastIndexOf("@");
+  if (at < 1) return text;
+  let local = text.slice(0, at).split("+")[0];
+  let domain = text.slice(at + 1);
+  if (DOTLESS_DOMAINS.has(domain)) {
+    domain = DOTLESS_DOMAINS.get(domain);
+    local = local.replaceAll(".", "");
   }
-  return rows.map((row) => ({ ...row, referrals: counts.get(row.referral_code) ?? 0 }));
+  return `${local}@${domain}`;
+}
+
+export function withReferralCounts(rows) {
+  const ownerKey = new Map(rows.map((row) => [row.referral_code, emailKey(row.email)]));
+  const friends = new Map();
+  for (const row of rows) {
+    if (!row.referred_by || row.status === "archived") continue;
+    const key = emailKey(row.email);
+    // A second spelling of the referrer's own inbox earns nothing.
+    if (key === ownerKey.get(row.referred_by)) continue;
+    if (!friends.has(row.referred_by)) friends.set(row.referred_by, new Set());
+    friends.get(row.referred_by).add(key);
+  }
+  return rows.map((row) => ({ ...row, referrals: friends.get(row.referral_code)?.size ?? 0 }));
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +340,9 @@ export function toSignup(row) {
   };
 }
 
-// Reads every row, 100 at a time (the most one query returns).
+// Reads every row, 100 at a time (the most one query returns), until the
+// runtime says there are no more. It never stops early: a cut-off list would
+// give people past the cut-off a wrong place in line.
 // The place-in-line page and the owner view need the whole list. The public
 // landing page doesn't: it only uses countJoined() below.
 export async function listAll(collection, query = {}) {
@@ -312,7 +352,7 @@ export async function listAll(collection, query = {}) {
     const page = await collection.list({ ...query, limit: 100, ...(cursor ? { cursor } : {}) });
     rows.push(...page.rows);
     cursor = page.cursor;
-  } while (cursor && rows.length < 20000);
+  } while (cursor);
   return rows;
 }
 
@@ -347,8 +387,17 @@ export function signupStore(ctx) {
     },
     async update(id, patch) {
       return toSignup(await signups().update(id, patch));
+    },
+    // Deletes a row for good, which frees room on the plan's row limit.
+    async remove(id) {
+      await signups().delete(id);
     }
   };
+}
+
+// Gives someone a new private link. The old link stops working at once.
+export async function reissueLink(store, id) {
+  return await store.update(id, { status_token: newToken() });
 }
 
 // Adds someone to the list. The friend who referred them gets credit through
@@ -364,7 +413,7 @@ export async function joinWaitlist(store, values, now = new Date()) {
       status: "waiting",
       joined_at: now.toISOString(),
       referral_code: newReferralCode(),
-      referred_by: referrer && referrer.email !== values.email ? referrer.referral_code : "",
+      referred_by: referrer && emailKey(referrer.email) !== emailKey(values.email) ? referrer.referral_code : "",
       status_token: newToken(),
       source: referrer ? "friend" : values.source || "direct"
     };

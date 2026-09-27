@@ -1,11 +1,13 @@
 // HTML for every page. All values from people or storage go through escapeHtml().
 
-import { LIMITS, QUESTIONS, REFERRAL_BOOST, SORTS, PAGE_SIZE } from "./waitlist.js";
+import { LIMITS, QUESTIONS, REFERRAL_BOOST, SORTS, PAGE_SIZE, TRAP_FIELD } from "./waitlist.js";
 
 export const BRAND = {
   name: "Velto",
   tagline: "Find your pace people.",
-  description: "Velto matches you with runners nearby who run your pace, at the times you actually run. Join the waitlist for early access."
+  description: "Velto matches you with runners nearby who run your pace, at the times you actually run. Join the waitlist for early access.",
+  // Where people write when they lost their private link. Replace with your own address.
+  contactEmail: "hello@example.com"
 };
 
 export function escapeHtml(value) {
@@ -132,8 +134,8 @@ function joinForm({ values = {}, errors = {}, keep = {}, referrer }) {
     </div>
   </div>
   <div class="hp" aria-hidden="true">
-    <label for="company">Leave this empty</label>
-    <input id="company" name="company" type="text" tabindex="-1" autocomplete="off">
+    <label for="${TRAP_FIELD}">Leave this empty</label>
+    <input id="${TRAP_FIELD}" name="${TRAP_FIELD}" type="text" tabindex="-1" autocomplete="off">
   </div>
   <input type="hidden" name="ref" value="${escapeHtml(values.ref)}">
   <input type="hidden" name="source" value="${escapeHtml(values.source)}">
@@ -210,7 +212,10 @@ export function statusPage({ site, signup, position, waitingCount, shareUrl, sta
   const name = firstName(signup);
   const inLine = signup.status === "waiting";
   const headline = signup.status === "invited" ? "Your invite is ready." : name ? `You're in, ${escapeHtml(name)}.` : "You're in.";
-  const place = inLine
+  // Every waiting person has a place, but if one is ever missing, say so plainly instead of "#NaN".
+  const place = inLine && !Number.isFinite(position)
+    ? `<div class="place"><p class="place__label">Your place in line</p><p class="place__number place__number--word">Saved</p><p class="place__meta">Your spot is saved. Check back soon to see your number.</p></div>`
+    : inLine
     ? `<div class="place"><div><p class="place__label">Your place in line</p><p class="place__number"><span aria-hidden="true">#</span>${fmt(position)}</p><p class="place__meta">of ${fmt(waitingCount)} runners waiting</p></div>${
         position > 1
           ? `<p class="place__next"><span>One friend gets you to</span><b>#${fmt(Math.max(1, position - REFERRAL_BOOST))}</b></p>`
@@ -263,10 +268,14 @@ export function statusPage({ site, signup, position, waitingCount, shareUrl, sta
   return layout({ title: `Your place in line - ${BRAND.name}`, body, site, bodyClass: "page-status" });
 }
 
-export function messagePage({ site, title, heading, message, action, status = 200 }) {
+// `copyValue` shows a read-only box with a copy button (used for a new private link).
+export function messagePage({ site, title, heading, message, action, copyValue, status = 200 }) {
   const link = action ? `<p><a class="button button--volt" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a></p>` : "";
+  const copy = copyValue
+    ? `<div class="share__link"><label for="copy-value" class="sr-only">Link</label><input id="copy-value" type="text" readonly value="${escapeHtml(copyValue)}"><button class="button button--light" type="button" data-copy="#copy-value" hidden>Copy link</button></div>`
+    : "";
   const body = `<header class="top"><div class="wrap top__inner">${logo(site.home)}</div></header>
-<main id="main" class="wrap message"><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(message)}</p>${link}</main>`;
+<main id="main" class="wrap message"><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(message)}</p>${copy}${link}</main>`;
   return { html: layout({ title: `${title} - ${BRAND.name}`, body, site, bodyClass: "page-message" }), status };
 }
 
@@ -283,20 +292,54 @@ function select(name, label, options, selected, allLabel) {
   }${items}</select></div>`;
 }
 
+function actionForm(row, action, fields, label, style, ariaLabel, keep, back) {
+  const hidden = Object.entries(fields)
+    .map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`)
+    .join("");
+  return `<form method="post" action="/admin/signups/${escapeHtml(row.id)}/${action}">
+      ${hidden}<input type="hidden" name="back" value="${escapeHtml(back)}">${hiddenFields(keep)}
+      <button class="button button--small ${style}" type="submit" aria-label="${escapeHtml(`${ariaLabel} ${displayName(row)}`)}">${label}</button>
+    </form>`;
+}
+
 function statusActions(row, keep, back) {
-  const actions = {
+  const moves = {
     waiting: [["invited", "Invite"], ["archived", "Archive"]],
     invited: [["waiting", "Move back"]],
     archived: [["waiting", "Restore"]]
   }[row.status];
-  return actions
-    .map(
-      ([next, label]) => `<form method="post" action="/admin/signups/${escapeHtml(row.id)}/status">
-      <input type="hidden" name="status" value="${next}"><input type="hidden" name="back" value="${escapeHtml(back)}">${hiddenFields(keep)}
-      <button class="button button--small ${next === "invited" ? "button--volt" : "button--ghost"}" type="submit" aria-label="${escapeHtml(`${label} ${displayName(row)}`)}">${label}</button>
-    </form>`
-    )
+  const forms = moves.map(([next, label]) =>
+    actionForm(row, "status", { status: next }, label, next === "invited" ? "button--volt" : "button--ghost", label, keep, back)
+  );
+  // A new private link for someone who lost theirs; deleting frees room on the plan.
+  if (row.status !== "archived") forms.push(actionForm(row, "link", {}, "New link", "button--ghost", "Make a new private link for", keep, back));
+  else forms.push(actionForm(row, "delete", {}, "Delete", "button--danger", "Delete for good", keep, back));
+  return forms.join("");
+}
+
+// Bulk buttons under the list. Archive shows only for a search or filter;
+// Delete shows only on the Archived list.
+function bulkActions({ filters, rows, keep, back, bulkLimit }) {
+  const narrowed = filters.q || filters.status || filters.frequency || filters.goal;
+  const toArchive = rows.filter((row) => row.status !== "archived").length;
+  const toDelete = rows.filter((row) => row.status === "archived").length;
+  const kept = { q: filters.q, status: filters.status, frequency: filters.frequency, goal: filters.goal, back, ...keep };
+  const fields = Object.entries(kept)
+    .filter(([, value]) => value)
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
     .join("");
+  const count = (total) => (total > bulkLimit ? `the first ${fmt(bulkLimit)} of ${fmt(total)}` : total === 1 ? "this person" : `these ${fmt(total)}`);
+  let button = "";
+  let note = "";
+  if (filters.status === "archived" && toDelete) {
+    button = `<button class="button button--small button--danger" type="submit" name="action" value="delete">Delete ${count(toDelete)} for good</button>`;
+    note = "Deleting removes people for good and frees room on your plan. It can't be undone.";
+  } else if (narrowed && filters.status !== "archived" && toArchive) {
+    button = `<button class="button button--small button--ghost" type="submit" name="action" value="archive">Archive ${count(toArchive)}</button>`;
+    note = "Archived people leave the line and stop counting as referrals. You can restore them later.";
+  }
+  if (!button) return "";
+  return `<form class="bulk" method="post" action="/admin/bulk">${fields}${button}<p class="bulk__note">${note}</p></form>`;
 }
 
 function statusChip(status) {
@@ -304,7 +347,7 @@ function statusChip(status) {
   return `<span class="chip chip--${status}">${text}</span>`;
 }
 
-export function ownerPage({ site, rows, filters, positions, stats, referrers, activity, total, keep, user, notice, now = new Date() }) {
+export function ownerPage({ site, rows, filters, positions, stats, referrers, activity, total, keep, user, notice, bulkLimit = 50, now = new Date() }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.min(filters.page, pages);
   const filterParams = { q: filters.q, status: filters.status, frequency: filters.frequency, goal: filters.goal, sort: filters.sort === "line" ? "" : filters.sort };
@@ -388,6 +431,7 @@ export function ownerPage({ site, rows, filters, positions, stats, referrers, ac
           : '<p class="empty">Nobody matches these filters yet.</p>'
       }
       ${pager}
+      ${bulkActions({ filters, rows, keep, back, bulkLimit })}
     </section>
     <aside class="owner__side">
       <section class="card card--tight" aria-labelledby="ref-title"><h2 id="ref-title" class="card__title">Top referrers</h2><ol class="leaders">${referrerItems}</ol></section>

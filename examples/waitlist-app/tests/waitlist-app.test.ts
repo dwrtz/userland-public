@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { rankWaitlist, toCsv, REFERRAL_BOOST } from "../server/waitlist.js";
+import { BULK_LIMIT, REFERRAL_BOOST, emailKey, listAll, rankWaitlist, withReferralCounts } from "../server/waitlist.js";
+// @ts-expect-error Example server files are plain JavaScript app bundles.
+import { BRAND, statusPage } from "../server/views.js";
 import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
@@ -51,11 +53,16 @@ describe("public visitor", () => {
     expect(duplicate.status).toBe(303);
     expect(duplicate.headers.get("location")).toBe("/thanks");
 
-    const bot = await post(ctx, `${APP}/join`, { email: "bot@example.com", company: "Spam Inc" });
+    const bot = await post(ctx, `${APP}/join`, { email: "bot@example.com", leave_blank: "Spam Inc" });
     expect(bot.status).toBe(303);
     expect(bot.headers.get("location")).toBe("/thanks");
     expect(ctx.tables.signups).toHaveLength(1);
-    expect(await (await call(ctx, `${APP}/thanks`)).text()).toContain("If you joined before");
+    // Caught bots leave a warning (no email) so the owner can spot false alarms.
+    expect(ctx.log.warn).toHaveBeenCalledWith("waitlist signup ignored", { reason: "honeypot", demo: false });
+    const thanks = await (await call(ctx, `${APP}/thanks`)).text();
+    expect(thanks).toContain("If you joined before");
+    // Someone who lost their private link knows who to ask for a new one.
+    expect(thanks).toContain(BRAND.contactEmail);
 
     const crossSite = await post(ctx, `${APP}/join`, { email: "x@example.com" }, { origin: "https://evil.example" });
     expect(crossSite.status).toBe(400);
@@ -241,6 +248,20 @@ describe("removing demo mode", () => {
     expect(ctx.tables.signups[0]).toMatchObject({ status: "invited" });
     expect(await (await call(ctx, `${APP}/admin/export.csv`, { headers: owner }, server)).text()).toContain("ada@example.com");
   });
+
+  it("leaves no demo-only test behind once tests/demo.test.ts is deleted", () => {
+    // The removal steps delete tests/demo.test.ts, then say to run the tests.
+    // Any test elsewhere that needs demo mode would fail at that point, so
+    // demo-only tests must live in tests/demo.test.ts. (Patterns are split so
+    // this file doesn't match itself.)
+    const demoOnly = ["?demo" + "=", "demo" + "=${", "server/demo" + ".js", 'tables["demo-' + 'signups"]', "sample" + "Signups"];
+    const dir = path.resolve(import.meta.dirname);
+    for (const name of fs.readdirSync(dir)) {
+      if (name === "demo.test.ts") continue;
+      const code = fs.readFileSync(path.join(dir, name), "utf8");
+      for (const pattern of demoOnly) expect(code.includes(pattern), `${name} uses ${pattern}`).toBe(false);
+    }
+  });
 });
 
 describe("HEAD requests", () => {
@@ -263,21 +284,230 @@ describe("HEAD requests", () => {
       expect((await expectHeadLikeGet(app, ctx, url, { headers })).status).toBe(status);
     }
   });
+});
 
-  it("answer the demo's pages like GET, including the owner view", async () => {
+describe("launch-day limits", () => {
+  it("shows a plain page and logs an error when the plan's row limit is reached", async () => {
+    const ctx = makeCtx(collections, { rowLimit: 1 });
+    await join(ctx, APP, { email: "ada@example.com" });
+    const full = await post(ctx, `${APP}/join`, { email: "late@example.com" });
+    expect(full.status).toBe(503);
+    expect(full.headers.get("content-type")).toContain("text/html");
+    const html = await full.text();
+    expect(html).toContain("The waitlist is full right now.");
+    expect(html).not.toContain("quota_exceeded");
+    expect(ctx.log.error).toHaveBeenCalledWith("waitlist full", { reason: "quota_exceeded", demo: false });
+    expect(JSON.stringify(ctx.log.error.mock.calls)).not.toContain("late@example.com");
+  });
+
+  it("saves one signup when the same email joins twice at the same moment", async () => {
     const ctx = makeCtx();
-    const path = await join(ctx, DEMO, { email: "gus@example.com" });
-    const key = /demo=([a-f0-9]{32})/u.exec(await (await call(ctx, `${DEMO}${path}`)).text())?.[1] ?? "";
-    expect(key).not.toBe("");
-    const pages: Array<[string, number]> = [
-      [`${DEMO}${path}`, 200],
-      [`${DEMO}/thanks?demo=${key}`, 200],
-      [`${DEMO}/admin`, 200],
-      [`${DEMO}/admin?demo=${key}&sort=newest`, 200],
-      [`${DEMO}/admin/export.csv?demo=${key}`, 200]
-    ];
-    for (const [url, status] of pages) {
-      expect((await expectHeadLikeGet(app, ctx, url)).status).toBe(status);
+    const responses = await Promise.all(Array.from({ length: 5 }, () => post(ctx, `${APP}/join`, { email: "ada@example.com" })));
+    const locations = responses.map((response) => response.headers.get("location") ?? "");
+    expect(ctx.tables.signups).toHaveLength(1);
+    expect(locations.filter((location) => location.startsWith("/you/"))).toHaveLength(1);
+    expect(locations.filter((location) => location === "/thanks")).toHaveLength(4);
+  });
+
+  it("reads every page of a long list instead of stopping early", async () => {
+    // A stand-in collection with 20,500 rows, 100 per page, like the runtime.
+    const total = 20_500;
+    const list = vi.fn(async ({ cursor }: { cursor?: string }) => {
+      const offset = cursor ? Number(cursor) : 0;
+      const rows = Array.from({ length: Math.min(100, total - offset) }, (_, index) => ({ id: `r${offset + index}` }));
+      const end = offset + rows.length;
+      return { rows, ...(end < total ? { cursor: String(end) } : {}) };
+    });
+    const rows = await listAll({ list });
+    expect(rows).toHaveLength(total);
+    expect(list).toHaveBeenCalledTimes(Math.ceil(total / 100));
+  });
+
+  it("never shows #NaN when a place in line is missing", () => {
+    const html = statusPage({
+      site: { robots: "" },
+      signup: { id: "row_1", name: "Ada", email: "ada@example.com", status: "waiting", referral_code: "ABCDEFG", referrals: 0, frequency: "", goal: "", city: "" },
+      position: undefined,
+      waitingCount: 3,
+      shareUrl: "https://velto.example.test/r/ABCDEFG",
+      statusPath: "/you/row_1/token",
+      saved: false
+    });
+    expect(html).not.toContain("NaN");
+    expect(html).not.toContain("first in line");
+    expect(html).toContain("Your spot is saved.");
+  });
+});
+
+describe("referral credit", () => {
+  it("counts each inbox once and ignores the referrer's own other spellings", async () => {
+    expect(emailKey("A.Da+launch@GoogleMail.com")).toBe("ada@gmail.com");
+    expect(emailKey("ada+1@velto.example")).toBe("ada@velto.example");
+    expect(emailKey("a.da@velto.example")).toBe("a.da@velto.example");
+
+    const ctx = makeCtx();
+    const hostPath = await join(ctx, APP, { email: "host@gmail.com" });
+    const code = String(ctx.tables.signups[0].referral_code);
+    // The host's own inbox under other spellings earns nothing.
+    for (const email of ["host+1@gmail.com", "h.o.s.t@gmail.com", "host+2@googlemail.com"]) await join(ctx, APP, { email, ref: code });
+    // One friend under three spellings counts once; a second friend counts too.
+    for (const email of ["friend+a@gmail.com", "friend+b@gmail.com", "fr.iend@gmail.com", "other@velto.example"]) await join(ctx, APP, { email, ref: code });
+    expect(await (await call(ctx, `${APP}${hostPath}`)).text()).toContain("<b>2</b> friends have joined");
+
+    const counted = withReferralCounts([
+      { id: "a", email: "a@x.io", referral_code: "AAAAAA", referred_by: "", status: "waiting" },
+      { id: "b", email: "b@x.io", referral_code: "BBBBBB", referred_by: "AAAAAA", status: "archived" }
+    ]);
+    expect(counted[0].referrals).toBe(0);
+  });
+});
+
+describe("request details", () => {
+  it("answers bad invite links and odd notices without errors", async () => {
+    const ctx = makeCtx();
+    for (const bad of ["%FF", "%E0%A4%A", "abc%2Fdef"]) {
+      const response = await call(ctx, `${APP}/r/${bad}`);
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("/");
     }
+    for (const done of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      const html = await (await call(ctx, `${APP}/admin?done=${done}`, { headers: owner })).text();
+      expect(html).not.toContain('class="notice"');
+      expect(html).not.toContain("native code");
+      expect(html).not.toContain("[object Object]");
+    }
+    const bulkNote = await (await call(ctx, `${APP}/admin?done=archived-many&n=99999&more=1`, { headers: owner })).text();
+    expect(bulkNote).toContain(`Archived ${BULK_LIMIT} people. More people match`);
+  });
+
+  it("checks the owner role with one session lookup and doesn't hide other failures", async () => {
+    const ctx = makeCtx();
+    const currentUser = vi.fn(ctx.auth.currentUser);
+    const requireRole = vi.fn(ctx.auth.requireRole);
+    ctx.auth.currentUser = currentUser;
+    ctx.auth.requireRole = requireRole;
+    expect((await call(ctx, `${APP}/admin`, { headers: owner })).status).toBe(200);
+    expect(currentUser).toHaveBeenCalledTimes(1);
+    expect(requireRole).not.toHaveBeenCalled();
+
+    // A storage failure is an error, not an "Owners only" page.
+    ctx.auth.currentUser = vi.fn(async () => {
+      throw Object.assign(new Error("Storage is unavailable."), { code: "storage_error" });
+    });
+    await expect(call(ctx, `${APP}/admin`, { headers: owner })).rejects.toThrow("Storage is unavailable.");
+  });
+
+  it("rejects owner form posts from other sites, other userland.fun apps, and opaque origins", async () => {
+    const ctx = makeCtx();
+    await join(ctx, APP, { email: "ada@example.com" });
+    const id = ctx.tables.signups[0].id;
+    const origins = ["https://evil.example", "https://other-app.apps.userland.fun", "null"];
+    for (const origin of origins) {
+      for (const [route, fields] of [
+        ["status", { status: "archived" }],
+        ["link", {}],
+        ["delete", {}]
+      ] as const) {
+        const response = await post(ctx, `${APP}/admin/signups/${id}/${route}`, fields, { ...owner, origin });
+        expect(response.status, `${route} from ${origin}`).toBe(400);
+      }
+      const bulk = await post(ctx, `${APP}/admin/bulk`, { action: "archive", q: "ada" }, { ...owner, origin });
+      expect(bulk.status).toBe(400);
+      // A sister app's page can't pass itself off as this one with Sec-Fetch-Site either.
+      const sameSite = await call(ctx, `${APP}/admin/signups/${id}/status`, {
+        method: "POST",
+        headers: { ...owner, "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "same-site" },
+        body: "status=archived"
+      });
+      expect(sameSite.status).toBe(400);
+    }
+    expect(ctx.tables.signups[0]).toMatchObject({ status: "waiting" });
+  });
+});
+
+describe("owner clean-up and lost links", () => {
+  it("gives someone a new private link and turns off the old one", async () => {
+    const ctx = makeCtx();
+    const oldPath = await join(ctx, APP, { email: "ada@example.com", name: "Ada" });
+    const id = ctx.tables.signups[0].id;
+
+    expect((await post(ctx, `${APP}/admin/signups/${id}/link`, {})).status).toBe(303);
+    expect((await post(ctx, `${APP}/admin/signups/${id}/link`, {}, { cookie: "__Host-ul_session=helper" })).status).toBe(403);
+    expect(await (await call(ctx, `${APP}${oldPath}`)).status).toBe(200);
+
+    const response = await post(ctx, `${APP}/admin/signups/${id}/link`, {}, owner);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const html = await response.text();
+    const newPath = new RegExp(`${APP}(/you/${id}/[^"]+)"`, "u").exec(html)?.[1] ?? "";
+    expect(newPath).not.toBe("");
+    expect(newPath).not.toBe(oldPath);
+    expect(html).toContain("Send it to ada@example.com yourself.");
+    expect((await call(ctx, `${APP}${oldPath}`)).status).toBe(404);
+    expect((await call(ctx, `${APP}${newPath}`)).status).toBe(200);
+    expect(ctx.log.info).toHaveBeenCalledWith("waitlist private link replaced", { signup_id: id });
+  });
+
+  it("deletes a person for good only after they are archived", async () => {
+    const ctx = makeCtx();
+    await join(ctx, APP, { email: "junk@example.com" });
+    const id = ctx.tables.signups[0].id;
+
+    const early = await post(ctx, `${APP}/admin/signups/${id}/delete`, {}, owner);
+    expect(early.status).toBe(409);
+    expect(ctx.tables.signups).toHaveLength(1);
+
+    await post(ctx, `${APP}/admin/signups/${id}/status`, { status: "archived" }, owner);
+    const archivedView = await (await call(ctx, `${APP}/admin?status=archived`, { headers: owner })).text();
+    expect(archivedView).toContain(`action="/admin/signups/${id}/delete"`);
+
+    expect((await post(ctx, `${APP}/admin/signups/${id}/delete`, {}, { cookie: "__Host-ul_session=helper" })).status).toBe(403);
+    const deleted = await post(ctx, `${APP}/admin/signups/${id}/delete`, { back: "/admin?status=archived" }, owner);
+    expect(deleted.headers.get("location")).toBe("/admin?status=archived&done=deleted");
+    expect(ctx.tables.signups).toHaveLength(0);
+    expect((await post(ctx, `${APP}/admin/signups/${id}/delete`, {}, owner)).status).toBe(404);
+  });
+
+  it("archives many people from a search, a batch at a time, and never the whole list at once", async () => {
+    const ctx = makeCtx();
+    const signups = ctx.data.collection("signups");
+    const at = new Date("2026-09-01T12:00:00Z").toISOString();
+    for (let index = 0; index < BULK_LIMIT + 5; index += 1) {
+      await signups.create({ email: `bot${index}@spam.example`, status: "waiting", joined_at: at, referral_code: `SPAM${String(index).padStart(3, "0")}`, status_token: "t" });
+    }
+    await join(ctx, APP, { email: "ada@example.com" });
+
+    const unfiltered = await post(ctx, `${APP}/admin/bulk`, { action: "archive" }, owner);
+    expect(unfiltered.status).toBe(400);
+    expect(ctx.tables.signups.filter((row) => row.status === "archived")).toHaveLength(0);
+    // The owner view only offers the bulk button for a search or filter.
+    expect(await (await call(ctx, `${APP}/admin`, { headers: owner })).text()).not.toContain('action="/admin/bulk"');
+    const searched = await (await call(ctx, `${APP}/admin?q=spam.example`, { headers: owner })).text();
+    expect(searched).toContain(`Archive the first ${BULK_LIMIT} of ${BULK_LIMIT + 5}`);
+
+    const first = await post(ctx, `${APP}/admin/bulk`, { action: "archive", q: "spam.example", back: "/admin?q=spam.example" }, owner);
+    expect(first.headers.get("location")).toBe(`/admin?q=spam.example&done=archived-many&n=${BULK_LIMIT}&more=1`);
+    const second = await post(ctx, `${APP}/admin/bulk`, { action: "archive", q: "spam.example" }, owner);
+    expect(second.headers.get("location")).toBe("/admin?done=archived-many&n=5");
+    expect(ctx.tables.signups.filter((row) => row.status === "archived")).toHaveLength(BULK_LIMIT + 5);
+    expect(ctx.tables.signups.find((row) => row.email === "ada@example.com")?.status).toBe("waiting");
+    expect(ctx.log.info).toHaveBeenCalledWith("waitlist bulk change", { action: "archive", count: 5 });
+  });
+
+  it("deletes archived people in batches, even when two clicks land at once", async () => {
+    const ctx = makeCtx();
+    const signups = ctx.data.collection("signups");
+    const at = new Date("2026-09-01T12:00:00Z").toISOString();
+    for (let index = 0; index < BULK_LIMIT + 10; index += 1) {
+      await signups.create({ email: `bot${index}@spam.example`, status: "archived", joined_at: at, referral_code: `SPAM${String(index).padStart(3, "0")}`, status_token: "t" });
+    }
+    await join(ctx, APP, { email: "ada@example.com" });
+    const archivedView = await (await call(ctx, `${APP}/admin?status=archived`, { headers: owner })).text();
+    expect(archivedView).toContain(`Delete the first ${BULK_LIMIT} of ${BULK_LIMIT + 10} for good`);
+
+    const clicks = await Promise.all([1, 2].map(() => post(ctx, `${APP}/admin/bulk`, { action: "delete", status: "archived" }, owner)));
+    expect(clicks.map((response) => response.status)).toEqual([303, 303]);
+    await post(ctx, `${APP}/admin/bulk`, { action: "delete", status: "archived" }, owner);
+    expect(ctx.tables.signups.map((row) => row.email)).toEqual(["ada@example.com"]);
   });
 });
