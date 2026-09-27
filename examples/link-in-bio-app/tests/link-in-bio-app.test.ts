@@ -33,22 +33,20 @@ function inboxRow(overrides: Row): Row {
 }
 
 describe("saving rows with a unique slot", () => {
-  // The test ctx works like Userland: two creates with the same unique value
-  // that arrive together can both pass the check, and the loser fails with a
-  // plain error and leaves its row behind.
-  it("the test ctx reproduces Userland's clash between simultaneous creates", async () => {
+  // The test ctx works like Userland: a row and its unique values are saved
+  // together, so of two creates with the same value that arrive at the same
+  // moment one is kept and the other fails with unique_conflict, saving nothing.
+  it("the test ctx refuses a simultaneous duplicate cleanly, like Userland", async () => {
     const ctx = makeCtx();
     const inbox = ctx.data.collection("inbox");
     const results = await Promise.allSettled([1, 2].map(() => inbox.create({ demo_key: "", slot: "race" })));
-    const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
-    expect(failed.reason.code).toBeUndefined();
-    expect(String(failed.reason.message)).toContain("UNIQUE constraint failed");
-    expect(ctx.state.visitors).toHaveLength(2);
-    // Once the first one is saved, a later create is refused cleanly.
-    await expect(inbox.create({ demo_key: "", slot: "race" })).rejects.toMatchObject({ code: "unique_conflict" });
+    const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
+    expect(failed).toHaveLength(1);
+    expect(failed[0].reason.code).toBe("unique_conflict");
+    expect(ctx.state.visitors).toHaveLength(1);
   });
 
-  it("claimSlot gives the slot to exactly one of many simultaneous saves and cleans up the rest", async () => {
+  it("claimSlot gives the slot to exactly one of many simultaneous saves", async () => {
     const ctx = makeCtx();
     const results = await Promise.all(Array.from({ length: 8 }, () => claimSlot(ctx, "inbox", { demo_key: "", slot: "race" })));
     expect(results.filter(Boolean)).toHaveLength(1);

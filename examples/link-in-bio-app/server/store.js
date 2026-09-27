@@ -20,9 +20,8 @@
 // A unique `slot` is how this file stops duplicates (one signup per address,
 // starter links added once, tap counts, the daily note limit). Rows that don't
 // need a slot leave it out. Slots start with the scope, so demo copies never
-// collide with each other or with real rows. Always save a slotted row with
-// claimSlot, never a plain create: see the note there about two saves that
-// arrive at the same moment.
+// collide with each other or with real rows. Save a slotted row with
+// claimSlot, which turns "that slot is taken" into a null result.
 
 import { starterLinks } from "./content.js";
 
@@ -41,7 +40,7 @@ export const EXPORT_PAGES = 15;
 // allowance, which links, messages, and signups share). Change them here.
 export const NOTES_PER_ADDRESS_PER_DAY = 3; // contact messages from one email address per day
 export const MAX_NEW_MESSAGES = 100; // unread messages before the contact form pauses
-export const SIGNUPS_PER_DAY = 200; // new email-list signups per day (a multiple of 100)
+export const SIGNUPS_PER_DAY = 200; // new email-list signups per 24 hours
 
 const TAP_TRIES = 5;
 
@@ -50,39 +49,17 @@ export function isUniqueConflict(error) {
 }
 
 // Saves a row that has a unique `slot` and returns it, or returns null when
-// another row already holds that slot.
-//
-// Userland checks unique values before it saves, so a slot that's already
-// taken fails with `unique_conflict` and nothing is written. But two saves
-// with the same slot that arrive at the same moment can both pass that check.
-// Then one of them fails at the end with a different error, and the row it
-// was saving can be left behind. So each save carries a random `claim` tag;
-// when a save fails, this reads the rows holding that slot, deletes its own
-// leftover row (the one with its tag), and reports the slot as taken if
-// another row holds it. Any other failure is passed on.
+// another row already holds that slot. Userland saves a row and its unique
+// values together, so when two saves with the same slot arrive at the same
+// moment exactly one is kept; the other fails with `unique_conflict` and
+// leaves nothing behind. Any other failure is passed on.
 export async function claimSlot(ctx, name, row) {
-  const collection = ctx.data.collection(name);
-  const claim = randomTag();
   try {
-    return await collection.create({ ...row, claim });
+    return await ctx.data.collection(name).create(row);
   } catch (error) {
     if (isUniqueConflict(error)) return null;
-    let holders;
-    try {
-      holders = (await collection.list({ where: { slot: row.slot }, limit: 10 })).rows;
-    } catch {
-      throw error;
-    }
-    const mine = holders.filter((held) => held.claim === claim);
-    await Promise.all(mine.map((held) => collection.delete(held.id)));
-    if (holders.length > mine.length) return null;
     throw error;
   }
-}
-
-export function randomTag() {
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // A short random wait before trying again, so requests that collided don't

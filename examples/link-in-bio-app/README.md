@@ -19,7 +19,7 @@ The sample business is **Kiln & Crumb**, a made-up potter who sells pie dishes a
 ## What the owner sees
 
 - `/admin` is the inbox, in four tabs: **New** and **Replied** messages, the **Email list**, and **Archived**. Each tab shows a page at a time, newest first, with an "Older" link. Every item can be archived, and archived items deleted for good. Two clean-up buttons archive all new messages or delete everything archived, 15 at a time, for the day a script floods the form.
-- The email list has a spreadsheet download for your newsletter tool. A list longer than 1,500 addresses downloads in parts. The list is not confirmed: anyone can type any address, so turn on your newsletter tool's confirmation email (double opt-in) when you import it. An address you remove stays removed even if someone signs it up again; "Put back on list" in Archived restores it.
+- The email list has a spreadsheet download for your newsletter tool. A list longer than 1,500 addresses downloads in parts. The list is not confirmed: anyone can type any address, so turn on your newsletter tool's confirmation email (double opt-in) when you import it. An address you remove stays removed even if someone signs it up again; "Put back on list" in Archived restores it. Deleting a removed address for good lets it sign up again.
 - `/admin/links` adds, edits, hides, reorders, and deletes links, and shows tap counts. A link marked "featured" shows as a product card with a price.
 
 ## Limits on the public forms
@@ -125,7 +125,7 @@ To remove it:
 1. Delete `server/demo.js` and `tests/demo.test.ts`.
 2. In `server/index.js`, delete every line that ends with `// demo` (the `demoMode` import and the line that turns demo mode on).
 
-After that, `demo` is always `null`, so the `if (demo)` branches and `demo?.` calls in `server/index.js` and the `nav.demo` checks in `server/views.js` do nothing; delete them whenever you like. Keep the `demo_key`, `slot`, and `claim` fields and the indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it and uses `slot` and `claim` to stop duplicate signups, starter links, and tap counts. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
+After that, `demo` is always `null`, so the `if (demo)` branches and `demo?.` calls in `server/index.js` and the `nav.demo` checks in `server/views.js` do nothing; delete them whenever you like. Keep the `demo_key` and `slot` fields and the indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it and uses `slot` to stop duplicate signups, starter links, and tap counts. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
 
 ## Userland docs
 

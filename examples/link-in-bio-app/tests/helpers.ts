@@ -14,19 +14,13 @@ export type Row = Record<string, any>;
 
 const manifest = readExampleManifest(path.resolve(import.meta.dirname, ".."));
 
-type IndexSpec = { name: string; fields: string[]; unique?: boolean };
-const collectionSpecs = (manifest as any).resources.data.collections as Record<string, { indexes?: IndexSpec[] }>;
-const uniqueIndexes = (name: string) => (collectionSpecs[name]?.indexes ?? []).filter((index) => index.unique);
-
-// The shared harness checks unique indexes in one step. Userland doesn't, so
-// unique indexes are handled here instead, in the same order as Userland's
-// create: check the unique value, then (after a few other steps) save the row,
-// then record the unique value. Two creates with the same value that arrive
-// together can both pass the check; the later one then fails with a plain
-// database error (no `unique_conflict` code) and its row stays saved.
-const plainManifest = structuredClone(manifest) as any;
-for (const spec of Object.values(plainManifest.resources.data.collections) as Array<{ indexes?: IndexSpec[] }>) {
-  spec.indexes = (spec.indexes ?? []).map(({ unique, ...index }) => index);
+// The shared harness reports a unique clash as `unique_violation`; Userland's
+// runtime (and server/store.js) uses `unique_conflict`, so it is renamed here.
+function asUserlandError(error: unknown): unknown {
+  if (error instanceof FakeRuntimeError && error.code === "unique_violation") {
+    return new FakeRuntimeError("unique_conflict", error.message, 409);
+  }
+  return error;
 }
 
 // Lets other requests run, like a network round trip on Userland.
@@ -38,9 +32,9 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 //
 // - app-user auth keyed by the session cookie. Like the Userland runtime,
 //   requireUser/requireRole throw errors with a code and a 401/403 status.
-// - unique indexes work like Userland's (see above): a value that is already
-//   taken throws `unique_conflict`; a clash between two creates that arrive
-//   together can leave the losing row behind with a plain error.
+// - unique indexes work like Userland's: a create or update whose unique value
+//   is taken throws `unique_conflict` and saves nothing, even when two of them
+//   arrive at the same moment.
 // - every data call waits a moment, so requests started with Promise.all
 //   interleave the way they can on Userland.
 // - `maxRows` makes creates fail with `quota_exceeded` past that many rows,
@@ -48,14 +42,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 // - `state.links`, `state.tallies`, `state.inbox`, and `state.visitors` show
 //   the stored rows (link rows, tap tallies, inbox items, demo visitor rows).
 export function makeCtx({ maxRows }: { maxRows?: number } = {}) {
-  const rt = createFakeRuntime(plainManifest);
-  // Unique values recorded so far: "<collection> <index> <values>" -> row id.
-  const taken = new Map<string, string>();
-  const uniqueKeys = (name: string, row: Row) =>
-    uniqueIndexes(name)
-      .filter((index) => index.fields.every((field) => row[field] !== undefined && row[field] !== null))
-      .map((index) => `${name} ${index.name} ${JSON.stringify(index.fields.map((field) => row[field]))}`);
-  const conflict = (key: string) => new FakeRuntimeError("unique_conflict", `Unique index already contains this value (${key}).`, 409);
+  const rt = createFakeRuntime(manifest);
   const users: Record<string, { id: string; app_user_id: string; email: string; roles: string[] }> = {
     "owner-session": { id: "u_owner", app_user_id: "u_owner", email: "wren@example.com", roles: ["owner"] },
     "fan-session": { id: "u_fan", app_user_id: "u_fan", email: "fan@example.com", roles: [] }
@@ -72,17 +59,12 @@ export function makeCtx({ maxRows }: { maxRows?: number } = {}) {
       return {
         async create(input: Row) {
           await tick();
-          const keys = uniqueKeys(name, input);
-          for (const key of keys) if (taken.has(key)) throw conflict(key);
           await tick(); // plan usage checks
           if (maxRows !== undefined && allRows() >= maxRows) throw new FakeRuntimeError("quota_exceeded", "Data row limit reached.", 402);
-          const row = await inner.create(input);
-          await tick();
-          for (const key of keys) {
-            if (taken.has(key)) throw new Error("D1_ERROR: UNIQUE constraint failed: app_data_unique_indexes.app_id, app_data_unique_indexes.collection_name, app_data_unique_indexes.index_name, app_data_unique_indexes.index_value: SQLITE_CONSTRAINT");
-            taken.set(key, row.id);
-          }
-          return row;
+          // The row and its unique values are saved in one step, as on Userland.
+          return await inner.create(input).catch((error) => {
+            throw asUserlandError(error);
+          });
         },
         async get(id: string) {
           await tick();
@@ -90,18 +72,13 @@ export function makeCtx({ maxRows }: { maxRows?: number } = {}) {
         },
         async update(id: string, patch: Row) {
           await tick();
-          const current = await inner.get(id);
-          const keys = current ? uniqueKeys(name, { ...current.data, ...patch }) : [];
-          for (const key of keys) if (taken.has(key) && taken.get(key) !== id) throw conflict(key);
-          const row = await inner.update(id, patch);
-          for (const [key, owner] of taken) if (owner === id) taken.delete(key);
-          for (const key of keys) taken.set(key, id);
-          return row;
+          return await inner.update(id, patch).catch((error) => {
+            throw asUserlandError(error);
+          });
         },
         async delete(id: string) {
           await tick();
           await inner.delete(id);
-          for (const [key, owner] of taken) if (owner === id) taken.delete(key);
         },
         async list(input?: Parameters<typeof inner.list>[0]) {
           await tick();

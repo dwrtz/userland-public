@@ -57,7 +57,7 @@ const KEY_LIFETIME_HOURS = 6;
 const VISITORS_PER_HOUR = 50; // new copies per hour before the demo says it's busy
 const MAX_ROWS_PER_VISITOR = 60; // stops one visitor from filling the demo
 const MAX_CLEANUP_DELETES = 25;
-const ISSUE_TRIES = 8;
+const ISSUE_TRIES = 12;
 
 // Returns a Demo for requests to the demo host, and null everywhere else.
 export function demoMode(request) {
@@ -247,15 +247,19 @@ async function isIssued(ctx, key) {
 }
 
 // Hands out a visitor number for this hour by claiming its visitor row. It
-// picks a random number from 1 to VISITORS_PER_HOUR and, if that one is
-// taken, tries another, so visitors arriving together rarely collide. Returns
-// null (busy) when ISSUE_TRIES numbers in a row are taken, which only happens
-// when nearly all of this hour's numbers are.
+// tries up to ISSUE_TRIES different numbers from 1 to VISITORS_PER_HOUR in a
+// random order, so visitors arriving together rarely collide. Returns null
+// (busy) when every number it tried is taken, which only happens when nearly
+// all of this hour's numbers are.
 async function issueKey(ctx) {
   const hour = currentHour();
-  for (let attempt = 0; attempt < ISSUE_TRIES; attempt += 1) {
+  const numbers = Array.from({ length: VISITORS_PER_HOUR }, (_, index) => index + 1);
+  for (let attempt = 0; attempt < Math.min(ISSUE_TRIES, VISITORS_PER_HOUR); attempt += 1) {
     if (attempt > 0) await pause(attempt);
-    const number = String(1 + Math.floor(Math.random() * VISITORS_PER_HOUR)).padStart(4, "0");
+    // Picks one of the numbers not tried yet.
+    const pick = attempt + Math.floor(Math.random() * (numbers.length - attempt));
+    [numbers[attempt], numbers[pick]] = [numbers[pick], numbers[attempt]];
+    const number = String(numbers[attempt]).padStart(4, "0");
     const key = `${hour}-${number}-${randomHex()}`;
     const saved = await claimSlot(ctx, "inbox", { demo_key: key, slot: visitorSlot(hour, number), received_at: new Date().toISOString() });
     if (saved) return key;
