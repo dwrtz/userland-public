@@ -1,7 +1,7 @@
 // HTML for every page. Server-rendered, no client JavaScript.
 // Every value from a visitor or from the database goes through escapeHtml().
 
-import { BUDGETS, LIMITS, OPEN_STAGES, PROJECTS, SOURCES, STAGES, TIMELINES, labelFor } from "./leads.js";
+import { BUDGETS, LIMITS, OPEN_STAGES, PROJECTS, SOURCES, STAGES, TIMELINES, isDue, labelFor, today } from "./leads.js";
 
 export const BUSINESS = {
   name: "Bevel & Brace",
@@ -38,10 +38,6 @@ const TIME_ZONE = "UTC";
 const shortDate = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: TIME_ZONE });
 const longDate = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: TIME_ZONE });
 
-export function today(now) {
-  return now.toISOString().slice(0, 10);
-}
-
 export function timeAgo(iso, now) {
   const minutes = Math.max(0, Math.round((now.getTime() - new Date(iso).getTime()) / 60_000));
   if (minutes < 1) return "Just now";
@@ -63,16 +59,20 @@ function followUpLabel(date, now) {
   return longDate.format(new Date(`${date}T12:00:00Z`));
 }
 
-export function isDue(lead, now) {
-  return OPEN_STAGES.has(lead.stage) && Boolean(lead.follow_up_on) && lead.follow_up_on <= today(now);
-}
-
 // ---------------------------------------------------------------------------
 // Shared pieces
 // ---------------------------------------------------------------------------
 
 function stageChip(stage) {
   return `<span class="chip chip-${escapeHtml(stage)}">${escapeHtml(labelFor(STAGES, stage))}</span>`;
+}
+
+/**
+ * A mailto: link for a saved address. The address is percent-encoded (except
+ * the @) so nothing in it can add a subject, body, or extra recipients.
+ */
+export function mailtoHref(email) {
+  return `mailto:${encodeURIComponent(email).replace("%40", "@")}`;
 }
 
 function brand(href) {
@@ -84,20 +84,24 @@ function brand(href) {
 // made-up details instead of promising privacy the demo can't give.
 const DEMO_LINK_NOTE = "Anyone with this page's link can see what you add.";
 
+function demoKeepNote(rc) {
+  return rc.demoKeepHours ? ` Demo entries are removed after ${rc.demoKeepHours} hours.` : "";
+}
+
 function demoBar(rc, area) {
   if (!rc.demo) return "";
   const text =
     area === "owner"
       ? `You're seeing the owner's side without signing in.<span class="demo-more"> The real app asks the owner to sign in first.</span> Use made-up details.`
       : `Send a request with made-up details, then open the owner view to see it arrive.`;
-  return `<div class="demo-bar" role="note"><div class="wrap demo-bar-inner"><p><strong>Demo app.</strong> ${text} ${DEMO_LINK_NOTE}</p><a href="${EXAMPLE_PAGE}">Built with Userland. See how it's made</a></div></div>`;
+  return `<div class="demo-bar" role="note"><div class="wrap demo-bar-inner"><p><strong>Demo app.</strong> ${text} ${DEMO_LINK_NOTE}${demoKeepNote(rc)}</p><a href="${EXAMPLE_PAGE}">Built with Userland. See how it's made</a></div></div>`;
 }
 
 /** The line under the estimate form's heading: a privacy promise, or a demo warning. */
 function formNote(rc) {
   if (!rc.demo) return `<p class="card-sub">No cost, no pressure. We only use your details to reply about this project.</p>`;
   const restart = rc.key ? ` This link already holds earlier demo entries. <a href="/">Start a new demo</a>.` : "";
-  return `<p class="demo-note" role="note"><strong>This is a demo, so nobody will contact you.</strong> Please use made-up details. ${DEMO_LINK_NOTE}${restart}</p>`;
+  return `<p class="demo-note" role="note"><strong>This is a demo, so nobody will contact you.</strong> Please use made-up details. ${DEMO_LINK_NOTE}${demoKeepNote(rc)}${restart}</p>`;
 }
 
 function siteHeader(rc, area) {
@@ -319,24 +323,21 @@ function activityFeed(rc, entries, now, { showLead }) {
   return `<ol class="feed">${items.join("")}</ol>`;
 }
 
-export function boardPage(rc, { leads, activity, stage, now }) {
-  const counts = Object.fromEntries(STAGES.map((option) => [option.value, 0]));
-  for (const lead of leads) counts[lead.stage] = (counts[lead.stage] ?? 0) + 1;
-  const open = leads.filter((lead) => OPEN_STAGES.has(lead.stage)).length;
-  const due = leads.filter((lead) => isDue(lead, now)).length;
-  const weekAgo = now.getTime() - 7 * 86_400_000;
-  const newThisWeek = leads.filter((lead) => new Date(lead.created_at).getTime() >= weekAgo).length;
-  const shown = stage ? leads.filter((lead) => lead.stage === stage) : leads;
+/** A board number: "12", or "100+" when there are more than were counted. */
+function amount({ count, more }) {
+  return `${count}${more ? "+" : ""}`;
+}
 
-  const tabs = [{ value: "", label: "All", count: leads.length }, ...STAGES.map((option) => ({ ...option, count: counts[option.value] }))]
+export function boardPage(rc, { leads, cursor = "", after = "", summary, activity, stage, now, saved = "" }) {
+  const tabs = [{ value: "", label: "All", count: summary.total }, ...STAGES.map((option) => ({ ...option, count: summary.counts[option.value] }))]
     .map((tab) => {
       const href = rc.href(tab.value ? `/admin?stage=${tab.value}` : "/admin");
       const current = tab.value === stage;
-      return `<li><a class="tab${tab.value ? ` tab-${tab.value}` : ""}" href="${href}"${current ? ' aria-current="page"' : ""}>${escapeHtml(tab.label)}<span class="tab-count">${tab.count}</span></a></li>`;
+      return `<li><a class="tab${tab.value ? ` tab-${tab.value}` : ""}" href="${href}"${current ? ' aria-current="page"' : ""}>${escapeHtml(tab.label)}<span class="tab-count">${amount(tab.count)}</span></a></li>`;
     })
     .join("");
 
-  const rows = shown
+  const rows = leads
     .map((lead) => {
       const followLabel = followUpLabel(lead.follow_up_on, now);
       const due = isDue(lead, now);
@@ -346,32 +347,46 @@ export function boardPage(rc, { leads, activity, stage, now }) {
 <td class="cell-stage" data-label="Stage">${stageChip(lead.stage)}</td>
 <td class="cell-follow" data-label="Follow up">${follow}</td>
 <td class="cell-source" data-label="Source">${escapeHtml(labelFor(SOURCES, lead.source))}</td>
-<td class="cell-received" data-label="Received"><time datetime="${escapeHtml(lead.created_at)}">${escapeHtml(timeAgo(lead.created_at, now))}</time></td>
+<td class="cell-received" data-label="Received"><time datetime="${escapeHtml(lead.received_at)}">${escapeHtml(timeAgo(lead.received_at, now))}</time></td>
 </tr>`;
     })
     .join("");
 
-  const table = shown.length
-    ? `<table class="leads"><caption class="visually-hidden">${escapeHtml(stage ? `${labelFor(STAGES, stage)} leads` : "All leads")}, newest first</caption><thead><tr><th scope="col">Lead</th><th scope="col">Stage</th><th scope="col">Follow up</th><th scope="col" class="cell-source">Source</th><th scope="col">Received</th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<div class="empty-state"><p>No ${stage ? `${escapeHtml(labelFor(STAGES, stage).toLowerCase())} ` : ""}leads right now.</p><a class="button" href="${rc.href("/admin/leads/new")}">Add a lead</a></div>`;
+  const stageQuery = stage ? `stage=${stage}&` : "";
+  const pager = [
+    after ? `<a class="text-link" href="${escapeHtml(rc.href(stage ? `/admin?stage=${stage}` : "/admin"))}">${ICON.back} Newest leads</a>` : "",
+    cursor ? `<a class="button" href="${escapeHtml(rc.href(`/admin?${stageQuery}after=${encodeURIComponent(cursor)}`))}">Older leads</a>` : ""
+  ].filter(Boolean);
+  const pagerNav = pager.length ? `<nav class="form-actions pager" aria-label="More leads">${pager.join("")}</nav>` : "";
 
+  const stageWord = stage ? `${escapeHtml(labelFor(STAGES, stage).toLowerCase())} ` : "";
+  const table = leads.length
+    ? `<table class="leads"><caption class="visually-hidden">${escapeHtml(stage ? `${labelFor(STAGES, stage)} leads` : "All leads")}, newest first</caption><thead><tr><th scope="col">Lead</th><th scope="col">Stage</th><th scope="col">Follow up</th><th scope="col" class="cell-source">Source</th><th scope="col">Received</th></tr></thead><tbody>${rows}</tbody></table>`
+    : after
+      ? `<div class="empty-state"><p>No older ${stageWord}leads.</p></div>`
+      : `<div class="empty-state"><p>No ${stageWord}leads right now.</p><a class="button" href="${rc.href("/admin/leads/new")}">Add a lead</a></div>`;
+
+  const flash = saved === "deleted" ? `<p class="flash" role="status">${ICON.check}Lead deleted.</p>` : "";
+  const newCount = summary.counts.new;
   const body = `
 <div class="wrap owner-wrap">
+  ${flash}
   <div class="page-head">
-    <div><h1>Leads</h1><p class="page-sub">${open} open · ${leads.length} total</p></div>
+    <div><h1>Leads</h1><p class="page-sub">${amount(summary.open)} open · ${amount(summary.total)} total</p></div>
     <a class="button button-primary" href="${rc.href("/admin/leads/new")}">${ICON.plus}Add a lead</a>
   </div>
   <div class="stats">
-    ${statTile("New", counts.new, "Waiting for a first call", counts.new ? "tone-new" : "")}
-    ${statTile("Follow-ups due", due, "Today or overdue", due ? "tone-due" : "")}
-    ${statTile("Open jobs", open, "New through quoted")}
-    ${statTile("This week", newThisWeek, "Leads received")}
+    ${statTile("New", amount(newCount), "Waiting for a first call", newCount.count ? "tone-new" : "")}
+    ${statTile("Follow-ups due", amount(summary.due), "Today or overdue", summary.due.count ? "tone-due" : "")}
+    ${statTile("Open jobs", amount(summary.open), "New through quoted")}
+    ${statTile("This week", amount(summary.thisWeek), "Leads received")}
   </div>
   <div class="board-grid">
     <section class="board-main" aria-labelledby="leads-title">
       <h2 id="leads-title" class="visually-hidden">Lead list</h2>
       <nav aria-label="Filter by stage"><ul class="tabs">${tabs}</ul></nav>
       <div class="card table-card">${table}</div>
+      ${pagerNav}
     </section>
     <aside class="board-side card" aria-labelledby="activity-title">
       <h2 id="activity-title" class="side-title">Recent activity</h2>
@@ -413,14 +428,21 @@ export function newLeadPage(rc, { values = {}, errors = {} } = {}) {
   return layout(rc, { title: "Add a lead", area: "owner", body });
 }
 
-export function leadPage(rc, { lead, activity, now, updateErrors = {}, noteErrors = {}, noteValues = {}, saved = "" }) {
+export function leadPage(rc, { lead, history, now, updateErrors = {}, noteErrors = {}, noteValues = {}, deleteErrors = {}, saved = "" }) {
   const stageOptions = STAGES.map(
     (option) =>
       `<label class="stage-option stage-${option.value}"><input type="radio" name="stage" value="${option.value}"${lead.stage === option.value ? " checked" : ""}><span>${escapeHtml(option.label)}</span></label>`
   ).join("");
-  const savedMessage = saved === "update" ? "Lead updated." : saved === "note" ? "Note saved." : saved === "created" ? "Lead added." : "";
+  const savedMessages = {
+    update: "Lead updated.",
+    note: "Note saved.",
+    created: "Lead added.",
+    deleting: "Part of this lead's history was removed. Press Delete lead again to finish."
+  };
+  const savedMessage = savedMessages[saved] ?? "";
+  const olderNote = history.more ? `<p class="hint">Showing the latest ${history.entries.length} entries.</p>` : "";
   const contact = [
-    lead.email ? `<a href="mailto:${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</a>` : "",
+    lead.email ? `<a href="${escapeHtml(mailtoHref(lead.email))}">${escapeHtml(lead.email)}</a>` : "",
     lead.phone ? `<a href="tel:${escapeHtml(lead.phone.replace(/[^0-9+]/g, ""))}">${escapeHtml(lead.phone)}</a>` : ""
   ]
     .filter(Boolean)
@@ -430,7 +452,7 @@ export function leadPage(rc, { lead, activity, now, updateErrors = {}, noteError
   <p class="crumb"><a class="text-link" href="${rc.href("/admin")}">${ICON.back} All leads</a></p>
   ${savedMessage ? `<p class="flash" role="status">${ICON.check}${escapeHtml(savedMessage)}</p>` : ""}
   <div class="page-head lead-head">
-    <div><h1>${escapeHtml(lead.name)}</h1><p class="page-sub">${escapeHtml(labelFor(PROJECTS, lead.project))} · received ${escapeHtml(timeAgo(lead.created_at, now).toLowerCase())} · ${escapeHtml(labelFor(SOURCES, lead.source))}</p></div>
+    <div><h1>${escapeHtml(lead.name)}</h1><p class="page-sub">${escapeHtml(labelFor(PROJECTS, lead.project))} · received ${escapeHtml(timeAgo(lead.received_at, now).toLowerCase())} · ${escapeHtml(labelFor(SOURCES, lead.source))}</p></div>
     ${stageChip(lead.stage)}
   </div>
   <div class="lead-grid">
@@ -447,7 +469,8 @@ export function leadPage(rc, { lead, activity, now, updateErrors = {}, noteError
       </section>
       <section class="card card-history" aria-labelledby="history-title">
         <h2 id="history-title" class="side-title">History</h2>
-        ${activityFeed(rc, activity, now, { showLead: false })}
+        ${activityFeed(rc, history.entries, now, { showLead: false })}
+        ${olderNote}
       </section>
     </div>
     <div class="lead-side">
@@ -468,6 +491,16 @@ export function leadPage(rc, { lead, activity, now, updateErrors = {}, noteError
           ${hiddenFields(rc)}
           ${textarea({ name: "body", label: "Note", values: noteValues, errors: noteErrors, max: LIMITS.note, rows: 3, required: true, placeholder: "Call summary, measurements, quote details..." })}
           <button class="button button-block" type="submit">Save note</button>
+        </form>
+      </section>
+      <section class="card card-delete" aria-labelledby="delete-title">
+        <h2 id="delete-title" class="side-title">Delete lead</h2>
+        <p class="hint">For spam and test entries. This removes the lead and its history for good.</p>
+        ${errorSummary(deleteErrors)}
+        <form method="post" action="/admin/leads/${encodeURIComponent(lead.id)}/delete" novalidate>
+          ${hiddenFields(rc)}
+          <div class="field"><label class="check"><input id="confirm" type="checkbox" name="confirm" value="yes"${deleteErrors.confirm ? ' aria-invalid="true" aria-describedby="confirm-error"' : ""}> Yes, delete ${escapeHtml(lead.name)} and their history</label>${fieldError("confirm", deleteErrors)}</div>
+          <button class="button button-block button-danger" type="submit">Delete lead</button>
         </form>
       </section>
     </div>

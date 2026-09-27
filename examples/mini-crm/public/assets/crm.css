@@ -145,6 +145,11 @@ p { margin: 0; }
 .button-primary { border-color: var(--orange-600); background: var(--orange); color: var(--navy-950); }
 .button-primary:hover { border-color: var(--orange-ink); background: #ff7d33; color: var(--navy-950); }
 .button-block { width: 100%; }
+.button-danger { border-color: #b3261e; color: #8c1d18; }
+.button-danger:hover { border-color: #8c1d18; background: #fbe9e7; color: #8c1d18; }
+.check { display: flex; align-items: flex-start; gap: 8px; font-weight: 500; }
+.check input { margin-top: 4px; width: 18px; height: 18px; accent-color: var(--orange); }
+.pager { margin-top: 14px; justify-content: space-between; }
 .text-link { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
 
 /* ---- Cards and forms -------------------------------------------------- */
@@ -318,12 +323,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px
 .lead-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
 @media (min-width: 960px) { .lead-grid { grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; } }
 .lead-main, .lead-side { display: grid; gap: 16px; }
-/* On small screens: project, update, note, then history. */
+/* On small screens: project, update, note, history, then delete. */
 @media (max-width: 959px) {
   .lead-main, .lead-side { display: contents; }
   .card-project { order: 1; }
   .card-update { order: 2; }
   .card-note { order: 3; }
+  .card-delete { order: 5; }
   .card-history { order: 4; }
 }
 .lead-grid .card { padding: 18px; }

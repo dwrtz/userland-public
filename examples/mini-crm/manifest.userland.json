@@ -45,12 +45,21 @@
               "values": ["website", "phone", "referral", "repeat_client", "other"]
             },
             "follow_up_on": "string",
-            "demo_visitor": "string"
+            "demo_visitor": "string",
+            "received_at": "datetime",
+            "via": {
+              "type": "enum",
+              "values": ["form", "owner"]
+            }
           },
           "indexes": [
             {
-              "name": "by_demo_visitor",
-              "fields": ["demo_visitor"]
+              "name": "by_stage",
+              "fields": ["stage", "received_at"]
+            },
+            {
+              "name": "by_via",
+              "fields": ["via", "received_at"]
             }
           ],
           "access": {
@@ -71,7 +80,8 @@
               "values": ["new", "contacted", "site_visit", "quoted", "won", "lost"]
             },
             "body": "string",
-            "demo_visitor": "string"
+            "demo_visitor": "string",
+            "demo_saved_at": "datetime"
           },
           "indexes": [
             {
@@ -80,7 +90,7 @@
             },
             {
               "name": "by_demo_visitor",
-              "fields": ["demo_visitor"]
+              "fields": ["demo_visitor", "demo_saved_at"]
             }
           ],
           "access": {
