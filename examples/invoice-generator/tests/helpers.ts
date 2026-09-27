@@ -28,13 +28,18 @@ export function row(ctx: FakeCtx, name: "clients" | "documents", id: string) {
   return rows(ctx, name).find((item) => item.id === id);
 }
 
-/** A form POST, as a browser sends it. */
-export function post(url: string, fields: Record<string, string | string[]>, headers: Record<string, string> = {}) {
+/**
+ * A form POST, as a browser sends it from the app's own page (with a matching
+ * Origin header). Pass a header as null to leave it out.
+ */
+export function post(url: string, fields: Record<string, string | string[]>, headers: Record<string, string | null> = {}) {
   const body = new URLSearchParams();
   for (const [key, value] of Object.entries(fields)) {
     for (const item of Array.isArray(value) ? value : [value]) body.append(key, item);
   }
-  return new Request(url, { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded", ...headers } });
+  const all: Record<string, string | null> = { "content-type": "application/x-www-form-urlencoded", origin: new URL(url).origin, ...headers };
+  const sent = Object.fromEntries(Object.entries(all).filter((entry): entry is [string, string] => entry[1] !== null));
+  return new Request(url, { method: "POST", body, headers: sent });
 }
 
 export const SITE = "https://invoices.example.test";

@@ -2,15 +2,23 @@
 // together with server/demo.js when you remove demo mode (see README.md).
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
-import { DEMO, OWNER, SITE, location, makeCtx, post, requestQuote, row, rows, send, text, type FakeCtx } from "./helpers.js";
+// @ts-expect-error Example server files are plain JavaScript app bundles.
+import { MAX_OPEN_DESKS, MIN_DESK_SECONDS, startDemo } from "../server/demo.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+import { DEMO, SITE, location, makeCtx, post, requestQuote, row, rows, send, text, type FakeCtx } from "./helpers.js";
+
+const KEY = /^[0-9a-z]{7}[A-Za-z0-9_-]{16}$/;
+const HOUR = 60 * 60 * 1000;
 
 describe("demo mode", () => {
   async function openDesk(ctx: FakeCtx) {
     const response = await send(ctx, post(`${DEMO}/demo/start`, {}));
     expect(response.status).toBe(303);
     const target = location(response);
-    expect(target).toMatch(/^\/desk\?demo=[A-Za-z0-9_-]{20}$/);
-    return target.split("demo=")[1];
+    expect(target).toMatch(/^\/desk\?demo=/);
+    const key = target.split("demo=")[1];
+    expect(key).toMatch(KEY);
+    return key;
   }
 
   it("shows a start page instead of a sign-in on the demo host", async () => {
@@ -18,10 +26,18 @@ describe("demo mode", () => {
     const response = await send(ctx, `${DEMO}/desk`);
     expect(response.status).toBe(200);
     const html = await text(response);
+    expect(html).toContain("Open the studio desk");
     expect(html).toContain('<meta name="robots" content="noindex,follow">');
     expect(html).toContain('href="https://userland.fun/examples/invoice-generator/"');
     expect(ctx.auth.requireRole).not.toHaveBeenCalled();
     expect(rows(ctx, "documents")).toHaveLength(0);
+  });
+
+  it("answers HEAD like GET, without a body", async () => {
+    const ctx = makeCtx();
+    for (const pathname of ["/", "/desk"]) {
+      expect((await expectHeadLikeGet(app, ctx, `${DEMO}${pathname}`)).status).toBe(200);
+    }
   });
 
   it("gives each visitor sample data and schedules cleanup", async () => {
@@ -73,12 +89,158 @@ describe("demo mode", () => {
     const ctx = makeCtx();
     const response = await requestQuote(ctx, DEMO, { name: "New Visitor", email: "new@example.com" });
     const target = location(response);
-    expect(target).toMatch(/^\/request\/sent\?demo=[A-Za-z0-9_-]{20}$/);
+    expect(target).toMatch(/^\/request\/sent\?demo=/);
     const key = target.split("demo=")[1];
+    expect(key).toMatch(KEY);
     const thanks = await text(await send(ctx, `${DEMO}${target}`));
     expect(thanks).toContain(`/desk?view=requests&amp;demo=${key}`);
     const desk = await text(await send(ctx, `${DEMO}/desk?view=requests&demo=${key}`));
     expect(desk).toContain("New Visitor");
+  });
+
+  it("ignores a key the server never issued, and writes nothing for it", async () => {
+    const ctx = makeCtx();
+    const madeUp = "0tm0y8bauditFixation001";
+    expect(madeUp).toMatch(KEY);
+    const desk = await send(ctx, `${DEMO}/desk?demo=${madeUp}`);
+    expect(desk.status).toBe(200);
+    const html = await text(desk);
+    expect(html).toContain("Try the owner&#39;s side");
+    expect(html).not.toContain(madeUp);
+
+    // A request sent with the made-up key opens a fresh workspace instead.
+    const request = await send(ctx, post(`${DEMO}/request?demo=${madeUp}`, { name: "Visitor", email: "visitor@example.com", service: "web", message: "Hi", website: "" }));
+    expect(location(request)).toMatch(/^\/request\/sent\?demo=/);
+    expect(location(request)).not.toContain(madeUp);
+    const home = await text(await send(ctx, `${DEMO}/?demo=${madeUp}`));
+    expect(home).not.toContain(`demo=${madeUp}`);
+    expect(rows(ctx, "documents").some((item) => item.workspace === `demo-${madeUp}`)).toBe(false);
+    expect(rows(ctx, "clients").some((item) => item.workspace === `demo-${madeUp}`)).toBe(false);
+  });
+
+  it("sends an expired key back to the start page, and sweeps workspaces that were never cleared", async () => {
+    const ctx = makeCtx();
+    const old = await startDemo(ctx, new Date(Date.now() - 7 * HOUR));
+    expect(old.key).toMatch(KEY);
+    const html = await text(await send(ctx, `${DEMO}/desk?demo=${old.key}`));
+    expect(html).toContain("That demo desk has been cleared.");
+    expect(html).not.toContain("Fieldnote Coffee Roasters");
+
+    // A workspace from an old-style key, whose own cleanup never ran.
+    await ctx.data.collection("clients").create({ workspace: "demo-AAAAAAAAAAAAAAAAAAAA", name: "Left behind", company: "", email: "left@example.com", address: "", notes: "" });
+    const current = await openDesk(ctx);
+    await app.job({ job_id: "job_1", name: "clear-demo", payload: { workspace: `demo-${current}` } }, ctx);
+    const workspaces = new Set([...rows(ctx, "documents"), ...rows(ctx, "clients")].map((item) => item.workspace));
+    expect(workspaces.size).toBe(0);
+  });
+
+  it("opens no workspace when its cleanup can't be scheduled", async () => {
+    const ctx = makeCtx();
+    vi.spyOn(ctx.jobs, "enqueue").mockRejectedValue(Object.assign(new Error("Monthly job runs used up."), { code: "quota_exceeded" }));
+    const response = await send(ctx, post(`${DEMO}/demo/start`, {}));
+    expect(response.status).toBe(503);
+    expect(await text(response)).toContain("The demo is busy");
+    const request = await requestQuote(ctx, DEMO);
+    expect(request.status).toBe(503);
+    expect(rows(ctx, "documents")).toHaveLength(0);
+    expect(rows(ctx, "clients")).toHaveLength(0);
+  });
+
+  it("caps how many demo desks are open at once", async () => {
+    const ctx = makeCtx();
+    for (let index = 0; index < MAX_OPEN_DESKS; index += 1) await startDemo(ctx);
+    const before = rows(ctx, "documents").length;
+    const response = await send(ctx, post(`${DEMO}/demo/start`, {}));
+    expect(response.status).toBe(503);
+    expect(rows(ctx, "documents")).toHaveLength(before);
+  });
+
+  it("keeps the desk cap when many visitors start at the same moment", async () => {
+    const ctx = makeCtx();
+    const responses = await Promise.all(Array.from({ length: 120 }, () => send(ctx, post(`${DEMO}/demo/start`, {}))));
+    expect(responses.filter((response: Response) => ![303, 503].includes(response.status))).toEqual([]);
+    // A desk that counts more than the cap once its first sample is saved clears itself,
+    // so a burst may turn everyone away for a moment, but never opens too many.
+    expect((await send(ctx, post(`${DEMO}/demo/start`, {}))).status).toBe(303);
+    const opened = new Set(rows(ctx, "documents").map((item) => item.workspace));
+    expect(opened.size).toBeGreaterThan(0);
+    expect(opened.size).toBeLessThanOrEqual(MAX_OPEN_DESKS);
+    // Refused desks were cleared right away: every workspace left is a complete desk.
+    const clientWorkspaces = new Set(rows(ctx, "clients").map((item) => item.workspace));
+    expect(clientWorkspaces).toEqual(opened);
+    for (const workspace of opened) expect(rows(ctx, "documents").filter((item) => item.workspace === workspace)).toHaveLength(7);
+  });
+
+  it("keeps a visitor's desk under the demo's document cap when requests arrive together", async () => {
+    const ctx = makeCtx();
+    const key = await openDesk(ctx);
+    const mine = () => rows(ctx, "documents").filter((item) => item.workspace === `demo-${key}`);
+    for (let burst = 0; burst < 5; burst += 1) {
+      const responses = await Promise.all(Array.from({ length: 30 }, (_, index) => send(ctx, post(`${DEMO}/request?demo=${key}`, { name: "Bot", email: `b${burst}-${index}@example.com`, service: "packaging", message: "Hi", website: "" }))));
+      expect(responses.filter((response: Response) => ![303, 422, 503].includes(response.status))).toEqual([]);
+      expect(mine().length).toBeLessThanOrEqual(40);
+    }
+    let last: Response;
+    let index = 0;
+    do last = await send(ctx, post(`${DEMO}/request?demo=${key}`, { name: "Bot", email: `late${index++}@example.com`, service: "packaging", message: "Hi", website: "" }));
+    while (last.status === 303);
+    expect(last.status).toBe(422);
+    expect(await text(last)).toContain("The demo stops at 40 documents.");
+    expect(mine()).toHaveLength(40);
+    const requesters = new Set(mine().map((item) => item.client_id));
+    expect(rows(ctx, "clients").filter((item) => item.workspace === `demo-${key}` && item.name === "Bot").every((client) => requesters.has(client.id))).toBe(true);
+  });
+
+  it("keeps the demo's client and document caps when desk saves arrive together", async () => {
+    const ctx = makeCtx();
+    const key = await openDesk(ctx);
+    const mine = (name: "clients" | "documents") => rows(ctx, name).filter((item) => item.workspace === `demo-${key}`);
+    const clientSaves = await Promise.all(Array.from({ length: 40 }, (_, index) => send(ctx, post(`${DEMO}/desk/clients?demo=${key}`, { name: `Burst ${index}`, email: `burst${index}@example.com` }))));
+    expect(clientSaves.filter((response: Response) => ![303, 422].includes(response.status))).toEqual([]);
+    expect(mine("clients").length).toBeLessThanOrEqual(25);
+    const refused = clientSaves.find((response: Response) => response.status === 422);
+    expect(await text(refused!)).toContain("The demo stops at 25 clients.");
+
+    const clientId = mine("clients")[0].id;
+    const documentSaves = await Promise.all(
+      Array.from({ length: 60 }, () => send(ctx, post(`${DEMO}/desk/documents?demo=${key}`, { kind: "quote", client_id: clientId, title: "Burst", item_description: ["Work"], item_quantity: ["1"], item_rate: ["10"] })))
+    );
+    expect(documentSaves.filter((response: Response) => ![303, 422, 503].includes(response.status))).toEqual([]);
+    expect(mine("documents").length).toBeLessThanOrEqual(40);
+  });
+
+  it("replaces the oldest desk when the demo is full, once it has been open an hour", async () => {
+    const ctx = makeCtx();
+    const start = Date.now() - 2 * HOUR;
+    const keys: string[] = [];
+    for (let index = 0; index < MAX_OPEN_DESKS; index += 1) keys.push((await startDemo(ctx, new Date(start + index * 1000))).key);
+
+    // Half an hour later every desk is still new, so the demo is busy.
+    expect(await startDemo(ctx, new Date(start + MIN_DESK_SECONDS * 500))).toEqual({ busy: expect.any(String) });
+
+    // Now the oldest desks have been open for two hours: a new visitor replaces the oldest one.
+    const fresh = await send(ctx, post(`${DEMO}/demo/start`, {}));
+    expect(fresh.status).toBe(303);
+    const workspaces = new Set(rows(ctx, "documents").map((item) => item.workspace));
+    expect(workspaces.size).toBe(MAX_OPEN_DESKS);
+    expect(workspaces.has(`demo-${keys[0]}`)).toBe(false);
+    expect(workspaces.has(`demo-${keys[1]}`)).toBe(true);
+    expect(await text(await send(ctx, `${DEMO}/desk?demo=${keys[0]}`))).toContain("That demo desk has been cleared.");
+  });
+
+  it("sweeps leftover rows even when many desks are open, and without skipping any", async () => {
+    const ctx = makeCtx();
+    for (let index = 0; index < 45; index += 1) await startDemo(ctx);
+    // Old-style workspaces whose own cleanup never ran; their names sort after the new ones.
+    for (let index = 0; index < 70; index += 1) {
+      await ctx.data.collection("clients").create({ workspace: `demo-${"A".repeat(19)}${index % 2}`, name: "Left behind", company: "", email: `left${index}@example.com`, address: "", notes: "" });
+    }
+    const leftovers = () => rows(ctx, "clients").filter((item) => item.name === "Left behind").length;
+    await app.job({ job_id: "job_1", name: "clear-demo", payload: {} }, ctx);
+    expect(leftovers()).toBe(10);
+    await app.job({ job_id: "job_2", name: "clear-demo", payload: {} }, ctx);
+    expect(leftovers()).toBe(0);
+    expect(new Set(rows(ctx, "documents").map((item) => item.workspace)).size).toBe(45);
   });
 
   it("refuses to open a demo desk from another site", async () => {

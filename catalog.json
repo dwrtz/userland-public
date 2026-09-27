@@ -49,7 +49,7 @@
       "title": "Invoice Generator",
       "summary": "Quote and invoice app: clients request a quote, the owner prices and sends it, and accepted quotes become printable invoices.",
       "path": "examples/invoice-generator",
-      "capabilities": ["static", "server", "auth", "data", "jobs", "transactions"],
+      "capabilities": ["static", "server", "auth", "data", "jobs"],
       "difficulty": "intermediate",
       "userland_api_version": "v0",
       "required_plan": "free",
