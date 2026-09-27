@@ -7,7 +7,7 @@ Each example directory must include:
 - `example.json` metadata. It must match the example's `catalog.json` entry exactly.
 - `manifest.userland.json`. It must validate against `schemas/resource-manifest-v0.schema.json` and pass `userland validate <dir> --strict`. At the top level it may set `app`, `runtime`, and `resources`, plus the optional keys the CLI reads: `$schema` (an editor hint), a release `message` (a `--message` flag on `userland apps publish` overrides it), `files` (an explicit release file list), and `provenance`. None of the examples set `files`, so publishing sends every regular file in the example directory.
 - `public/` files when the app has static assets.
-- `server/index.js` when the app has dynamic routes, jobs, webhooks, or resource access.
+- `server/index.js` when the app has dynamic routes, jobs, webhooks, or resource access. Servers answer `HEAD` on every `GET` route like `GET`, without a body (see `answerHead` in `waitlist-app/server/index.js`).
 - `tests/*.test.ts` for server code (recommended). `scripts/runtime-harness.ts` builds a test `ctx` from the manifest and rejects calls the Userland runtime rejects, such as queries on unindexed fields or undeclared secrets.
 
 Example metadata follows this shape:

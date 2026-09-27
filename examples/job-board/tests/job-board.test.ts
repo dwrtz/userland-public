@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { createApp } from "../server/index.js";
 import { APP_ORIGIN, DEMO_ORIGIN, get, makeCtx, post, production, seedApproved, validListing, type Ctx } from "./helpers.js";
@@ -225,6 +225,29 @@ describe("owner pages (production)", () => {
     const response = await get(app, ctx, `${APP_ORIGIN}/owner`);
     expect(response.status).toBe(303);
     expect(ctx.state["demo-listings"]).toHaveLength(0);
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const ctx = makeCtx();
+    const row = await seedApproved(ctx);
+    const owner = { cookie: "__Host-ul_session=owner" };
+    const pages: Array<[string, number, Record<string, string>?]> = [
+      [`${APP_ORIGIN}/`, 200],
+      [`${APP_ORIGIN}/jobs/${row.id}`, 200],
+      [`${APP_ORIGIN}/post`, 200],
+      [`${APP_ORIGIN}/post/thanks`, 200],
+      [`${APP_ORIGIN}/owner`, 303],
+      [`${APP_ORIGIN}/owner`, 200, owner],
+      [`${APP_ORIGIN}/owner/jobs/${row.id}`, 200, owner],
+      [`${APP_ORIGIN}/missing`, 404],
+      [`${DEMO_ORIGIN}/`, 200],
+      [`${DEMO_ORIGIN}/owner`, 200]
+    ];
+    for (const [url, status, headers] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url, { headers })).status).toBe(status);
+    }
   });
 });
 

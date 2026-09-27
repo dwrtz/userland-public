@@ -42,8 +42,18 @@ async function createNote(request, ctx) {
   return json({ note: { id: note.id, title: note.title, body: note.body, status: note.status, created_at: note.created_at } }, { status: 201 });
 }
 
-export default {
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
+const app = {
   async fetch(request, ctx) {
+    if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
     const url = new URL(request.url);
     if (url.pathname === "/api/notes" && request.method === "GET") {
       return await listNotes(ctx);
@@ -54,3 +64,5 @@ export default {
     return new Response("Not found", { status: 404 });
   }
 };
+
+export default app;

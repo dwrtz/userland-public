@@ -107,6 +107,15 @@ function notFound(rc, area = "public") {
   return html(messagePage(rc, { title: "Page not found", message: "That page doesn't exist or was moved.", area, action: { href: rc.href(area === "owner" ? "/admin" : "/"), label: area === "owner" ? "Back to leads" : "Back to the home page" } }), 404);
 }
 
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /**
  * createApp() returns the Userland server module. Pass `{ demo }` from
  * server/demo.js to allow demo mode; it then turns on only for requests to
@@ -121,7 +130,7 @@ export function createApp({ demo = null } = {}) {
     const demoMode = demoFor(url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const isPost = request.method === "POST";
-    const isRead = request.method === "GET" || request.method === "HEAD";
+    const isRead = request.method === "GET";
 
     let form = {};
     if (isPost) {
@@ -223,8 +232,9 @@ export function createApp({ demo = null } = {}) {
     return new Response("Method not allowed", { status: 405 });
   }
 
-  return {
+  const app = {
     async fetch(request, ctx) {
+      if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
       try {
         return await handle(request, ctx);
       } catch (error) {
@@ -244,6 +254,7 @@ export function createApp({ demo = null } = {}) {
       }
     }
   };
+  return app;
 }
 
 export default createApp({ demo });

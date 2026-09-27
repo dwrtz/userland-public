@@ -29,6 +29,7 @@ Use this skill when writing `server/index.js` for a Userland app.
 4. Use `ctx.data`, `ctx.auth`, `ctx.files`, `ctx.secrets`, and `ctx.log` according to docs.
 5. Keep browser-facing responses sanitized.
 6. Return explicit 404 responses for unknown dynamic routes.
+7. Answer `HEAD` on every `GET` route with the `GET` status and headers and no body. Link checkers and uptime monitors send `HEAD`, and the runtime returns whatever the server sends. The example servers do this with a small `answerHead` helper at the top of `fetch`.
 
 ## Commands
 

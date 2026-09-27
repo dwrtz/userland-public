@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import app from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { computeTotals, parseMoney, today } from "../server/store.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 import { DEMO, OWNER, SITE, location, makeCtx, post, requestQuote, row, rows, send, text, type FakeCtx } from "./helpers.js";
 
 describe("money", () => {
@@ -203,6 +204,45 @@ describe("quote to invoice", () => {
     expect(html).toContain("Choose a client.");
     expect(html).toContain("Check line 1");
     expect(rows(ctx, "documents")).toHaveLength(0);
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const ctx = makeCtx({ user: OWNER });
+    await send(ctx, post(`${SITE}/desk/clients`, { name: "Grace Hopper", email: "grace@example.com" }));
+    const client = rows(ctx, "clients")[0];
+    await send(ctx, post(`${SITE}/desk/documents`, { kind: "quote", client_id: client.id, title: "Labels", issue_date: "2026-09-01", item_description: ["Label design"], item_quantity: ["1"], item_rate: ["100"] }));
+    const quote = rows(ctx, "documents")[0];
+    await send(ctx, post(`${SITE}/desk/documents/${quote.id}/status`, { status: "sent" }));
+    const pages: Array<[string, number]> = [
+      ["/", 200],
+      ["/request/sent", 200],
+      [`/p/${quote.public_token}`, 200],
+      ["/desk", 200],
+      ["/desk/new", 200],
+      ["/desk/clients", 200],
+      [`/desk/clients/${client.id}`, 200],
+      [`/desk/documents/${quote.id}`, 200],
+      [`/desk/documents/${quote.id}/edit`, 303], // Sent documents are no longer editable.
+      ["/missing", 404]
+    ];
+    for (const [pathname, status] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, `${SITE}${pathname}`)).status).toBe(status);
+    }
+  });
+
+  it("send signed-out visitors to sign in, like GET", async () => {
+    const response = await expectHeadLikeGet(app, makeCtx(), `${SITE}/desk?view=invoices`);
+    expect(response.status).toBe(303);
+    expect(location(response)).toBe("/_userland/auth/login?return_to=%2Fdesk%3Fview%3Dinvoices");
+  });
+
+  it("answer the demo like GET, without a body", async () => {
+    const ctx = makeCtx();
+    for (const pathname of ["/", "/desk"]) {
+      expect((await expectHeadLikeGet(app, ctx, `${DEMO}${pathname}`)).status).toBe(200);
+    }
   });
 });
 

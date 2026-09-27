@@ -20,7 +20,7 @@ Steps:
 
 1. Rename app metadata and tags.
 2. Adjust `posts` fields. Every field used in a `list` `where` or `order_by` must appear in an index; the `by_status` index covers `status` and `published_at`. The runtime rejects queries on fields that are not indexed, and on `created_at` or `updated_at`.
-3. Keep admin checks in app code: `ctx.auth.currentUser(request)` then `user.roles.includes("admin")`, returning `401` or `403`. An uncaught `ctx.auth.requireRole` error becomes a `500`.
+3. Keep admin checks in app code: `ctx.auth.currentUser(request)` then `user.roles.includes("admin")`, returning `401` or `403`. Left uncaught, a `ctx.auth.requireUser` or `ctx.auth.requireRole` error returns a plain `401` or `403`; catch it when you want a redirect or a friendlier page.
 4. Keep public reads limited to published posts, and escape post content in server-rendered HTML.
 5. Validate: `npm run validate:manifests -- blog-cms` and `npx vitest run examples/blog-cms`.
 6. After publishing, invite the first admin with `POST /v0/apps/:app_id/admin-invites` (Auth guide).

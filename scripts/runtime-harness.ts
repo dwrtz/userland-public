@@ -17,6 +17,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { expect } from "vitest";
 
 type Json = Record<string, unknown>;
 
@@ -319,6 +320,35 @@ export function webhookJobEvent(input: { job: string; webhook: string; body: unk
       payload: input.body
     }
   };
+}
+
+// Sends the same request as GET and then as HEAD, and checks that HEAD got
+// GET's status and headers with an empty body. Userland hands a server's
+// response back as the server built it, so each example answers HEAD itself
+// (link checkers and uptime monitors send HEAD). Returns the GET response.
+export async function expectHeadLikeGet(
+  server: { fetch(request: Request, ctx: never): Promise<Response> },
+  ctx: unknown,
+  url: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const get = await server.fetch(new Request(url, { ...init, method: "GET" }), ctx as never);
+  const head = await server.fetch(new Request(url, { ...init, method: "HEAD" }), ctx as never);
+  expect({ url, status: head.status, headers: headerObject(head.headers), body: await head.text() }).toEqual({
+    url,
+    status: get.status,
+    headers: headerObject(get.headers),
+    body: ""
+  });
+  return get;
+}
+
+function headerObject(headers: Headers): Record<string, string> {
+  const object: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    object[name] = value;
+  });
+  return object;
 }
 
 function validateFieldValue(field: string, spec: string | { type: string; values?: string[] }, value: unknown): void {

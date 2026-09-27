@@ -2,10 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { createApp } from "../server/index.js";
-import { ORIGIN, at, get, makeCtx, post, request } from "./helpers.js";
+import { DEMO_ORIGIN, ORIGIN, at, get, makeCtx, post, request } from "./helpers.js";
 
 describe("public estimate form", () => {
   it("renders the form without demo notices when demo mode is off", async () => {
@@ -122,6 +122,40 @@ describe("owner routes with demo mode off", () => {
     const quoted = await (await get(app, ctx, "/admin?stage=quoted")).text();
     expect(quoted).not.toContain('class="lead-link"');
     expect(quoted).toContain("No quoted leads right now.");
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const app = createApp();
+    const owner = makeCtx({ user: { id: "u_1", email: "owner@example.com", roles: ["owner"] } });
+    const created = await post(app, owner, "/admin/leads", { ...request, source: "phone" });
+    const leadPath = new URL(created.headers.get("location")!, ORIGIN).pathname;
+    const pages: Array<[string, number]> = [
+      ["/", 200],
+      ["/thanks", 200],
+      ["/admin", 200],
+      ["/admin?stage=new", 200],
+      ["/admin/leads/new", 200],
+      [leadPath, 200],
+      ["/missing", 404]
+    ];
+    for (const [pathname, status] of pages) {
+      expect((await expectHeadLikeGet(app, owner, `${ORIGIN}${pathname}`)).status).toBe(status);
+    }
+  });
+
+  it("send signed-out visitors to sign in, like GET", async () => {
+    const response = await expectHeadLikeGet(createApp(), makeCtx(), `${ORIGIN}/admin?stage=new`);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/_userland/auth/login?return_to=%2Fadmin%3Fstage%3Dnew");
+  });
+
+  it("answer the demo like GET, without a body", async () => {
+    const ctx = makeCtx();
+    for (const pathname of ["/", "/admin"]) {
+      expect((await expectHeadLikeGet(app, ctx, `${DEMO_ORIGIN}${pathname}`)).status).toBe(200);
+    }
   });
 });
 

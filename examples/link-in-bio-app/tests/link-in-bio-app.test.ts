@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { toCsv } from "../server/index.js";
 import { APP, Ctx, DEMO, FAN_COOKIE, OWNER_COOKIE, Row, addStarterLinks, get, hourStamp, makeCtx, post, type Server } from "./helpers.js";
@@ -42,6 +42,70 @@ describe("public page", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe(link.url);
     expect(ctx.state.links[0].clicks).toBe(1);
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const ctx = makeCtx();
+    await addStarterLinks(ctx);
+    const owner = { cookie: OWNER_COOKIE };
+    const pages: Array<[string, number, Record<string, string>?]> = [
+      [`${APP}/`, 200],
+      [`${APP}/contact`, 200],
+      [`${APP}/thanks?kind=list`, 200],
+      [`${APP}/admin`, 303],
+      [`${APP}/admin`, 200, owner],
+      [`${APP}/admin/links`, 200, owner],
+      [`${APP}/admin/email-list.csv`, 200, owner],
+      [`${APP}/missing`, 404],
+      [`${DEMO}/`, 200]
+    ];
+    for (const [url, status, headers] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url, { headers })).status).toBe(status);
+    }
+  });
+
+  it("don't count as a tap on a link", async () => {
+    const ctx = makeCtx();
+    await addStarterLinks(ctx);
+    const link = ctx.state.links[0];
+    const res = await app.fetch(new Request(`${APP}/go/${link.id}`, { method: "HEAD" }), ctx);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(link.url);
+    expect(ctx.state.links[0].clicks).toBe(0);
+    expect((await expectHeadLikeGet(app, ctx, `${APP}/go/${link.id}`)).status).toBe(302);
+    expect(ctx.state.links[0].clicks).toBe(1);
+  });
+
+  it("answer the demo's owner view and link pages like GET", async () => {
+    const ctx = makeCtx();
+    const start = await get(ctx, `${DEMO}/admin`);
+    expect(start.status).toBe(303);
+    const key = /visit=([^&]+)/.exec(start.headers.get("location")!)![1];
+    const link = ctx.state.links.find((row) => row.demo_key === key)!;
+    const pages: Array<[string, number]> = [
+      [`${DEMO}/admin?visit=${key}`, 200],
+      [`${DEMO}/admin?tab=list&visit=${key}`, 200],
+      [`${DEMO}/admin/links?visit=${key}`, 200],
+      [`${DEMO}/go/${link.id}?visit=${key}`, 200],
+      [`${DEMO}/go/social/instagram`, 200],
+      [`${DEMO}/go/social/nope`, 404]
+    ];
+    for (const [url, status] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url)).status).toBe(status);
+    }
+  });
+
+  it("don't set up a demo copy for a visitor with no key", async () => {
+    const ctx = makeCtx();
+    await get(ctx, `${DEMO}/`); // the shared starter links
+    const before = JSON.stringify(ctx.state);
+    const res = await app.fetch(new Request(`${DEMO}/admin`, { method: "HEAD" }), ctx);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toMatch(/^\/admin\?visit=\d{10}-[a-f0-9]{24}$/);
+    expect(await res.text()).toBe("");
+    expect(JSON.stringify(ctx.state)).toBe(before);
   });
 });
 

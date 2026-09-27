@@ -6,7 +6,8 @@ import { pathToFileURL } from "node:url";
 import { STARTER_SERVICES, createApp, validateBooking } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { studioTimeToDate } from "../server/schedule.js";
-import { NOW, OWNER, STUDENT, book, get, logged, openTime, post, rows, runtime, type Runtime } from "./helpers.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+import { NOW, ORIGIN, OWNER, STUDENT, book, get, logged, openTime, post, rows, runtime, type Runtime } from "./helpers.js";
 
 // A studio outside demo mode. Demo-mode tests live in demo.test.ts.
 
@@ -208,6 +209,38 @@ describe("owner pages outside demo mode", () => {
 
   it("lets the owner run the studio: starter lessons, bookings, status changes, and lesson edits", async () => {
     await studioFlow(app);
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const app = createApp({ demoMode: false, now: () => NOW });
+    const rt = runtime();
+    await addLessons(rt);
+    const location = (await book(app, rt, { customer_name: "Ada Lovelace" })).headers.get("location")!;
+    const pages: Array<[string, number]> = [
+      ["/", 200],
+      ["/book", 200],
+      [location, 200],
+      ["/studio", 303],
+      ["/studio/lessons", 303],
+      ["/missing", 404]
+    ];
+    for (const [pathname, status] of pages) {
+      expect((await expectHeadLikeGet(app, rt.ctx, `${ORIGIN}${pathname}`)).status).toBe(status);
+    }
+    rt.setUser(OWNER);
+    for (const pathname of ["/studio", "/studio/lessons", "/studio/activity"]) {
+      expect((await expectHeadLikeGet(app, rt.ctx, `${ORIGIN}${pathname}`)).status).toBe(200);
+    }
+  });
+
+  it("answer the demo like GET, without a body", async () => {
+    const app = createApp({ demoMode: true, now: () => NOW });
+    const rt = runtime();
+    for (const pathname of ["/", "/book", "/studio"]) {
+      expect((await expectHeadLikeGet(app, rt.ctx, `${ORIGIN}${pathname}`)).status).toBe(200);
+    }
   });
 });
 

@@ -147,7 +147,7 @@ plan=free
 plan_source=flag
 required_plan=starter
 release_files=6
-release_bytes=11726
+release_bytes=12612
 
 manifest_path=resources.webhooks
 feature=webhooks.enabled
@@ -254,7 +254,7 @@ Docs: https://docs.userland.fun/reference/limits/
   "manifest_file": "manifest.userland.json",
   "release": {
     "file_count": 6,
-    "bundle_bytes": 11726
+    "bundle_bytes": 12612
   }
 }
 ```

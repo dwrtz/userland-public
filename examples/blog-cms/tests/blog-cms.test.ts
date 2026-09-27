@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
@@ -53,4 +53,13 @@ it("uploads media only with an allowed content type", async () => {
   const upload = await app.fetch(post("/api/uploads", "hello", { "content-type": "text/plain", "x-filename": "hello.txt" }), runtime.ctx);
   expect(upload.status).toBe(201);
   await expect(app.fetch(post("/api/uploads", "<svg/>", { "content-type": "image/svg+xml" }), runtime.ctx)).rejects.toThrow(/not allowed/u);
+});
+
+it("answers HEAD on every page like GET, without a body", async () => {
+  const runtime = createFakeRuntime(manifest, { user: admin });
+  const created = await app.fetch(post("/api/posts", { title: "Hello", body: "World", status: "published" }), runtime.ctx);
+  const { post: row } = await created.json();
+  expect((await expectHeadLikeGet(app, runtime.ctx, "https://example.test/api/posts")).status).toBe(200);
+  expect((await expectHeadLikeGet(app, runtime.ctx, `https://example.test/posts/${row.id}`)).status).toBe(200);
+  expect((await expectHeadLikeGet(app, runtime.ctx, "https://example.test/posts/missing")).status).toBe(404);
 });

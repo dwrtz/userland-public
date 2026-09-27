@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
@@ -59,4 +59,9 @@ it("rejects incomplete booking requests", async () => {
   const { runtime } = await seededRuntime();
   const response = await app.fetch(new Request("https://example.test/api/bookings", { method: "POST", body: JSON.stringify({ slot_id: "x" }) }), runtime.ctx);
   expect(response.status).toBe(400);
+});
+
+it("answers HEAD on the slot list like GET, without a body", async () => {
+  const { runtime } = await seededRuntime();
+  expect((await expectHeadLikeGet(app, runtime.ctx, "https://example.test/api/slots")).status).toBe(200);
 });
