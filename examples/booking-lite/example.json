@@ -1,7 +1,7 @@
 {
   "slug": "booking-lite",
   "title": "Booking Lite",
-  "summary": "Slot booking app that claims availability inside a Userland data transaction.",
+  "summary": "Slot booking app where a unique index lets each slot be booked only once.",
   "path": "examples/booking-lite",
   "capabilities": ["server", "data", "transactions"],
   "difficulty": "intermediate",

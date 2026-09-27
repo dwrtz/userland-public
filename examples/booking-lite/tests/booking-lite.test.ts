@@ -128,6 +128,38 @@ it("undoes the booking when marking the slot booked fails, so the slot stays boo
   expect((await book(runtime, { slot_id: slot!.id, name: "Ada", email: "ada@example.test" })).status).toBe(201);
 });
 
+it("keeps the booking when its slot update fails after another request already marked the slot booked for it", async () => {
+  const { runtime } = runtimeWithSlots();
+  const [slot] = await futureSlots(runtime, 1);
+  const collection = runtime.ctx.data.collection;
+  let failOnce = true;
+  runtime.ctx.data.collection = ((name: string) => {
+    const inner = collection(name);
+    if (name !== "slots") return inner;
+    return {
+      ...inner,
+      async update(id: string, patch: Record<string, unknown>) {
+        const updated = await inner.update(id, patch);
+        if (failOnce) {
+          // The slot was written (here, as a losing request's repairSlot would
+          // have done), but this request sees an error.
+          failOnce = false;
+          throw Object.assign(new Error("storage unavailable"), { code: "storage_error", status: 500 });
+        }
+        return updated;
+      }
+    };
+  }) as typeof collection;
+
+  const response = await book(runtime, { slot_id: slot!.id, name: "Ada", email: "ada@example.test" });
+  expect(response.status).toBe(201);
+  const bookings = runtime.state.rows.get("bookings")!;
+  expect(bookings).toHaveLength(1);
+  const stored = runtime.state.rows.get("slots")!.find((row) => row.id === slot!.id)!;
+  expect(stored.status).toBe("booked");
+  expect(stored.booked_by).toBe(bookings[0]!.id);
+});
+
 it("fixes a slot left open by a booking that stopped halfway", async () => {
   const { runtime } = runtimeWithSlots();
   const [slot] = await futureSlots(runtime, 1);

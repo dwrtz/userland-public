@@ -35,7 +35,8 @@ function paidEvent(order: { checkout_session_id: string; total_cents: number; cu
 }
 
 async function storeWithProduct() {
-  const runtime = createFakeRuntime(manifest, { secrets, user: admin });
+  // Deployed behaviour: a unique-index clash throws `unique_conflict`.
+  const runtime = deployedRuntime(createFakeRuntime(manifest, { secrets, user: admin }));
   const created = await app.fetch(post("/api/products", { name: "Mug", slug: "mug", price_cents: 1200, currency: "usd", inventory_count: 5 }), runtime.ctx);
   expect(created.status).toBe(201);
   runtime.setUser(customer);
@@ -94,6 +95,85 @@ it("marks orders paid from the checkout webhook job exactly once", async () => {
   expect(runtime.state.logs.filter((entry) => entry.message === "checkout job processed")).toHaveLength(1);
   // Stock drops once, by the quantity paid for.
   expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+});
+
+it("takes stock off once when the same payment is delivered twice at the same moment", async () => {
+  const runtime = await storeWithProduct();
+  const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug", quantity: 2 }] }), runtime.ctx)).json();
+
+  // Count stock writes: the harness can hide a double write when both jobs
+  // read the same count, so check the writes themselves.
+  const collection = runtime.ctx.data.collection;
+  let stockWrites = 0;
+  runtime.ctx.data.collection = ((name: string) => {
+    const inner = collection(name);
+    if (name !== "products") return inner;
+    return {
+      ...inner,
+      async update(id: string, patch: Record<string, unknown>) {
+        if ("inventory_count" in patch) stockWrites += 1;
+        return await inner.update(id, patch);
+      }
+    };
+  }) as typeof collection;
+
+  const results = await Promise.allSettled([app.job(paidEvent(order), runtime.ctx), app.job(paidEvent(order), runtime.ctx), app.job(paidEvent(order), runtime.ctx)]);
+  expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+  expect(stockWrites).toBe(1);
+  expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(3);
+  expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+  expect(runtime.state.logs.filter((entry) => entry.message === "checkout job processed")).toHaveLength(1);
+});
+
+it("still takes stock off when the job is retried after failing once the order was marked paid", async () => {
+  const runtime = await storeWithProduct();
+  const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+  const collection = runtime.ctx.data.collection;
+  let failOnce = true;
+  runtime.ctx.data.collection = ((name: string) => {
+    const inner = collection(name);
+    if (name !== "stock-updates") return inner;
+    return {
+      ...inner,
+      async create(input: Record<string, unknown>) {
+        if (failOnce) {
+          failOnce = false;
+          throw Object.assign(new Error("storage unavailable"), { code: "storage_error", status: 500 });
+        }
+        return await inner.create(input);
+      }
+    };
+  }) as typeof collection;
+
+  await expect(app.job(paidEvent(order), runtime.ctx)).rejects.toThrow("storage unavailable");
+  expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+  expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(5);
+
+  // The platform retries the job.
+  await app.job(paidEvent(order), runtime.ctx);
+  expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+  await app.job(paidEvent(order), runtime.ctx);
+  expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+});
+
+it("logs an error instead of retrying when stock cannot be updated", async () => {
+  const runtime = await storeWithProduct();
+  const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+  const collection = runtime.ctx.data.collection;
+  runtime.ctx.data.collection = ((name: string) => {
+    const inner = collection(name);
+    if (name !== "products") return inner;
+    return {
+      ...inner,
+      async update() {
+        throw Object.assign(new Error("storage unavailable"), { code: "storage_error", status: 500 });
+      }
+    };
+  }) as typeof collection;
+
+  await app.job(paidEvent(order), runtime.ctx);
+  expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+  expect(runtime.state.logs).toContainEqual({ level: "error", message: "stock not updated", metadata: { order_id: order.id, code: "storage_error" } });
 });
 
 describe("checkout events that are not a completed payment", () => {

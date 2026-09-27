@@ -6,7 +6,7 @@ A small shop: admins add products, signed-in customers place orders, and a payme
 
 - Server routes for products, orders, and order pages.
 - App sign-in with an `admin` role, and open sign-up for customers. New customers get no role; any signed-in customer can order.
-- `products` and `orders` data collections. Order totals are worked out on the server from product prices.
+- `products` and `orders` data collections. Order totals are worked out on the server from product prices. A small `stock-updates` collection makes sure each paid order takes stock off only once.
 - Stock: an order can't ask for more than a product's `inventory_count`, and stock goes down when the payment is confirmed. Shoppers see "Sold out", not the exact count.
 - A customer can have at most 5 unpaid orders open at once.
 - The product list comes 50 at a time with a "Show more" button.
@@ -23,7 +23,7 @@ Checkout is a stand-in. Replace it with your payment provider's server-side API 
 **Plan needed: Business.** This example is intentionally paid.
 
 - Business: open customer sign-up, and the hourly job (Starter allows daily jobs only).
-- Starter or higher: the payment webhook, a second secret, a second job, a scheduled job, a third index on orders, and image uploads up to 10 MB.
+- Starter or higher: the payment webhook, a second secret, a second job, a scheduled job, a third data collection, a third index on orders, and image uploads up to 10 MB.
 
 To fit Starter, turn off open sign-up and run the cleanup job daily. Run `userland accounts limits` to see your account's current limits.
 
@@ -80,7 +80,7 @@ Every other event is logged and ignored: expired or abandoned checkouts, failed 
 
 Payment providers sign their webhooks with their own schemes, so you cannot point a provider straight at this URL. Relay the provider's events through a small service that checks the provider's own signature, turns a successful payment into the body above, re-signs it in the format above, and forwards it here. The Webhooks guide lists the other signing schemes Userland accepts.
 
-Stock is taken off when the payment is confirmed. Two payments confirmed at the same moment can miss each other's change, and a payment for the last items can arrive after someone else's; the job logs an `order oversold` warning when stock would go below zero.
+Stock is taken off once per order when the payment is confirmed, even if the payment event arrives twice. Payments for two different orders confirmed at the same moment can miss each other's change, and a payment for the last items can arrive after someone else's; the job logs an `order oversold` warning when stock would go below zero. If stock can't be updated at all, the job logs a `stock not updated` error; adjust the product's stock by hand.
 
 ## Troubleshoot or undo
 

@@ -280,10 +280,10 @@ async function renderOrder(request, ctx, orderId) {
   );
 }
 
-// Takes the paid quantities out of stock. Two payments processed at the same
-// moment can both read the same count, so stock can end up higher than it
-// should; a count that would go below zero is logged as a warning so the
-// owner can refund or restock.
+// Takes the paid quantities out of stock. Two different payments processed at
+// the same moment can both read the same count, so stock can end up higher
+// than it should; a count that would go below zero is logged as a warning so
+// the owner can refund or restock.
 async function takeFromStock(ctx, order) {
   const products = ctx.data.collection("products");
   for (const item of Array.isArray(order.line_items) ? order.line_items : []) {
@@ -342,13 +342,33 @@ async function handleCheckoutEvent(event, ctx) {
     await ctx.log.warn("payment received for cancelled order", { order_id: order.id, webhook_delivery_id: delivery.webhook_delivery_id });
     return;
   }
-  // Providers retry deliveries; only move pending orders to paid.
-  if (order.status !== "checkout_pending") {
-    await ctx.log.info("checkout event ignored", { reason: "already_" + order.status, order_id: order.id });
+  if (order.status !== "checkout_pending" && order.status !== "paid") {
+    await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id });
     return;
   }
-  await orders.update(order.id, { status: "paid", paid_at: new Date().toISOString() });
-  await takeFromStock(ctx, order);
+  if (order.status === "checkout_pending") {
+    await orders.update(order.id, { status: "paid", paid_at: new Date().toISOString() });
+  }
+
+  // Providers retry deliveries, and two deliveries of the same payment can be
+  // processed at the same moment. The by_order unique index on stock-updates
+  // lets only one of them create this row, so stock is taken off once per
+  // order. The row is created after the order is marked paid, so a job that
+  // failed before this point still takes stock off when it is retried.
+  try {
+    await ctx.data.collection("stock-updates").create({ order_id: order.id });
+  } catch (error) {
+    if (error?.code !== "unique_conflict") throw error;
+    await ctx.log.info("checkout event ignored", { reason: "already_paid", order_id: order.id });
+    return;
+  }
+  try {
+    await takeFromStock(ctx, order);
+  } catch (error) {
+    // Not retried: some lines may already be taken off, and a retry would
+    // take them off twice. The owner adjusts stock by hand.
+    await ctx.log.error("stock not updated", { order_id: order.id, code: String(error?.code ?? "unknown") });
+  }
   await ctx.log.info("checkout job processed", { order_id: order.id, webhook_delivery_id: delivery.webhook_delivery_id });
 }
 

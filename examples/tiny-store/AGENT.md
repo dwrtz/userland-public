@@ -5,7 +5,7 @@ Goal: adapt a commerce-like app with data, files, secrets, jobs, and webhooks.
 Plan: `required_plan` is `business`. `paid_features`:
 
 - Business: `auth.public_signup`, `jobs.schedule.allowed` (the `hourly` schedule; Starter allows `daily` only).
-- Starter: `data.indexes_per_collection.max` (3 on `orders`), `files.max_upload_size_bytes.max` (10 MB), `secrets.required.max` (2), `jobs.scheduled`, `jobs.declared.max` (2), `webhooks.enabled`, `webhooks.provider.generic_hmac`, `webhooks.declared.max` (1).
+- Starter: `data.collections.max` (3 collections), `data.indexes_per_collection.max` (3 on `orders`), `files.max_upload_size_bytes.max` (10 MB), `secrets.required.max` (2), `jobs.scheduled`, `jobs.declared.max` (2), `webhooks.enabled`, `webhooks.provider.generic_hmac`, `webhooks.declared.max` (1).
 
 Setting `public_signup: false` and `schedule: "daily"` brings it to `starter`. Keep `required_plan` and `paid_features` in `example.json` and `catalog.json` in sync with the manifest.
 
@@ -18,7 +18,7 @@ Inputs:
 
 Outputs:
 
-- Manifest resources for products, orders, images, secrets, jobs, and webhooks.
+- Manifest resources for products, orders, stock updates, images, secrets, jobs, and webhooks.
 - Storefront UI under `public/`.
 - Server routes and job handlers in `server/index.js`.
 
@@ -27,7 +27,7 @@ Steps:
 1. Rename app metadata and tags.
 2. Adjust product and order fields. Filter and sort only on indexed fields (`slug`, `status`, `checkout_session_id`, `app_user_id`).
 3. Replace the mock checkout in `createOrder` with the provider's server API, reading the key with `ctx.secrets.get("CHECKOUT_SECRET_KEY")` and returning 503 when it is missing (`ctx.secrets.require` throws instead, and the visitor gets the platform's `400 missing_secret`).
-4. Keep pricing and stock on the server: `priceLineItems` reads prices and `inventory_count` from `products`, never from the request, adds up lines for the same product, and answers `409 out_of_stock` for more than is in stock. `takeFromStock` lowers stock when an order is paid. That read-then-write is not atomic across concurrent jobs; it logs `order oversold` instead of going below zero.
+4. Keep pricing and stock on the server: `priceLineItems` reads prices and `inventory_count` from `products`, never from the request, adds up lines for the same product, and answers `409 out_of_stock` for more than is in stock. `takeFromStock` lowers stock when an order is paid, once per order: the job first creates a `stock-updates` row, and its unique `by_order` index turns a retried or simultaneous second delivery of the same payment into `unique_conflict`, which is skipped. Create that row after marking the order paid, so a job that failed earlier still takes stock off on its retry. If taking stock fails, the job logs `stock not updated` and does not retry. Two different orders paid at the same moment can still both read the same count (the read-then-write on `inventory_count` is not atomic); the job logs `order oversold` instead of going below zero.
 5. Real payment providers use their own signature schemes, which the `generic_hmac` webhook rejects. Relay provider events through a service that verifies them and re-signs in Userland's format (`X-Userland-Timestamp`, `X-Userland-Signature` = hex HMAC-SHA256 of timestamp + raw body); see the README.
    Webhook-delivered jobs receive `event.payload = { webhook_delivery_id, name, headers, payload }`; the provider's body is `event.payload.payload`. Keep the handler idempotent: providers retry.
    Only `{ type: "checkout.completed", payment_status: "paid", checkout_session_id, amount_total, currency }` marks an order paid, and only when `amount_total` equals `total_cents` and `currency` matches. Keep that check when you map your provider's events: providers send expired, failed, and still-processing events for the same session, and a completed checkout with a delayed payment method arrives unpaid. A payment for a cancelled order is logged as a warning, never applied.

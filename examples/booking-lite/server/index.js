@@ -181,9 +181,9 @@ async function createBooking(request, ctx) {
   if (!form) return json(invalid, { status: 400 });
 
   const now = Date.now();
-  // The transaction only groups these calls. In deployed apps it neither
-  // rolls back a write when a later step fails nor stops two requests from
-  // running at once, so the code below handles both itself.
+  // Don't rely on the transaction to stop two requests running at once or to
+  // undo the booking when a later step fails: the unique index below decides
+  // who gets the slot, and the code undoes a half-finished booking itself.
   const result = await ctx.data.transaction(async (tx) => {
     const slots = tx.collection("slots");
     const bookings = tx.collection("bookings");
@@ -210,7 +210,13 @@ async function createBooking(request, ctx) {
       const updated = await slots.update(form.slotId, { status: "booked", booked_by: booking.id });
       return { booking, slot: updated };
     } catch (error) {
-      // Undo the booking by hand so the slot can be booked again.
+      // Someone who lost the race for this slot may already have marked it
+      // booked for this booking (repairSlot). Then the booking stands.
+      const current = await slots.get(form.slotId).catch(() => null);
+      if (current?.status === "booked" && current.booked_by === booking.id) {
+        return { booking, slot: current };
+      }
+      // Otherwise undo the booking by hand so the slot can be booked again.
       await bookings.delete(booking.id);
       await ctx.log.error("booking undone", { slot_id: form.slotId, code: String(error?.code ?? "unknown") });
       return { response: json({ error: "booking_failed" }, { status: 503 }) };
