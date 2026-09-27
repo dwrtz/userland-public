@@ -21,6 +21,7 @@
 // 2. In server/index.js, delete the `import { demoMode } ...` line and change
 //    the last line to `export default createApp();`.
 // 3. Delete the `demo-listings` collection from manifest.userland.json.
+// 4. Delete tests/demo.test.ts.
 
 import { html } from "./views.js";
 import { toListing, withHistory } from "./listings.js";

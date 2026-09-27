@@ -18,7 +18,7 @@ Outputs:
 
 Steps:
 
-1. Remove demo mode first: delete `server/demo.js`, the `demoMode` import in `server/index.js`, the `demo-listings` collection in the manifest, and the "public demo" tests. Change the last line of `server/index.js` to `export default createApp();`.
+1. Remove demo mode first: delete `server/demo.js`, the `demoMode` import in `server/index.js`, the `demo-listings` collection in the manifest, and `tests/demo.test.ts`. Change the last line of `server/index.js` to `export default createApp();`. The "removing the demo" test checks these steps.
 2. Rename the app in the manifest, then update `BRAND` in `server/views.js`, the tokens at the top of `public/assets/loamwork.css`, the `LOGO` SVG, and `public/favicon.svg`.
 3. Change `CATEGORIES` and `JOB_TYPES` in `server/listings.js`. They are validated in code, so no data migration is needed.
 4. To add a listing field: declare it in the manifest, add limits in `FIELD_LIMITS`, copy it in `toListing`, add it to the form in `listingFields`, and add it to `PRIVATE_FIELDS` if the public must not see it.

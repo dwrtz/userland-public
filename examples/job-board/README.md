@@ -40,7 +40,8 @@ server/views.js          Page templates and the escaping helper
 server/demo.js           Demo mode for the public demo (delete it for your own board)
 public/assets/           Stylesheet and self-hosted fonts (Alegreya Sans, Fraunces; SIL OFL)
 public/favicon.svg       Logo mark
-tests/job-board.test.ts  Route, privacy, and owner-gate tests
+tests/job-board.test.ts  Route, privacy, owner-gate, and demo-removal tests
+tests/demo.test.ts       Demo mode tests (delete with server/demo.js)
 ```
 
 ## Routes
@@ -117,7 +118,9 @@ To remove the demo:
 1. Delete `server/demo.js`.
 2. In `server/index.js`, delete the `import { demoMode } ...` line and change the last line to `export default createApp();`.
 3. Delete the `demo-listings` collection from `manifest.userland.json`.
-4. Delete the `public demo` tests in `tests/job-board.test.ts`.
+4. Delete `tests/demo.test.ts` (the demo tests).
+
+The "removing the demo" test in `tests/job-board.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that posting, review, and the public board still work.
 
 ## Plan notes
 
