@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Harden the launch and capability examples after a security and abuse review:
+  - Owner forms in every server example accept posts only from the app's own address, and refuse other sites, other `*.apps.userland.fun` apps, and `null` origins. `blog-cms` shows its editor only to signed-in admins.
+  - Owner lists read every page instead of stopping at the first 100 or 500 rows (`booking-app`, `job-board`, `waitlist-app`, `invoice-generator`), with "Show more" or "Older" links where a page would get long.
+  - Public forms have per-email and overall limits that also hold when many requests arrive at once (each save is counted again afterwards and undone when over the limit), a hidden spam trap, and a plain page when a limit or the plan's row limit is reached instead of an error. Owners can delete or clear out old entries to stay under the Free plan's rows.
+  - `booking-app` blocks double booking with a unique hold for each half hour of a lesson, and confirming or reopening a request checks the calendar again. `invoice-generator` converts a quote to an invoice once and gives each document its own number. `booking-lite` answers `409 slot_unavailable` when two people book the same slot.
+  - `tiny-store` marks an order paid only for a completed, paid checkout event whose amount and currency match the order, and refuses orders larger than the stock. `webhook-automation` stores each event once by its `external_id` and no longer has a public event list. `ai-secret-tool` never logs provider errors that could quote the key.
+  - Server examples answer malformed or oversized bodies with `400`, `413` or `415` instead of `500`.
+  - Demo modes cap how much one visitor, and the whole demo, can store, remove old rows as they go, and warn visitors not to type real details. Following each README's demo-removal steps still leaves a passing test suite.
 - Example servers now answer `HEAD` like `GET`, with the same status and headers and no body. `waitlist-app`, `link-in-bio-app`, and the `blog-cms`, `booking-lite`, `server-notes`, `tiny-store`, and `webhook-automation` examples answered `HEAD` on their server pages with `404`. `booking-app`, `invoice-generator`, `job-board`, and `mini-crm` sent the page body with `HEAD`, and a signed-out `HEAD` on some owner pages got a `401` where `GET` redirects to sign-in. In `link-in-bio-app`, a `HEAD` on a link button no longer counts as a tap, and a `HEAD` on the demo's owner view gets the same redirect as `GET` without setting up a visitor copy of the sample data. Each example's tests check `HEAD` against `GET` with the new `expectHeadLikeGet` helper in `scripts/runtime-harness.ts`, and the `userland-runtime-code` skill now covers `HEAD`.
 
 ## 0.7.0 - 2026-09-27
