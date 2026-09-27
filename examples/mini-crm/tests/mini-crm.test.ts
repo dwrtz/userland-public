@@ -723,7 +723,7 @@ describe("turning demo mode off", () => {
         fs.writeFileSync(manifestPath, `${JSON.stringify(withoutDemoFields(JSON.parse(fs.readFileSync(manifestPath, "utf8"))), null, 2)}\n`);
         fs.rmSync(path.join(target, "tests/demo.test.ts"), { force: true }); // Step 4
 
-        const vitest = path.join(repoRoot, "node_modules/vitest/vitest.mjs");
+        const vitest = findVitest(EXAMPLE_DIR);
         try {
           execFileSync(process.execPath, [vitest, "run", path.relative(repoRoot, target)], {
             cwd: repoRoot,
@@ -740,3 +740,13 @@ describe("turning demo mode off", () => {
     120_000
   );
 });
+
+// Finds vitest the way Node resolves packages: in node_modules here or in any parent folder. The repo's
+// own install has it at the repo root, but a checkout inside another project may use that project's.
+function findVitest(from: string): string {
+  for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, "node_modules/vitest/vitest.mjs");
+    if (fs.existsSync(candidate)) return candidate;
+    if (path.dirname(dir) === dir) throw new Error(`vitest is not installed in ${from} or any folder above it.`);
+  }
+}
