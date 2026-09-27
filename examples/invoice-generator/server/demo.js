@@ -13,7 +13,7 @@
 // visitors to the demo address, and its desk keeps the normal owner sign-in.
 //
 // To remove demo mode from your copy:
-//   1. Delete this file.
+//   1. Delete this file and tests/demo.test.ts.
 //   2. In server/index.js, delete every line marked `// demo`.
 //   3. In manifest.userland.json, delete the "clear-demo" job.
 

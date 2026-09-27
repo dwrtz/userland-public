@@ -32,7 +32,7 @@ server/store.js          data access, validation, status rules, and money math
 server/views.js          server-rendered HTML for every page
 server/studio.js         business details: name, address, currency, numbering, services
 server/demo.js           demo mode for the public demo only (see below)
-tests/                   vitest tests on the shared fake runtime (scripts/runtime-harness.ts)
+tests/                   vitest tests on the shared fake runtime (scripts/runtime-harness.ts); demo.test.ts covers demo mode only
 ```
 
 - **Server-rendered pages.** Every page is plain HTML from `server/views.js` and works without JavaScript. `public/assets/app.js` only adds live totals, extra line rows, copy, and print buttons.
@@ -81,11 +81,11 @@ On the demo host, anyone can open the studio desk. Each visitor gets a private w
 
 To remove demo mode from your copy:
 
-1. Delete `server/demo.js`.
+1. Delete `server/demo.js` and `tests/demo.test.ts`.
 2. In `server/index.js`, delete every line that ends with `// demo`.
 3. In `manifest.userland.json`, delete the `jobs` section (the `clear-demo` job).
 
-The `workspace` field can stay; all real data lives in the `main` workspace. The "removing demo mode" test in `tests/` runs exactly these steps on a copy of `server/` and checks that every page still works, so keep lines you add for the demo marked the same way.
+The `workspace` field can stay; all real data lives in the `main` workspace. The "removing demo mode" test in `tests/invoice-generator.test.ts` runs exactly these steps on a copy of `server/` and checks that every page still works, so keep lines you add for the demo marked the same way.
 
 ## Adapt it
 

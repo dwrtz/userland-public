@@ -18,7 +18,7 @@ Outputs:
 Steps:
 
 1. Edit `server/studio.js` first. Keep money in integer cents.
-2. Remove demo mode unless the owner wants a public demo: delete `server/demo.js`, delete every line ending in `// demo` in `server/index.js`, and delete the `jobs` section in the manifest. Keep the `workspace` field; real data uses `main`. The "removing demo mode" test runs these steps on a copy, so run the tests afterwards.
+2. Remove demo mode unless the owner wants a public demo: delete `server/demo.js` and `tests/demo.test.ts`, delete every line ending in `// demo` in `server/index.js`, and delete the `jobs` section in the manifest. Keep the `workspace` field; real data uses `main`. The "removing demo mode" test runs these steps on a copy, so run the tests afterwards.
 3. Keep every `/desk` route behind `ownerGate`, which calls `ctx.auth.requireRole(request, "owner")`. Never add an admin route that skips it.
 4. Change fields in `manifest.userland.json` and `server/store.js` together. `where` and `order_by` fields must be in an index. The Free plan allows two collections with two indexes each; keep line items in the `json` field instead of adding a third collection.
 5. Keep status changes inside `TRANSITIONS` and conversions inside `ctx.data.transaction`.
