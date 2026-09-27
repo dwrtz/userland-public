@@ -1,0 +1,55 @@
+# Agent notes
+
+Goal: adapt this lesson booking app for a service business: a public page where customers request a time, and a signed-in owner desk for requests and services.
+
+Inputs:
+
+- Business name, contact email, address or "online only", and brand colors.
+- Services with length and price (lessons, sessions, appointments).
+- Opening hours, time zone, notice period, and how far ahead people can book.
+- The details to collect from customers, and who should sign in as the owner.
+
+Outputs:
+
+- `manifest.userland.json` with `auth` (`owner` role, no public sign-up) and the `services` and `bookings` collections.
+- `server/index.js`, `server/views.js`, and `server/schedule.js` adapted to the business.
+- `server/demo.js` removed for a real business (or `DEMO_HOSTS` emptied), so demo mode can never turn on.
+- Passing tests in `tests/booking-app.test.ts`.
+
+Steps:
+
+1. Ask the owner for the inputs above before changing code. Explain the plan in plain language: pages, who signs in, and what is saved.
+2. Demo mode turns on only for hosts in `DEMO_HOSTS` in `server/demo.js`. For a real business, remove demo mode (README.md lists the steps: the file, its `rc.demoMode` branches, and the `demo_*` fields and their place in the indexes) or empty that list. Everywhere else, `/studio` requires an app user with the `owner` role.
+3. Update `STUDIO` in `server/views.js`, `STUDIO_HOURS` in `server/schedule.js`, and `STARTER_SERVICES` in `server/index.js`. Rename "lesson" copy to fit the business.
+4. Keep every `where` and `order_by` field listed in a collection index. Userland rejects unindexed queries.
+5. Keep the double-booking check: list bookings and re-check the slot inside `ctx.data.transaction` right before `create`.
+6. Test with `npx vitest run examples/booking-app` from the repo root.
+7. Publish with `userland apps publish <dir> --message "..."`, then create the owner invite with `POST /v0/apps/:app_id/admin-invites` and `{"roles":["owner"]}`. Send the owner the `invite_url`.
+8. Check `userland apps events "$APP_ID" --severity error` after the first real booking. Record `app_id` and `release_id` in the project README.
+
+Safety:
+
+- Never leave an owner route open. Use `ctx.auth.currentUser(request)` and check for the `owner` role (or `ctx.auth.requireRole`) on every `/studio` route, including POST routes.
+- Do not turn on `public_signup`. It is a paid feature and lets anyone create an account.
+- Escape every stored or submitted value with `esc()` before it goes into HTML.
+- Keep length limits, email checks, and the honeypot field on public forms.
+- Log ids and statuses with `ctx.log`, not names, emails, or phone numbers.
+- Keep API keys and secrets out of `public/` and out of HTML. Use `ctx.secrets` from server code if you add email or payment services.
+- Stay on the Free plan unless the owner agrees to a paid feature (named address, custom domain, traffic analytics, scheduled reminders).
+
+## Userland docs
+
+- Agent context: https://docs.userland.fun/llms.txt
+- From an example: https://docs.userland.fun/quickstarts/from-example
+- Resource manifest: https://docs.userland.fun/reference/resource-manifest
+- Runtime ctx: https://docs.userland.fun/reference/runtime-ctx
+- CLI: https://docs.userland.fun/reference/cli
+- Agent skills: https://docs.userland.fun/reference/agent-skills
+- Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+
+Capability docs:
+
+- Auth: https://docs.userland.fun/guides/auth
+- Data: https://docs.userland.fun/guides/data
+- Rollback: https://docs.userland.fun/guides/rollback
+- App Analytics: https://docs.userland.fun/guides/app-analytics

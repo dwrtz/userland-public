@@ -3,6 +3,20 @@
   "userland_api_version": "v0",
   "examples": [
     {
+      "slug": "booking-app",
+      "title": "Booking App",
+      "summary": "Lesson booking for a piano and voice studio: public booking page, confirmation, and a signed-in owner inbox for requests and lessons.",
+      "path": "examples/booking-app",
+      "capabilities": ["server", "auth", "data", "transactions", "rollback"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://booking-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/booking-app/"
+    },
+    {
       "slug": "hello-static",
       "title": "Hello Static",
       "summary": "Small static app with no server runtime or managed resources.",
