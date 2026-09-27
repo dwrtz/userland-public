@@ -67,8 +67,8 @@ function fermata(className = "ornament") {
  * The page shell. `chrome` carries the demo settings:
  * { demo: boolean, link(path): string, examplePageUrl: string }.
  */
-export function layout({ title, description = "", body, chrome, area = "public", current = "", user = null }) {
-  const robots = chrome.demo || area === "studio" ? `\n    <meta name="robots" content="noindex,follow">` : "";
+export function layout({ title, description = "", body, chrome, area = "public", current = "", user = null, noindex = false }) {
+  const robots = noindex || chrome.demo || area === "studio" ? `\n    <meta name="robots" content="noindex,follow">` : "";
   const pageTitle = title ? `${title} · ${STUDIO.fullName}` : `${STUDIO.fullName} · ${STUDIO.tagline}`;
   return `<!doctype html>
 <html lang="en">
@@ -97,9 +97,9 @@ ${body}
 
 function demoRibbon(area, chrome) {
   if (area === "studio") {
-    return `<div class="ribbon" role="note"><div class="wrap ribbon-inner"><p><strong>You're viewing the owner's side, with no sign-in for this demo.</strong> Sample bookings are made up. Your changes are visible only to you and cleared after a day.</p></div></div>`;
+    return `<div class="ribbon" role="note"><div class="wrap ribbon-inner"><p><strong>You're viewing the owner's side, with no sign-in for this demo.</strong> Sample bookings are made up. Your changes are cleared after a day. Anyone with this page's link can see them, so use made-up details.</p></div></div>`;
   }
-  return `<div class="ribbon" role="note"><div class="wrap ribbon-inner"><p><strong>This is a demo booking site</strong> for a made-up music studio. Request a lesson, then see what the owner sees.</p><a href="${esc(chrome.link("/studio"))}">Open the owner's side</a></div></div>`;
+  return `<div class="ribbon" role="note"><div class="wrap ribbon-inner"><p><strong>This is a demo booking site</strong> for a made-up music studio. Request a lesson, then see what the owner sees. Use made-up details: anyone with this page's link can see what you type.</p><a href="${esc(chrome.link("/studio"))}">Open the owner's side</a></div></div>`;
 }
 
 function publicHeader(chrome, current) {
@@ -400,25 +400,57 @@ export function messagePage({ title, text, chrome, linkHref = "/", linkLabel = "
 // ---------------------------------------------------------------------------
 // Studio (owner) pages
 
+// Each tab is one status, read a page at a time, so no request is ever out of reach.
 export const INBOX_TABS = [
-  { key: "new", label: "New", statuses: ["new"] },
-  { key: "confirmed", label: "Confirmed", statuses: ["confirmed"] },
-  { key: "closed", label: "Declined & cancelled", statuses: ["declined", "cancelled"] },
-  { key: "all", label: "All", statuses: ["new", "confirmed", "declined", "cancelled"] }
+  { key: "new", label: "New", empty: "You're all caught up. New requests will appear here." },
+  { key: "upcoming", label: "Upcoming", empty: "No confirmed lessons coming up." },
+  { key: "past", label: "Past lessons", empty: "No past lessons yet.", clearOut: "lessons" },
+  { key: "declined", label: "Declined", empty: "No declined requests.", clearOut: "declined requests" },
+  { key: "cancelled", label: "Cancelled", empty: "No cancelled lessons.", clearOut: "cancelled lessons" }
 ];
 
-export function inboxPage({ bookings, tab, counts, transitions, updatedId, chrome, isSample, now }) {
+/** The inbox tab a booking is listed under. */
+export function tabFor(booking, now) {
+  if (booking.status === "confirmed") return Date.parse(booking.ends_at) > now.getTime() ? "upcoming" : "past";
+  return booking.status;
+}
+
+function inboxNotice({ notice, updated, clearOut, tab }) {
+  if (notice.kind === "taken") return `<p class="notice notice-warn" role="status">Someone else has that time now, so this request can't be confirmed or moved back to new.</p>`;
+  if (notice.kind === "deleted") return `<p class="notice" role="status">Request deleted.</p>`;
+  if (notice.kind === "cleared") {
+    if (notice.count === 0) return `<p class="notice" role="status">Nothing to clear out. Nothing here is more than ${clearOut.olderThanDays} days old.</p>`;
+    const more = notice.more ? ` There may be more. Select <strong>Clear out</strong> again to keep going.` : "";
+    return `<p class="notice" role="status">Deleted ${notice.count} old ${esc(tab.clearOut ?? "requests")}.${more}</p>`;
+  }
+  if (updated) return `<p class="notice" role="status">${esc(updated.customer_name)}'s request is now <strong>${esc(STATUS_LABELS[updated.status].toLowerCase())}</strong>.</p>`;
+  return "";
+}
+
+export function inboxPage({ bookings, tab, counts, paused, nextPage, firstPage, transitions, canDelete, updatedId, notice, clearOut, chrome, isSample, now }) {
   const link = chrome.link;
-  const tabs = INBOX_TABS.map(
-    (item) => `<li><a href="${esc(link(`/studio?show=${item.key}`))}"${item.key === tab.key ? ' aria-current="page"' : ""}>${item.label} <span class="count">${counts[item.key]}</span></a></li>`
-  ).join("");
+  const tabs = INBOX_TABS.map((item) => {
+    const count = counts[item.key] === undefined ? "" : ` <span class="count">${counts[item.key]}</span>`;
+    return `<li><a href="${esc(link(`/studio?show=${item.key}`))}"${item.key === tab.key ? ' aria-current="page"' : ""}>${item.label}${count}</a></li>`;
+  }).join("");
   const updated = updatedId ? bookings.find((booking) => booking.id === updatedId) : null;
-  const notice = updated
-    ? `<p class="notice" role="status">${esc(updated.customer_name)}'s request is now <strong>${esc(STATUS_LABELS[updated.status].toLowerCase())}</strong>.</p>`
+  const pausedNote = paused
+    ? `<p class="notice notice-warn" role="status"><strong>New requests are paused.</strong> ${counts.new} requests are waiting for a reply. Confirm, decline, or delete some and the booking page opens again.</p>`
     : "";
   const cards = bookings.length
-    ? bookings.map((booking) => bookingCard({ booking, tab, transitions, chrome, isSample, now })).join("\n")
-    : `<li class="empty-state">${fermata()}<p>${tab.key === "new" ? "You're all caught up. New requests will appear here." : "Nothing here yet."}</p></li>`;
+    ? bookings.map((booking) => bookingCard({ booking, tab, transitions, canDelete, chrome, isSample, now })).join("\n")
+    : `<li class="empty-state">${fermata()}<p>${firstPage ? tab.empty : "No more requests here."}</p></li>`;
+  const pager = [
+    firstPage ? "" : `<a class="text-link" href="${esc(link(`/studio?show=${tab.key}`))}">Back to the start</a>`,
+    nextPage ? `<a class="button button-quiet button-small" href="${esc(link(`/studio?show=${tab.key}&after=${encodeURIComponent(nextPage)}`))}">Show more</a>` : ""
+  ].filter(Boolean);
+  const tidy = tab.clearOut
+    ? `<form class="tidy" method="post" action="${esc(link("/studio/bookings/clear-out"))}">
+          <input type="hidden" name="show" value="${esc(tab.key)}">
+          <p><strong>Make room.</strong> Your plan saves a limited number of requests. Clear out ${esc(tab.clearOut)} from more than ${clearOut.olderThanDays} days ago, ${clearOut.batch} at a time.</p>
+          <button class="button button-quiet button-small" type="submit">Clear out</button>
+        </form>`
+    : "";
   const upcoming = counts.upcoming;
   return `      <div class="wrap studio-head">
         <div>
@@ -427,11 +459,13 @@ export function inboxPage({ bookings, tab, counts, transitions, updatedId, chrom
         </div>
       </div>
       <div class="wrap">
-        ${notice}
+        ${pausedNote}${inboxNotice({ notice, updated, clearOut, tab })}
         <nav aria-label="Filter requests"><ul class="tabs">${tabs}</ul></nav>
         <ul class="bookings">
 ${cards}
         </ul>
+        ${pager.length ? `<nav class="pager" aria-label="More requests">${pager.join("")}</nav>` : ""}
+        ${tidy}
       </div>`;
 }
 
@@ -439,18 +473,24 @@ function requestedAt(booking) {
   return (Array.isArray(booking.history) && booking.history[0]?.at) || booking.created_at;
 }
 
-function bookingCard({ booking, tab, transitions, chrome, isSample, now }) {
+/** A mailto: link for a stored address. Encoding keeps anything unusual in it from adding recipients or text. */
+function mailto(email) {
+  return `mailto:${encodeURIComponent(String(email ?? "")).replace("%40", "@")}`;
+}
+
+function bookingCard({ booking, tab, transitions, canDelete, chrome, isSample, now }) {
   const when = describeInstant(booking.starts_at);
-  const actions = (transitions[booking.status] ?? [])
-    .map(
-      (next) => `<form method="post" action="${esc(chrome.link(`/studio/bookings/${encodeURIComponent(booking.id)}/status`))}">
-                <input type="hidden" name="status" value="${next}">
-                <input type="hidden" name="show" value="${esc(tab.key)}">
-                <button class="button ${next === "confirmed" ? "" : "button-quiet"} button-small" type="submit">${ACTION_LABELS[next]}<span class="visually-hidden"> ${esc(booking.customer_name)}</span></button>
-              </form>`
-    )
-    .join("");
-  const mine = chrome.demo && !isSample(booking) ? `<span class="tag">Your request</span>` : "";
+  const action = (path, fields, label, primary = false) => `<form method="post" action="${esc(chrome.link(path))}">
+                ${Object.entries(fields)
+                  .map(([name, value]) => `<input type="hidden" name="${name}" value="${esc(value)}">`)
+                  .join("")}
+                <button class="button ${primary ? "" : "button-quiet"} button-small" type="submit">${label}<span class="visually-hidden"> ${esc(booking.customer_name)}</span></button>
+              </form>`;
+  const moves = (transitions[booking.status] ?? []).map((next) => action(`/studio/bookings/${encodeURIComponent(booking.id)}/status`, { status: next, show: tab.key }, ACTION_LABELS[next], next === "confirmed"));
+  const sample = chrome.demo && isSample(booking);
+  const remove = canDelete(booking) && !sample ? [action(`/studio/bookings/${encodeURIComponent(booking.id)}/delete`, { show: tab.key }, "Delete")] : [];
+  const actions = [...moves, ...remove].join("");
+  const mine = chrome.demo && !sample ? `<span class="tag">Your request</span>` : "";
   return `          <li class="booking" id="booking-${esc(booking.id)}">
             <div class="date-tile" aria-hidden="true"><span>${esc(when.dayName)}</span><strong>${esc(when.dayNumber)}</strong><span>${esc(when.month)}</span></div>
             <div class="booking-body">
@@ -462,7 +502,7 @@ function bookingCard({ booking, tab, transitions, chrome, isSample, now }) {
               <p class="booking-when"><span class="visually-hidden">${esc(when.dateLong)}, </span>${esc(when.clock)} · ${esc(booking.service_name)} · ${booking.duration_minutes} min · ${formatPrice(booking.price_cents)}</p>
               <p class="booking-student">${esc(booking.student_details)}</p>
               ${booking.message ? `<p class="booking-message">“${esc(booking.message)}”</p>` : ""}
-              <p class="booking-contact"><a href="mailto:${esc(booking.customer_email)}">${esc(booking.customer_email)}</a>${booking.customer_phone ? ` · <a href="tel:${esc(booking.customer_phone.replace(/[^\d+]/gu, ""))}">${esc(booking.customer_phone)}</a>` : ""}<span class="booking-received">Requested ${esc(timeAgo(requestedAt(booking), now))} · <span class="ref">${esc(booking.ref)}</span></span></p>
+              <p class="booking-contact"><a href="${esc(mailto(booking.customer_email))}">${esc(booking.customer_email)}</a>${booking.customer_phone ? ` · <a href="tel:${esc(booking.customer_phone.replace(/[^\d+]/gu, ""))}">${esc(booking.customer_phone)}</a>` : ""}<span class="booking-received">Requested ${esc(timeAgo(requestedAt(booking), now))} · <span class="ref">${esc(booking.ref)}</span></span></p>
             </div>
             ${actions ? `<div class="booking-actions">${actions}</div>` : ""}
           </li>`;
@@ -538,7 +578,7 @@ export function activityPage({ entries, chrome, now }) {
           return `<li class="activity-item activity-${esc(entry.status)}">
             <span class="activity-dot" aria-hidden="true"></span>
             <div>
-              <p class="activity-what"><strong>${label}</strong>: <a href="${esc(chrome.link(`/studio?show=all#booking-${booking.id}`))}">${esc(booking.customer_name)}</a>, ${esc(booking.service_name)} on ${esc(when.dayName)} ${esc(when.dayNumber)} ${esc(when.month)} at ${esc(when.clock)}</p>
+              <p class="activity-what"><strong>${label}</strong>: <a href="${esc(chrome.link(`/studio?show=${tabFor(booking, now)}#booking-${booking.id}`))}">${esc(booking.customer_name)}</a>, ${esc(booking.service_name)} on ${esc(when.dayName)} ${esc(when.dayNumber)} ${esc(when.month)} at ${esc(when.clock)}</p>
               <p class="activity-when"><time datetime="${esc(entry.at)}">${esc(timeAgo(entry.at, now))}</time></p>
             </div>
           </li>`;
@@ -548,7 +588,7 @@ export function activityPage({ entries, chrome, now }) {
   return `      <div class="wrap studio-head">
         <div>
           <h1>Activity</h1>
-          <p class="lead">Every request and status change, newest first.</p>
+          <p class="lead">The latest requests and status changes, newest first.</p>
         </div>
       </div>
       <div class="wrap activity-grid">
@@ -559,6 +599,10 @@ ${items}
           <section>
             <h2>The full activity log</h2>
             <p>Each request, status change, and lesson edit is also written to your app's activity log in Userland, along with any errors. Open the app in your Userland dashboard, or ask your coding agent to check the log when something looks wrong.</p>
+          </section>
+          <section>
+            <h2>Room for requests</h2>
+            <p>The Free plan saves up to 1,000 items, and each request uses a few while its lesson is still to come. Every few months, clear out old requests from the Past lessons, Declined, and Cancelled tabs.</p>
           </section>
           <section>
             <h2>Visitor numbers</h2>
@@ -574,4 +618,20 @@ export function forbiddenPage({ chrome }) {
     text: "You're signed in, but this account can't open the studio desk. Ask the owner to invite you.",
     chrome
   });
+}
+
+/** Shown instead of saving a request when REQUEST_LIMITS (index.js) is reached. */
+export function requestLimitPage({ reason, chrome }) {
+  const text =
+    reason === "email"
+      ? `You already have a few requests waiting. ${STUDIO.teacher} will reply to those first. To ask about more times, email ${STUDIO.email}.`
+      : `We have a lot of requests to answer right now, so online booking is paused. Please email ${STUDIO.email} and ${STUDIO.teacher} will find you a time.`;
+  return messagePage({ title: reason === "email" ? "Your requests are on their way" : "Please email us to book", text, chrome });
+}
+
+/** Shown when the plan's storage is full and nothing new can be saved. */
+export function storageFullPage({ owner, chrome }) {
+  return owner
+    ? messagePage({ title: "Storage is full", text: "Your plan's storage is full, so nothing new can be saved. Clear out old requests from the Past lessons, Declined, and Cancelled tabs to make room.", chrome, linkHref: "/studio?show=past", linkLabel: "Go to past lessons" })
+    : messagePage({ title: "Online booking is paused", text: `We can't take new requests online right now. Please email ${STUDIO.email} and ${STUDIO.teacher} will find you a time.`, chrome });
 }

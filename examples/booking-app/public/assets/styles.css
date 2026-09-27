@@ -1233,6 +1233,49 @@ dd {
   font-size: 0.9375rem;
 }
 
+.notice-warn {
+  border-left-color: var(--brass);
+  background: var(--brass-tint);
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin-top: 20px;
+  font-family: var(--sans);
+}
+
+.pager .button:only-child {
+  margin-left: auto;
+}
+
+.tidy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin-top: 32px;
+  padding: 16px 20px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  font-family: var(--sans);
+  font-size: 0.9375rem;
+}
+
+.tidy p {
+  flex: 1 1 280px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.tidy strong {
+  color: var(--ink);
+}
+
 .tabs {
   display: flex;
   flex-wrap: wrap;

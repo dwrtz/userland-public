@@ -18,6 +18,8 @@
 // - Deletes visitor rows a day after they were saved (`demo_expires_at`), and
 //   marks every page noindex with a "Built with Userland" note that links to
 //   the example page.
+// - Caps how much one visitor can save (MAX_VISITOR_ROWS), so one visit can't
+//   fill the demo's storage for everyone else.
 //
 // Demo mode is on only for requests to the hosts in DEMO_HOSTS: the demo's
 // named address and, on purpose, the demo app's own apps.userland.fun address,
@@ -47,6 +49,9 @@ export const EXAMPLE_PAGE_URL = "https://userland.fun/examples/booking-app/";
 const KEY_PARAM = "v";
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/u;
 const KEEP_VISITOR_ROWS_HOURS = 24;
+// Rows one visitor can have at once, across both collections: the 9 sample
+// copies, plus their own requests (each with a time hold or two) and lessons.
+export const MAX_VISITOR_ROWS = 60;
 const SWEEP_BATCH = 20;
 const DEMO_COLLECTIONS = ["services", "bookings"];
 
@@ -92,6 +97,18 @@ function currentSampleBookings(starters, now) {
   return sampleBookings(sampleServices(starters), now, pickSlot);
 }
 
+export const VISITOR_LIMIT_MESSAGE = {
+  title: "That's plenty for one demo visit",
+  text: "You've added a lot in this visit. Everything you added is cleared a day after you added it, so there's room again tomorrow."
+};
+
+/** True when this visitor has saved as much as one demo visit may. */
+export async function atVisitorLimit(rc) {
+  if (!rc.key) return false;
+  const [bookings, services] = await Promise.all([visitorBookingRows(rc), visitorRows(rc.ctx.data.collection("services"), rc.key)]);
+  return bookings.length + services.length >= MAX_VISITOR_ROWS;
+}
+
 /** The lessons a visitor sees: the samples until they change one, then their own copies. */
 export function visitorServices(rows, starters) {
   return rows.length === 0 ? sampleServices(starters) : withoutExtraCopies(rows);
@@ -103,6 +120,31 @@ export function visitorServices(rows, starters) {
  */
 export function visitorBookings(rows, starters, now) {
   return rows.some(isSample) ? withoutExtraCopies(rows) : [...currentSampleBookings(starters, now), ...rows];
+}
+
+/** The visitor's rows in `bookings` (requests and time holds), read once per request. */
+function visitorBookingRows(rc) {
+  if (!rc.key) return Promise.resolve([]);
+  rc.demoBookingRows ??= visitorRows(rc.ctx.data.collection("bookings"), rc.key);
+  return rc.demoBookingRows;
+}
+
+/** Every booking the visitor sees: see visitorBookings. A visitor's rows are few (MAX_VISITOR_ROWS), so they are read in one go. */
+export async function allBookings(rc, starters) {
+  const rows = (await visitorBookingRows(rc)).filter((row) => row.status !== "hold");
+  return visitorBookings(rows, starters, rc.now);
+}
+
+/**
+ * The demo's version of findBookings in index.js: one page of the visitor's
+ * bookings with `status`, ordered by lesson time. The cursor is an offset.
+ */
+export async function findBookings(rc, status, { direction, cursor, limit }, starters) {
+  const sign = direction === "desc" ? -1 : 1;
+  const matching = (await allBookings(rc, starters)).filter((booking) => booking.status === status).sort((a, b) => a.starts_at.localeCompare(b.starts_at) * sign);
+  const offset = Number.parseInt(cursor ?? "0", 10) || 0;
+  const next = offset + limit;
+  return { rows: matching.slice(offset, next), cursor: next < matching.length ? String(next) : null };
 }
 
 /**
@@ -121,6 +163,7 @@ export async function prepareChange(rc, collectionName, starters, newRef) {
     sweepDemoData(rc.ctx.data, rc.now),
     copySamplesForVisitor(rc.ctx.data.collection(collectionName), isBookings ? currentSampleBookings(starters, rc.now) : sampleServices(starters), rc.key, toRow, rc.now)
   ]);
+  rc.demoBookingRows = null; // Read again after the copies were made.
   return copies;
 }
 

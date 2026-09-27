@@ -11,8 +11,10 @@ Lesson booking for **Wrenhouse Music Studio**, a made-up piano and voice teacher
 - Server-rendered pages from `server/index.js`, with no client-side JavaScript.
 - Managed data: `services` (lessons) and `bookings` (requests), declared in `manifest.userland.json`.
 - Form handling with validation, length limits, a honeypot field, and escaped output.
-- Double-booking protection: the requested time is checked again inside `ctx.data.transaction` right before the booking is saved.
-- App-user auth: `/studio` pages require a signed-in app user with the `owner` role.
+- Double-booking protection with a unique index: each request holds its half-hour blocks of the calendar, and Userland allows only one hold per block, even when two people ask at the same moment (see [Double-booking protection](#double-booking-protection)).
+- Limits on unanswered requests, so a script can't hold every open time or fill the plan's storage (see [Spam and storage](#spam-and-storage)).
+- Owner lists that read one status at a time with indexed queries and page through everything, however long the studio's history gets.
+- App-user auth: `/studio` pages require a signed-in app user with the `owner` role, and owner forms must come from the app's own pages (checked with the `Origin` header).
 - App events: every request, status change, and lesson edit is logged with `ctx.log` (ids only, no contact details).
 - Release history and rollback with the Userland CLI.
 
@@ -23,9 +25,11 @@ Lesson booking for **Wrenhouse Music Studio**, a made-up piano and voice teacher
 | `GET /` | Public | Studio home and lesson list |
 | `GET /book` | Public | Booking form (`?service=` and `?date=` pick the lesson and day) |
 | `POST /book` | Public | Validate and save a request, then redirect to the confirmation |
-| `GET /booked?ref=` | Public | Confirmation for one request |
-| `GET /studio` | Owner | Booking inbox with New, Confirmed, Declined & cancelled, and All tabs |
+| `GET /booked?ref=` | Public | Confirmation for one request (not indexed by search engines) |
+| `GET /studio` | Owner | Booking inbox with New, Upcoming, Past lessons, Declined, and Cancelled tabs (`?show=`), 25 per page with **Show more** (`?after=`) |
 | `POST /studio/bookings/:id/status` | Owner | Confirm, decline, cancel, or reopen a request |
+| `POST /studio/bookings/:id/delete` | Owner | Delete a request (not a confirmed lesson that is still to come) |
+| `POST /studio/bookings/clear-out` | Owner | Delete past lessons, declined, or cancelled requests from more than 30 days ago, 12 per click |
 | `GET /studio/lessons` | Owner | Edit lessons, lengths, prices, and visibility |
 | `POST /studio/lessons` | Owner | Add a lesson |
 | `POST /studio/lessons/:id` | Owner | Save a lesson |
@@ -42,15 +46,32 @@ Sign-in, sign-out, and invite acceptance use Userland's built-in `/_userland/aut
 - `server/schedule.js`: opening hours, time zone, notice period, and time slots.
 - `server/demo.js`: demo-only behavior (see [Demo mode](#demo-mode)).
 - `public/assets/`: stylesheet and self-hosted fonts (Newsreader and Instrument Sans, SIL Open Font License).
-- `tests/booking-app.test.ts`: the booking flow, validation, the owner gate, the owner's changes, and removing demo mode.
-- `tests/demo.test.ts`: demo mode only, including privacy between demo visitors and clean-up.
+- `tests/booking-app.test.ts`: the booking flow, validation, the owner gate, the owner's changes, double booking under concurrent requests, long histories and paging, request limits, and removing demo mode.
+- `tests/demo.test.ts`: demo mode only, including privacy between demo visitors, the per-visitor cap, and clean-up.
 
 ## Make it yours
 
 1. Studio name, teacher, address, and email: `STUDIO` in `server/views.js`.
 2. Opening hours, time zone, notice period, and booking window: `STUDIO_HOURS` in `server/schedule.js`.
 3. Starter lessons: `STARTER_SERVICES` in `server/index.js`. After launch, edit lessons from `/studio/lessons`.
-4. Colors and fonts: the tokens at the top of `public/assets/styles.css`.
+4. Limits on unanswered requests: `REQUEST_LIMITS` in `server/index.js`. What "Clear out" deletes: `CLEAR_OUT`.
+5. Colors and fonts: the tokens at the top of `public/assets/styles.css`.
+
+## Double-booking protection
+
+Every request that holds a time (`new` or `confirmed`) owns one hold row per half-hour block its lesson touches. Hold rows live in the `bookings` collection with `status: "hold"`, a `hold` key such as `|2026-10-01T22:00:00.000Z` (scope and block start), and `hold_for` (the request's reference). The `by_hold` index makes `hold` unique, and Userland enforces unique values atomically, so when two people ask for overlapping times at the same moment only one can create the holds. The other gets `unique_conflict` and sees "Sorry, that time was just taken."
+
+`ctx.data.transaction` groups the writes, but it does not stop two requests from running at once, so it can't prevent double booking by itself. The list check before saving is only there for a friendly message in the usual case.
+
+Holds are given back when a request is declined, cancelled, or deleted, and taken again when the owner confirms a request or moves it back to new. If someone else has the time by then, the owner sees "Someone else has that time now" and nothing changes. Holds for lessons that are over are deleted a few at a time on each new request.
+
+Every query for requests filters on `status`, so hold rows never show up as requests. Keep it that way if you add pages.
+
+## Spam and storage
+
+The public form has a hidden honeypot field, and `REQUEST_LIMITS` in `server/index.js` caps unanswered requests: 3 from one email address, 15 that arrived in the last 24 hours, and 30 in total. When a cap is reached, the booking page asks people to email the studio, and the owner's inbox says booking is paused until some requests are confirmed, declined, or deleted. Userland doesn't pass visitors' IP addresses to app code, so there is no per-visitor limit beyond the email address.
+
+The Free plan saves up to 1,000 rows across both collections. Each request is one row, plus one to three holds while its lesson is still to come. From the owner's side, delete spam from the New tab, and every few months select **Clear out** on the Past lessons, Declined, and Cancelled tabs. If the plan is full anyway, visitors see "Online booking is paused" with the studio's email address instead of an error.
 
 ## Demo mode
 
@@ -59,6 +80,8 @@ The public demo at https://booking-demo.apps.userland.fun/ lets anyone open the 
 - Each visitor gets a random key the first time they submit a form. Their bookings and edits are stored with that key and shown only to them. Everyone else sees made-up sample data.
 - The first owner-side change copies the samples into the visitor's own set (`demo_copy_of` records which sample each copy came from), so their changes never reach anyone else. If a double-click copies a sample twice, the oldest copy is the one shown and changed.
 - Every visitor row gets a `demo_expires_at` time a day ahead. Each demo write deletes a batch of expired rows, reading them oldest-expiry first so none are missed however busy the demo gets.
+- One visitor can have at most `MAX_VISITOR_ROWS` rows at a time, so a single visit can't fill the demo's storage. Sample bookings can't be deleted.
+- The ribbon asks visitors to use made-up details, since anyone with a page's link (which carries the key) can see them.
 - Every page is marked `noindex` with a "Built with Userland" note.
 
 **Demo mode only turns on at the addresses in `DEMO_HOSTS`** (the Userland demo deployment). On any other address, including your app's own `*.apps.userland.fun` origin and your custom domain, the owner pages require sign-in, public pages are indexable, and the demo notes disappear. A copy of this example is never published with an open owner desk.
@@ -127,7 +150,7 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 
 ## Plans
 
-The manifest publishes on the **Free** plan: server routes, app-user auth with one role and no public sign-up, and two data collections with two indexes each. Free includes up to 1,000 saved rows and 10,000 requests a month.
+The manifest publishes on the **Free** plan: server routes, app-user auth with one role and no public sign-up, and two data collections (`services` with one index, `bookings` with two, one of them unique). Free includes up to 1,000 saved rows and 10,000 requests a month; see [Spam and storage](#spam-and-storage) for keeping bookings under the row limit.
 
 Paid plans add things around the app, not in the manifest: a named address such as `your-studio.apps.userland.fun` or your own domain (Starter and up), and traffic analytics for visits, popular pages, and referrers (Starter and up). Adding email reminders with a scheduled job would also need Starter.
 
