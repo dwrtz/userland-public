@@ -42,8 +42,8 @@
             "published_at": "datetime"
           },
           "indexes": [
-            { "name": "by_status", "fields": ["status", "published_at"] },
-            { "name": "by_submitted", "fields": ["submitted_at"] }
+            { "name": "by_status", "fields": ["status", "category", "job_type", "published_at"] },
+            { "name": "by_submitted", "fields": ["status", "submitted_at"] }
           ],
           "access": {
             "read": "server_only",
@@ -67,7 +67,7 @@
             "contact_email": "string",
             "status": {
               "type": "enum",
-              "values": ["pending", "approved", "rejected", "closed"]
+              "values": ["pending", "approved", "rejected", "closed", "deleted"]
             },
             "featured": "boolean",
             "owner_note": "string",

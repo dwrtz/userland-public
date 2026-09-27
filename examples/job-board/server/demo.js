@@ -10,7 +10,13 @@
 //   Userland only passes its own sign-in cookie through to server code.
 // - Listings a visitor creates, and any change they make to a sample listing,
 //   are saved in the `demo-listings` collection under that key. Nobody without
-//   the key can see them, and they are deleted after a day (see expires_at).
+//   the key can see them. They stop showing a day later (see expires_at) and are
+//   deleted the next time anyone uses the demo.
+// - Each key can save up to MAX_ROWS_PER_VISITOR rows. The whole demo keeps
+//   about MAX_ACTIVE_ROWS unexpired rows: once it's full, each new save removes
+//   the oldest demo rows instead of turning visitors away, so a script that
+//   skips the key can't fill the demo's storage or lock anyone out. It only
+//   makes older demo changes disappear sooner. (See saveRow() below.)
 // - Demo pages carry a noindex tag and a "Built with Userland" note.
 //
 // Demo mode only switches on for the hostnames in DEMO_HOSTS, so a copy of this
@@ -33,11 +39,23 @@ const DEMO_HOSTS = new Set(["job-board-demo.apps.userland.fun", "4fz14jppml2y13c
 const EXAMPLE_PAGE = "https://userland.fun/examples/job-board/";
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/u;
 const MAX_ROWS_PER_VISITOR = 30;
+const MAX_ACTIVE_ROWS = 200;
+// Once the demo is full, each save removes up to this many of the oldest rows.
+const EVICT_PER_SAVE = 2;
+// When many saves at once push the demo further over, each save takes back up
+// to this many of the newest extra rows.
+const TRIM_PER_SAVE = 5;
+// "Delete declined listings" in the demo handles this many per press.
+const DEMO_BULK_DELETE_MAX = 10;
 const KEEP_FOR_MS = 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 class DemoLimitError extends Error {
   name = "DemoLimitError";
+  constructor(reason) {
+    super(reason === "busy" ? "Demo is busy." : "Demo limit reached.");
+    this.reason = reason;
+  }
 }
 
 function newVisitorKey() {
@@ -286,87 +304,192 @@ export function sampleListings(now = Date.now()) {
 
 function demoStore(ctx, visitor) {
   const rows = ctx.data.collection("demo-listings");
+  let own = null; // this visitor's unexpired rows, read once per request
+  let swept = false;
 
   async function mine() {
     if (!visitor) return [];
-    const page = await rows.list({
-      where: { visitor },
-      order_by: [{ field: "submitted_at", direction: "desc" }],
-      limit: 100
-    });
-    return page.rows;
+    if (!own) {
+      const now = new Date().toISOString();
+      const page = await rows.list({
+        where: { visitor },
+        order_by: [{ field: "submitted_at", direction: "desc" }],
+        limit: 100
+      });
+      own = page.rows.filter((row) => !row.expires_at || row.expires_at > now);
+    }
+    return own;
+  }
+
+  // Clean up expired rows once per request, on page views as well as changes,
+  // so what visitors typed doesn't linger on a quiet demo. A failed cleanup
+  // never breaks the page.
+  async function sweep() {
+    if (swept) return;
+    swept = true;
+    try {
+      await deleteExpired(rows);
+    } catch (error) {
+      await ctx.log.info("demo cleanup skipped", { message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   // Samples (with this visitor's changes applied) plus the visitor's own listings.
   async function everything() {
-    const own = await mine();
-    const changed = new Map(own.filter((row) => row.source_id).map((row) => [row.source_id, row]));
+    await sweep();
+    const saved = await mine();
+    const changed = new Map(saved.filter((row) => row.source_id).map((row) => [row.source_id, row]));
     const samples = sampleListings().map((sample) => (changed.has(sample.id) ? { ...toListing(changed.get(sample.id)), id: sample.id } : sample));
-    const created = own.filter((row) => !row.source_id).map(toListing);
-    return { own, listings: [...created, ...samples] };
+    const created = saved.filter((row) => !row.source_id).map(toListing);
+    // A sample the visitor deleted is kept as a copy marked "deleted" and hidden.
+    return [...created, ...samples].filter((listing) => listing.status !== "deleted");
   }
 
   function requireVisitor() {
     if (!visitor) throw new Error("Demo changes need a visitor key.");
   }
 
-  return {
-    async listLive() {
-      const { listings } = await everything();
-      return listings.filter((listing) => listing.status === "approved").sort((a, b) => b.published_at.localeCompare(a.published_at));
+  // Save a new row for this visitor, keeping the demo near MAX_ACTIVE_ROWS.
+  async function saveRow(fields) {
+    const saved = await mine();
+    if (saved.length >= MAX_ROWS_PER_VISITOR) throw new DemoLimitError("visitor");
+    await sweep();
+    let row;
+    try {
+      row = await rows.create({ ...fields, visitor, expires_at: expiresAt() });
+    } catch (error) {
+      // The demo app's own row allowance is used up: free a little room for the
+      // next try, then show the busy page.
+      if (error?.code === "quota_exceeded") await deleteOldest(rows, EVICT_PER_SAVE).catch(() => undefined);
+      throw error;
+    }
+    own = [row, ...saved];
+    await keepUnderCap(row);
+    return row;
+  }
+
+  // After a save, look at the unexpired rows, newest first. A few over the cap
+  // (the normal case once the demo is full): delete the oldest ones. Many over
+  // (lots of saves at the same moment, like a script firing requests in
+  // parallel): delete up to TRIM_PER_SAVE of the newest extras, this save
+  // first if it's one of them, and show the busy page. Every save that finds
+  // the demo far over the cap trims a few more, so it gets back under the cap
+  // however the saves overlapped, instead of staying stuck on the busy page.
+  async function keepUnderCap(row) {
+    const active = await newestActive(rows);
+    const takeBack = () => {
+      own = own?.filter((item) => item.id !== row.id) ?? null;
+      return new DemoLimitError("busy");
+    };
+    // Another save at the same moment already took this one back out.
+    if (!active.some((item) => item.id === row.id)) throw takeBack();
+    const over = active.length - MAX_ACTIVE_ROWS;
+    if (over <= 0) return;
+    if (over > EVICT_PER_SAVE) {
+      const extras = active.slice(0, over);
+      const isExtra = extras.some((item) => item.id === row.id);
+      const trim = [...(isExtra ? [row] : []), ...extras.filter((item) => item.id !== row.id)].slice(0, TRIM_PER_SAVE);
+      for (const item of trim) await rows.delete(item.id);
+      if (isExtra) throw takeBack();
+      return;
+    }
+    for (const old of active.slice(-over)) {
+      if (old.id !== row.id) await rows.delete(old.id);
+    }
+  }
+
+  async function saveCopyOfSample(id, patch) {
+    const sample = sampleListings().find((item) => item.id === id);
+    if (!sample) throw new Error("Listing not found.");
+    // First change to a sample listing: save a private copy for this visitor.
+    const { id: _sampleId, ...fields } = sample;
+    return await saveRow({ ...fields, ...patch, source_id: id });
+  }
+
+  // Delete one listing from this visitor's copy of the board. `saved` is the
+  // visitor's rows, already read.
+  async function deleteOne(saved, id) {
+    const created = saved.find((row) => row.id === id && !row.source_id);
+    if (created) {
+      await rows.delete(id);
+      own = own?.filter((row) => row.id !== id) ?? null;
+      return;
+    }
+    const change = saved.find((row) => row.source_id === id);
+    if (change) {
+      await rows.update(change.id, { status: "deleted" });
+      return;
+    }
+    await saveCopyOfSample(id, { status: "deleted" });
+  }
+
+  const store = {
+    async listLive({ category = "", type = "" } = {}) {
+      const listings = await everything();
+      const live = listings.filter((listing) => listing.status === "approved" && (!category || listing.category === category) && (!type || listing.job_type === type));
+      return { jobs: live.sort((a, b) => b.published_at.localeCompare(a.published_at)), cursor: "" };
     },
-    async listAll() {
-      const { listings } = await everything();
-      return listings.sort((a, b) => b.submitted_at.localeCompare(a.submitted_at));
+    // A visitor has at most a few dozen listings, so everything fits on one page.
+    async listByStatus(status) {
+      const listings = await everything();
+      return { jobs: listings.filter((listing) => !status || listing.status === status).sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)), cursor: "" };
     },
     async get(id) {
-      const { listings } = await everything();
+      const listings = await everything();
       return listings.find((listing) => listing.id === id) ?? null;
     },
     async create(values) {
       requireVisitor();
-      const own = await mine();
-      if (own.length >= MAX_ROWS_PER_VISITOR) throw new DemoLimitError("Demo limit reached.");
-      await deleteExpired(rows);
       const now = new Date().toISOString();
-      const row = await rows.create({
+      const row = await saveRow({
         ...values,
-        visitor,
         source_id: "",
         status: "pending",
         featured: false,
         owner_note: "",
         history: withHistory(null, "submitted", now),
-        submitted_at: now,
-        expires_at: expiresAt()
+        submitted_at: now
       });
       return toListing(row);
     },
     async update(id, patch) {
       requireVisitor();
-      const own = await mine();
-      const created = own.find((row) => row.id === id && !row.source_id);
+      const saved = await mine();
+      const created = saved.find((row) => row.id === id && !row.source_id);
       if (created) return toListing(await rows.update(id, patch));
-      const change = own.find((row) => row.source_id === id);
+      const change = saved.find((row) => row.source_id === id);
       if (change) return { ...toListing(await rows.update(change.id, patch)), id };
-      const sample = sampleListings().find((item) => item.id === id);
-      if (!sample) throw new Error("Listing not found.");
-      if (own.length >= MAX_ROWS_PER_VISITOR) throw new DemoLimitError("Demo limit reached.");
-      await deleteExpired(rows);
-      // First change to a sample listing: save a private copy for this visitor.
-      const { id: _sampleId, ...fields } = sample;
-      const copy = await rows.create({ ...fields, ...patch, visitor, source_id: id, expires_at: expiresAt() });
-      return { ...toListing(copy), id };
+      return { ...toListing(await saveCopyOfSample(id, patch)), id };
+    },
+    async delete(id) {
+      requireVisitor();
+      await deleteOne(await mine(), id);
+    },
+    // Up to DEMO_BULK_DELETE_MAX per press, with no cleanup sweep, so this
+    // request stays under 20 data calls: 1 read, up to 10 deletes, and for the
+    // one declined sample listing a saved copy (1 save, then up to 3 reads and
+    // TRIM_PER_SAVE deletes in keepUnderCap).
+    async deleteDeclined() {
+      requireVisitor();
+      swept = true;
+      const declined = (await everything()).filter((listing) => listing.status === "rejected");
+      const batch = declined.slice(0, DEMO_BULK_DELETE_MAX);
+      const saved = await mine();
+      for (const listing of batch) await deleteOne(saved, listing.id);
+      return { deleted: batch.length, more: declined.length > batch.length };
     }
   };
+  return store;
 }
 
-// Every demo row carries an expires_at date a day after it was saved. Whenever a
-// visitor saves something, delete up to CLEANUP_DELETES rows whose date has
-// passed. Listing by expires_at, oldest first, puts expired rows at the front no
-// matter how many visitors arrive in a day, and the cap keeps one request well
-// under the per-request limit on data calls (Free allows 25): 1 list + 10 deletes.
-const CLEANUP_DELETES = 10;
+// Every demo row carries an expires_at date a day after it was saved. Once per
+// request, delete up to CLEANUP_DELETES rows whose date has passed. Listing by
+// expires_at, oldest first, puts expired rows at the front no matter how many
+// visitors arrive in a day, and the cap keeps each request to a handful of
+// data calls: 1 list + 5 deletes.
+const CLEANUP_DELETES = 5;
+// keepUnderCap() reads at most this many unexpired rows (3 list calls).
+const SCAN_ROWS = MAX_ACTIVE_ROWS + 100;
 
 function expiresAt(now = Date.now()) {
   return new Date(now + KEEP_FOR_MS).toISOString();
@@ -379,9 +502,36 @@ async function deleteExpired(rows) {
     limit: CLEANUP_DELETES
   });
   for (const row of page.rows) {
-    if (!row.expires_at || row.expires_at >= now) break;
+    if (!row.expires_at || row.expires_at > now) break;
     await rows.delete(row.id);
   }
+}
+
+// Delete the `count` demo rows that expire first, expired or not.
+async function deleteOldest(rows, count) {
+  const page = await rows.list({ order_by: [{ field: "expires_at", direction: "asc" }], limit: count });
+  for (const row of page.rows) await rows.delete(row.id);
+}
+
+// Unexpired demo rows, newest expiry first, up to SCAN_ROWS of them. The read
+// stops at the first expired row.
+async function newestActive(rows) {
+  const now = new Date().toISOString();
+  const active = [];
+  let cursor;
+  do {
+    const page = await rows.list({
+      order_by: [{ field: "expires_at", direction: "desc" }],
+      limit: 100,
+      ...(cursor ? { cursor } : {})
+    });
+    for (const row of page.rows) {
+      if (!row.expires_at || row.expires_at <= now) return active;
+      active.push(row);
+    }
+    cursor = page.cursor;
+  } while (cursor && active.length < SCAN_ROWS);
+  return active;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,12 +540,17 @@ async function deleteExpired(rows) {
 
 const ui = {
   head: html`<meta name="robots" content="noindex,follow">`,
-  banner: html`<div class="demo-banner" role="note"><div class="wrap demo-banner-inner"><p><strong>Demo job board.</strong> Post a job, then approve it in the owner view. What you add shows up only for you (and anyone you share your links with), and it's cleared after a day.</p><a href="${EXAMPLE_PAGE}">See how it's made</a></div></div>`,
+  banner: html`<div class="demo-banner" role="note"><div class="wrap demo-banner-inner"><p><strong>Demo job board.</strong> Post a job, then approve it in the owner view. What you add shows up only for you (and anyone you share your links with), and it's cleared after about a day.</p><a href="${EXAMPLE_PAGE}">See how it's made</a></div></div>`,
   footer: html`<p class="demo-credit">Demo app. Built with Userland. <a href="${EXAMPLE_PAGE}">See how it's made</a></p>`,
-  ownerNotice: html`<div class="demo-note" role="note"><p><strong>You're in the owner view.</strong> On a real board, this page asks the owner to sign in first. Here it's open so you can try approving, declining, and editing listings. Your changes only show up for you.</p></div>`,
+  ownerNotice: html`<div class="demo-note" role="note"><p><strong>You're in the owner view.</strong> On a real board, this page asks the owner to sign in first. Here it's open so you can try approving, declining, editing, and deleting listings. Your changes only show up for you.</p></div>`,
   thanksNext: (link) =>
     html`<div class="demo-next"><h2>Now try the owner side</h2><p>Open the review queue, approve your listing, and it will appear on the board for you.</p><a class="button" href="${link("/owner", { tab: "pending" })}">Open the review queue</a></div>`,
-  limitMessage: "This demo keeps up to 30 changes per visit. Open the board in a new private window to start fresh."
+  // The page shown when a save hits the per-visitor cap, arrives in a burst of
+  // saves over the demo-wide cap, or hits the demo app's own storage limit.
+  limitPage: (error) =>
+    error?.reason === "busy" || error?.code === "quota_exceeded"
+      ? { title: "The demo is busy", message: "Lots of people are trying the demo right now. Please try again in a minute." }
+      : { title: "That's a lot of changes", message: `This demo keeps up to ${MAX_ROWS_PER_VISITOR} changes per visit. Open the board in a new private window to start fresh.` }
 };
 
 export const demoMode = {
