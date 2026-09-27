@@ -297,6 +297,21 @@ describe("demo safeguards", () => {
     expect(rows(rt, "services")).toHaveLength(0);
   });
 
+  it("makes room again once a visitor's rows are a day old, even before they are deleted", async () => {
+    let now = NOW;
+    const later = createApp({ demoMode: true, now: () => now });
+    const rt = runtime();
+    const key = keyFrom((await book(later, rt, { customer_name: "Casey Visitor" })).headers.get("location"))!;
+    const bookings = rt.ctx.data.collection("bookings");
+    while (rows(rt, "bookings").length < MAX_VISITOR_ROWS) {
+      await bookings.create({ status: "declined", ref: `WH-X${rows(rt, "bookings").length}`, starts_at: "2026-09-30T22:00:00.000Z", ends_at: "2026-09-30T22:30:00.000Z", history: [], demo_key: key, demo_expires_at: "2026-09-29T17:00:00.000Z" });
+    }
+    const slot = { service_id: "sample-service-1", date: "2026-10-01", time: "15:00" };
+    expect((await post(later, rt, `/book?v=${key}`, { ...slot, ...details })).status).toBe(429);
+    now = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+    expect((await post(later, rt, `/book?v=${key}`, { ...slot, ...details })).status).toBe(303);
+  });
+
   it("lets visitors delete their own requests but not the samples", async () => {
     const rt = runtime();
     const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));

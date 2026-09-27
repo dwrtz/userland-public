@@ -102,11 +102,14 @@ export const VISITOR_LIMIT_MESSAGE = {
   text: "You've added a lot in this visit. Everything you added is cleared a day after you added it, so there's room again tomorrow."
 };
 
-/** True when this visitor has saved as much as one demo visit may. */
+/**
+ * True when this visitor has saved as much as one demo visit may. Rows whose
+ * day is up don't count, even before sweepDemoData gets to them.
+ */
 export async function atVisitorLimit(rc) {
   if (!rc.key) return false;
   const [bookings, services] = await Promise.all([visitorBookingRows(rc), visitorRows(rc.ctx.data.collection("services"), rc.key)]);
-  return bookings.length + services.length >= MAX_VISITOR_ROWS;
+  return [...bookings, ...services].filter((row) => expiresAt(row) >= rc.now.getTime()).length >= MAX_VISITOR_ROWS;
 }
 
 /** The lessons a visitor sees: the samples until they change one, then their own copies. */
@@ -127,6 +130,11 @@ function visitorBookingRows(rc) {
   if (!rc.key) return Promise.resolve([]);
   rc.demoBookingRows ??= visitorRows(rc.ctx.data.collection("bookings"), rc.key);
   return rc.demoBookingRows;
+}
+
+/** Forgets this request's earlier read of the visitor's bookings, so the next one sees rows saved since. */
+export function readAgain(rc) {
+  rc.demoBookingRows = null;
 }
 
 /** Every booking the visitor sees: see visitorBookings. A visitor's rows are few (MAX_VISITOR_ROWS), so they are read in one go. */
@@ -163,7 +171,7 @@ export async function prepareChange(rc, collectionName, starters, newRef) {
     sweepDemoData(rc.ctx.data, rc.now),
     copySamplesForVisitor(rc.ctx.data.collection(collectionName), isBookings ? currentSampleBookings(starters, rc.now) : sampleServices(starters), rc.key, toRow, rc.now)
   ]);
-  rc.demoBookingRows = null; // Read again after the copies were made.
+  readAgain(rc); // The copies were just made.
   return copies;
 }
 

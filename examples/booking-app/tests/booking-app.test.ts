@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { CLEAR_OUT, REQUEST_LIMITS, STARTER_SERVICES, createApp, validateBooking } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { studioTimeToDate } from "../server/schedule.js";
+import { openDays, slotsForDay, studioTimeToDate } from "../server/schedule.js";
 import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 import { NOW, ORIGIN, OWNER, STUDENT, allTabs, book, get, holds, logged, openTime, post, requests, rows, runtime, type Runtime } from "./helpers.js";
 
@@ -534,6 +534,32 @@ describe("limits on unanswered requests", () => {
     await addLessons(rt);
     await seedBookings(rt, REQUEST_LIMITS.receivedPerDay, (index) => ({ status: "new", starts_at: ago(DAY + index * HOUR), history: [{ at: ago(HOUR), status: "new", by: "customer" }] }));
     expect((await book(app, rt, request({}))).status).toBe(429);
+  });
+
+  /** `count` different open times for a 30-minute first lesson. */
+  function openTimes(rt: Runtime, count: number) {
+    const serviceId = service(rt, "First lesson").id;
+    const times = (openDays(NOW) as string[]).flatMap((date) =>
+      (slotsForDay(date, 30, [], NOW) as Array<{ time: string; available: boolean }>).filter((slot) => slot.available).map((slot) => ({ service_id: serviceId, date, time: slot.time }))
+    );
+    expect(times.length).toBeGreaterThanOrEqual(count);
+    return times.slice(0, count);
+  }
+
+  it("keeps to the limits when many requests for different times arrive at the same moment", async () => {
+    const rt = runtime();
+    await addLessons(rt);
+    const burst = await Promise.all(openTimes(rt, REQUEST_LIMITS.waitingTotal + 10).map((time, index) => post(app, rt, "/book", { ...time, ...request({ customer_email: `burst${index}@example.com` }) })));
+    expect(burst.every((response) => response.status === 303 || response.status === 429)).toBe(true);
+    expect(requests(rt).length).toBeLessThanOrEqual(REQUEST_LIMITS.receivedPerDay);
+    // Requests that were taken back gave back their time too.
+    expect(new Set(holds(rt).map((row) => row.data.hold_for))).toEqual(new Set(requests(rt).map((row) => row.data.ref)));
+
+    const sameEmail = runtime();
+    await addLessons(sameEmail);
+    await Promise.all(openTimes(sameEmail, REQUEST_LIMITS.waitingPerEmail + 3).map((time) => post(app, sameEmail, "/book", { ...time, ...request({}) })));
+    expect(requests(sameEmail).length).toBeLessThanOrEqual(REQUEST_LIMITS.waitingPerEmail);
+    expect(holds(sameEmail)).toHaveLength(requests(sameEmail).length);
   });
 
   it("explains a full plan instead of failing, and leaves no stray holds", async () => {

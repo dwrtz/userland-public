@@ -18,7 +18,9 @@ export type Runtime = ReturnType<typeof createFakeRuntime>;
  * - a duplicate unique value throws `code: "unique_conflict"`, as `ctx.data` does;
  * - with `limits.maxRows`, a create past that many saved rows throws
  *   `code: "quota_exceeded"`, like a plan's data row limit. Tests can change
- *   `limits.maxRows` as they go.
+ *   `limits.maxRows` as they go;
+ * - `ctx.data.transaction` just runs its callback and undoes nothing when it
+ *   throws, as on the platform, so the app has to clean up after itself.
  */
 export function runtime(limits: { maxRows?: number } = {}) {
   const rt = createFakeRuntime(manifest, { now: () => NOW });
@@ -47,6 +49,7 @@ export function runtime(limits: { maxRows?: number } = {}) {
       }
     };
   };
+  data.transaction = async (callback: (tx: unknown) => unknown) => await callback(data);
   return rt;
 }
 

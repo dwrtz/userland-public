@@ -529,8 +529,7 @@ async function submitBooking(rc) {
   const limit = requestLimitReached(waiting, form.customer_email, rc.now);
   if (limit) {
     await demoCleanup; // demo
-    await rc.ctx.log.warn("booking request refused", { reason: limit === "email" ? "waiting_per_email" : "waiting_limit", waiting: waiting.length });
-    return html(rc, views.requestLimitPage({ reason: limit, chrome: rc.chrome }), { title: "Please get in touch", status: 429 });
+    return await refuseRequest(rc, limit, waiting.length);
   }
 
   // A quick check against the calendar, for a friendly message in the usual
@@ -581,10 +580,29 @@ async function submitBooking(rc) {
     });
   }
 
+  // Requests sent at the same moment all pass the limit check above before
+  // any of them is saved. Now that this one is saved, check again and take it
+  // back if it went over, so a burst of requests can't get past REQUEST_LIMITS.
+  if (rc.demoMode) demo.readAgain(rc); // demo
+  const others = (await allBookings(rc, "new")).filter((other) => other.id !== booking.id);
+  const over = requestLimitReached(others, form.customer_email, rc.now);
+  if (over) {
+    const bookings = rc.ctx.data.collection("bookings");
+    await releaseHolds(rc, bookings, booking);
+    await bookings.delete(booking.id);
+    return await refuseRequest(rc, over, others.length);
+  }
+
   await sweepPastHolds(rc);
   // Log ids only. Contact details stay in managed data, not in the activity log.
   await rc.ctx.log.info("booking requested", { booking_id: booking.id, ref: booking.ref, service_id: service.id, starts_at: booking.starts_at, demo: rc.demoMode });
   return redirect(rc.chrome.link(`/booked?ref=${encodeURIComponent(booking.ref)}`));
+}
+
+/** The page for a request that REQUEST_LIMITS turns away. `limit` is what requestLimitReached returned. */
+async function refuseRequest(rc, limit, waitingCount) {
+  await rc.ctx.log.warn("booking request refused", { reason: limit === "email" ? "waiting_per_email" : "waiting_limit", waiting: waitingCount });
+  return html(rc, views.requestLimitPage({ reason: limit, chrome: rc.chrome }), { title: "Please get in touch", status: 429 });
 }
 
 async function showConfirmation(rc) {

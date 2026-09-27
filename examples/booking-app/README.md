@@ -69,7 +69,7 @@ Every query for requests filters on `status`, so hold rows never show up as requ
 
 ## Spam and storage
 
-The public form has a hidden honeypot field, and `REQUEST_LIMITS` in `server/index.js` caps unanswered requests: 3 from one email address, 15 that arrived in the last 24 hours, and 30 in total. When a cap is reached, the booking page asks people to email the studio, and the owner's inbox says booking is paused until some requests are confirmed, declined, or deleted. Userland doesn't pass visitors' IP addresses to app code, so there is no per-visitor limit beyond the email address.
+The public form has a hidden honeypot field, and `REQUEST_LIMITS` in `server/index.js` caps unanswered requests: 3 from one email address, 15 that arrived in the last 24 hours, and 30 in total. Requests that arrive at the same moment are checked again once saved, and any that went over are taken back, so a burst of requests can't get past the caps. When a cap is reached, the booking page asks people to email the studio, and the owner's inbox says booking is paused until some requests are confirmed, declined, or deleted. Userland doesn't pass visitors' IP addresses to app code, so there is no per-visitor limit beyond the email address.
 
 The Free plan saves up to 1,000 rows across both collections. Each request is one row, plus one to three holds while its lesson is still to come. From the owner's side, delete spam from the New tab, and every few months select **Clear out** on the Past lessons, Declined, and Cancelled tabs. If the plan is full anyway, visitors see "Online booking is paused" with the studio's email address instead of an error.
 
