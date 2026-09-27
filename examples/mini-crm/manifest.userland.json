@@ -1,0 +1,94 @@
+{
+  "app": {
+    "name": "Mini CRM",
+    "summary": "Lead inbox for a small service business: a public estimate request form, an owner-only lead board with stages, notes, follow-ups, and recent activity.",
+    "visibility": "public",
+    "tags": ["crm", "leads", "small-business"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["owner"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "leads": {
+          "fields": {
+            "name": "string",
+            "email": "string",
+            "phone": "string",
+            "project": {
+              "type": "enum",
+              "values": ["kitchen", "bathroom", "basement", "addition", "exterior", "repairs", "other"]
+            },
+            "budget": {
+              "type": "enum",
+              "values": ["under_15k", "15k_40k", "40k_80k", "over_80k", "not_sure"]
+            },
+            "timeline": {
+              "type": "enum",
+              "values": ["asap", "1_3_months", "3_6_months", "planning"]
+            },
+            "details": "string",
+            "stage": {
+              "type": "enum",
+              "values": ["new", "contacted", "site_visit", "quoted", "won", "lost"]
+            },
+            "source": {
+              "type": "enum",
+              "values": ["website", "phone", "referral", "repeat_client", "other"]
+            },
+            "follow_up_on": "string",
+            "demo_visitor": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_demo_visitor",
+              "fields": ["demo_visitor"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        },
+        "activity": {
+          "fields": {
+            "lead_id": "string",
+            "lead_name": "string",
+            "kind": {
+              "type": "enum",
+              "values": ["received", "added", "stage", "follow_up", "note"]
+            },
+            "stage": {
+              "type": "enum",
+              "values": ["new", "contacted", "site_visit", "quoted", "won", "lost"]
+            },
+            "body": "string",
+            "demo_visitor": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_lead",
+              "fields": ["lead_id"]
+            },
+            {
+              "name": "by_demo_visitor",
+              "fields": ["demo_visitor"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    }
+  }
+}

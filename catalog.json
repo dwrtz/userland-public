@@ -31,6 +31,20 @@
       "page_url": "https://userland.fun/examples/waitlist-app/"
     },
     {
+      "slug": "mini-crm",
+      "title": "Mini CRM",
+      "summary": "Lead inbox with a public request form and an owner-only board for stages, notes, follow-ups, and recent activity.",
+      "path": "examples/mini-crm",
+      "capabilities": ["server", "auth", "data", "transactions", "rollback"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://mini-crm-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/mini-crm/"
+    },
+    {
       "slug": "hello-static",
       "title": "Hello Static",
       "summary": "Small static app with no server runtime or managed resources.",
