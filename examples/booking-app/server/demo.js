@@ -26,13 +26,12 @@
 // domain, the owner pages require an app user with the "owner" role, so a copy
 // of this example is never published with an open owner desk.
 //
-// To remove demo mode completely:
-// 1. Delete this file, its import, and every `rc.demoMode` branch in index.js.
-// 2. In manifest.userland.json, drop the demo_key, demo_expires_at, and
-//    demo_copy_of fields and rebuild the indexes without them, for example
-//    services `by_order` on ["sort_order"] and bookings `by_status` on
-//    ["status", "starts_at"].
-// 3. Remove `where: { demo_key: ... }` from the queries in index.js.
+// To remove demo mode completely, delete this file and every line in index.js
+// that ends with `// demo`. The demo_* fields in manifest.userland.json can
+// stay: a real studio's rows always have an empty demo_key. See "Demo mode" in
+// README.md.
+
+import { openDays, studioTimeToDate } from "./schedule.js";
 
 // The public demo's named address and the demo app's own address. Both belong
 // to the Userland demo deployment only; replace them if you publish your own demo.
@@ -69,6 +68,60 @@ export function withKey(path, key) {
   const [base, hash] = path.split("#");
   const joiner = base.includes("?") ? "&" : "?";
   return `${base}${joiner}${KEY_PARAM}=${key}${hash === undefined ? "" : `#${hash}`}`;
+}
+
+/** Starts a visitor's private records on their first change. chrome.link() picks up the new key. */
+export function ensureKey(rc) {
+  if (!rc.key) rc.key = newKey();
+}
+
+/** The starter lessons as made-up samples with fixed ids. */
+export function sampleServices(starters) {
+  return starters.map((service, index) => ({ ...service, id: `sample-service-${index + 1}`, sort_order: index + 1, active: true }));
+}
+
+/** The sample bookings for the sample lessons, on the next few open days. */
+function currentSampleBookings(starters, now) {
+  const days = openDays(now).slice(1);
+  const pickSlot = (dayNumber, weekdayTime, saturdayTime, duration) => {
+    const date = days[Math.min(dayNumber, days.length) - 1];
+    const isSaturday = new Date(`${date}T12:00:00Z`).getUTCDay() === 6;
+    const start = studioTimeToDate(date, isSaturday ? saturdayTime : weekdayTime);
+    return { starts_at: start.toISOString(), ends_at: new Date(start.getTime() + duration * 60000).toISOString() };
+  };
+  return sampleBookings(sampleServices(starters), now, pickSlot);
+}
+
+/** The lessons a visitor sees: the samples until they change one, then their own copies. */
+export function visitorServices(rows, starters) {
+  return rows.length === 0 ? sampleServices(starters) : withoutExtraCopies(rows);
+}
+
+/**
+ * The bookings a visitor sees. Until they change a sample booking, the samples
+ * are shown next to their own requests. After that, their copies are shown instead.
+ */
+export function visitorBookings(rows, starters, now) {
+  return rows.some(isSample) ? withoutExtraCopies(rows) : [...currentSampleBookings(starters, now), ...rows];
+}
+
+/**
+ * Before an owner-side change: copies the samples into the visitor's private
+ * set so the change never affects anyone else, and clears out demo rows whose
+ * day is up. Returns a map from sample id to the visitor's copy.
+ */
+export async function prepareChange(rc, collectionName, starters, newRef) {
+  ensureKey(rc);
+  const isBookings = collectionName === "bookings";
+  const toRow = (sample) => {
+    const { id, created_at, updated_at, data, ...fields } = sample;
+    return isBookings ? { ...fields, ref: newRef() } : fields;
+  };
+  const [, copies] = await Promise.all([
+    sweepDemoData(rc.ctx.data, rc.now),
+    copySamplesForVisitor(rc.ctx.data.collection(collectionName), isBookings ? currentSampleBookings(starters, rc.now) : sampleServices(starters), rc.key, toRow, rc.now)
+  ]);
+  return copies;
 }
 
 const SAMPLE_REFS = ["WH-R7KQ2M", "WH-T3MB8P", "WH-H9LS4X", "WH-D2WX6C", "WH-G5NC3V"];

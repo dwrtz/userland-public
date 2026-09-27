@@ -13,13 +13,13 @@ Outputs:
 
 - `manifest.userland.json` with `auth` (`owner` role, no public sign-up) and the `services` and `bookings` collections.
 - `server/index.js`, `server/views.js`, and `server/schedule.js` adapted to the business.
-- `server/demo.js` removed for a real business (or `DEMO_HOSTS` emptied), so demo mode can never turn on.
+- `server/demo.js` and `tests/demo.test.ts` removed for a real business, along with every line in `server/index.js` that ends with `// demo`, so demo mode can never turn on.
 - Passing tests in `tests/booking-app.test.ts`.
 
 Steps:
 
 1. Ask the owner for the inputs above before changing code. Explain the plan in plain language: pages, who signs in, and what is saved.
-2. Demo mode turns on only for hosts in `DEMO_HOSTS` in `server/demo.js`. For a real business, remove demo mode (README.md lists the steps: the file, its `rc.demoMode` branches, and the `demo_*` fields and their place in the indexes) or empty that list. Everywhere else, `/studio` requires an app user with the `owner` role.
+2. Demo mode turns on only for hosts in `DEMO_HOSTS` in `server/demo.js`. For a real business, remove it: delete `server/demo.js` and `tests/demo.test.ts`, then delete every line in `server/index.js` that ends with `// demo`. Keep the `demo_*` fields and indexes in the manifest; real rows have `demo_key: ""` and the queries and ownership checks rely on it. The "removing demo mode" test runs these steps on a copy. Everywhere else, `/studio` requires an app user with the `owner` role.
 3. Update `STUDIO` in `server/views.js`, `STUDIO_HOURS` in `server/schedule.js`, and `STARTER_SERVICES` in `server/index.js`. Rename "lesson" copy to fit the business.
 4. Keep every `where` and `order_by` field listed in a collection index. Userland rejects unindexed queries.
 5. Keep the double-booking check: list bookings and re-check the slot inside `ctx.data.transaction` right before `create`.

@@ -6,10 +6,12 @@
 //
 // Data lives in two managed collections declared in manifest.userland.json:
 // `services` (the lessons on offer) and `bookings` (lesson requests).
-// Demo-only behavior is isolated in demo.js; see the notes at the top of that file.
+// Demo-only behavior lives in demo.js. Every line in this file that exists only
+// for the public demo ends with `// demo`; deleting those lines and demo.js
+// removes demo mode (see "Demo mode" in README.md).
 
-import * as demo from "./demo.js";
-import { STUDIO_HOURS, openDays, slotsForDay, studioTimeToDate } from "./schedule.js";
+import * as demo from "./demo.js"; // demo
+import { STUDIO_HOURS, openDays, slotsForDay } from "./schedule.js";
 import * as views from "./views.js";
 
 export const OWNER_ROLE = "owner";
@@ -50,7 +52,8 @@ export function createApp({ demoMode = "auto", now = () => new Date() } = {}) {
   return {
     async fetch(request, ctx) {
       const url = new URL(request.url);
-      const isDemo = demoMode === "auto" ? demo.isDemoHost(url) : demoMode;
+      let isDemo = false;
+      isDemo = demoMode === "auto" ? demo.isDemoHost(url) : demoMode; // demo
       const rc = requestContext({ request, ctx, url, demoMode: isDemo, now: now() });
       try {
         return await route(rc);
@@ -100,34 +103,37 @@ async function route(rc) {
 }
 
 function requestContext({ request, ctx, url, demoMode, now }) {
-  // In demo mode, `key` identifies one visitor's private records (see demo.js).
-  // Outside demo mode every record belongs to the studio and `scope` is "".
-  const key = demoMode ? demo.keyFromUrl(url) : null;
-  const rc = { request, ctx, url, demoMode, now, key, user: null };
+  const rc = { request, ctx, url, demoMode, now, key: null, user: null };
+  if (demoMode) rc.key = demo.keyFromUrl(url); // demo
   rc.chrome = chromeFor(rc);
   return rc;
 }
 
 function chromeFor(rc) {
-  return {
-    demo: rc.demoMode,
-    examplePageUrl: demo.EXAMPLE_PAGE_URL,
-    link: (path) => (rc.demoMode ? demo.withKey(path, rc.key) : path)
-  };
+  const chrome = { demo: rc.demoMode, examplePageUrl: "", link: (path) => path };
+  if (rc.demoMode) Object.assign(chrome, { examplePageUrl: demo.EXAMPLE_PAGE_URL, link: (path) => demo.withKey(path, rc.key) }); // demo
+  return chrome;
 }
 
-/** Starts a visitor's private demo records on their first change. */
-function ensureKey(rc) {
-  if (rc.demoMode && !rc.key) rc.key = demo.newKey(); // chrome.link() picks up the new key.
-}
-
+/**
+ * Which records a request reads and writes. Every studio record has
+ * `demo_key: ""`. In demo mode a visitor's own records carry their key instead,
+ * and the scope is null until they save something (see demo.js).
+ */
 function scopeOf(rc) {
-  return rc.demoMode ? rc.key : "";
+  if (rc.demoMode) return rc.key; // demo
+  return "";
+}
+
+/** True when a stored row belongs to this request's scope. */
+function inScope(rc, row) {
+  return (row.demo_key ?? "") === scopeOf(rc);
 }
 
 /** Fields saved on every new row: the studio's scope, plus an expiry time for demo visitors. */
 function scopeFields(rc) {
-  return rc.demoMode ? demo.visitorFields(rc.key, rc.now) : { demo_key: "" };
+  if (rc.demoMode) return demo.visitorFields(rc.key, rc.now); // demo
+  return { demo_key: "" };
 }
 
 // ---------------------------------------------------------------------------
@@ -137,10 +143,11 @@ function scopeFields(rc) {
  * Owner pages need a signed-in app user with the "owner" role. Signed-out
  * visitors are sent to Userland's built-in sign-in page and brought back after.
  * currentUser() is used instead of requireRole() so a missing session becomes
- * a friendly redirect rather than an error.
+ * a friendly redirect rather than an error. In the public demo anyone can
+ * explore the owner side.
  */
 async function requireOwner(rc) {
-  if (rc.demoMode) return { user: null }; // Demo: anyone can explore the owner side.
+  if (rc.demoMode) return { user: null }; // demo
   const user = await rc.ctx.auth.currentUser(rc.request);
   if (!user) {
     const returnTo = rc.request.method === "GET" ? `${rc.url.pathname}${rc.url.search}` : "/studio";
@@ -177,77 +184,24 @@ async function listAll(collection, query, max = 500) {
   return rows;
 }
 
-function sampleServices() {
-  return STARTER_SERVICES.map((service, index) => ({ ...service, id: `sample-service-${index + 1}`, sort_order: index + 1, active: true }));
-}
-
 async function loadServices(rc, { includeHidden = false } = {}) {
-  let services;
-  if (rc.demoMode && !rc.key) {
-    services = sampleServices();
-  } else {
-    services = await listAll(rc.ctx.data.collection("services"), { where: { demo_key: scopeOf(rc) }, order_by: [{ field: "sort_order", direction: "asc" }] });
-    if (rc.demoMode) services = services.length === 0 ? sampleServices() : demo.withoutExtraCopies(services);
-  }
+  const scope = scopeOf(rc);
+  let services = scope === null ? [] : await listAll(rc.ctx.data.collection("services"), { where: { demo_key: scope }, order_by: [{ field: "sort_order", direction: "asc" }] });
+  if (rc.demoMode) services = demo.visitorServices(services, STARTER_SERVICES); // demo
   return includeHidden ? services : services.filter((service) => service.active);
 }
 
-function sampleBookingsFor(rc) {
-  const days = openDays(rc.now).slice(1);
-  const pickSlot = (dayNumber, weekdayTime, saturdayTime, duration) => {
-    const date = days[Math.min(dayNumber, days.length) - 1];
-    const isSaturday = new Date(`${date}T12:00:00Z`).getUTCDay() === 6;
-    const start = studioTimeToDate(date, isSaturday ? saturdayTime : weekdayTime);
-    return { starts_at: start.toISOString(), ends_at: new Date(start.getTime() + duration * 60000).toISOString() };
-  };
-  return demo.sampleBookings(sampleServices(), rc.now, pickSlot);
-}
-
 async function loadBookings(rc) {
-  const rows = rc.demoMode && !rc.key ? [] : await listAll(rc.ctx.data.collection("bookings"), { where: { demo_key: scopeOf(rc) }, order_by: [{ field: "starts_at", direction: "asc" }] });
-  return withDemoSamples(rc, rows);
+  const scope = scopeOf(rc);
+  const rows = scope === null ? [] : await listAll(rc.ctx.data.collection("bookings"), { where: { demo_key: scope }, order_by: [{ field: "starts_at", direction: "asc" }] });
+  return inStartOrder(rc, rows);
 }
 
-/**
- * Demo only: until a visitor changes a sample booking, the made-up samples are
- * shown next to their own requests. After that, their copies are shown instead.
- */
-function withDemoSamples(rc, rows) {
+/** Bookings sorted by start time. In the demo, the made-up samples are included (see demo.js). */
+function inStartOrder(rc, rows) {
   let bookings = [...rows];
-  if (rc.demoMode) bookings = rows.some(demo.isSample) ? demo.withoutExtraCopies(rows) : [...sampleBookingsFor(rc), ...rows];
+  if (rc.demoMode) bookings = demo.visitorBookings(rows, STARTER_SERVICES, rc.now); // demo
   return bookings.sort((a, b) => a.starts_at.localeCompare(b.starts_at));
-}
-
-function bookingRow(booking) {
-  const { id, created_at, updated_at, data, ...fields } = booking;
-  return { ...fields, ref: newRef() };
-}
-
-function serviceRow(service) {
-  const { id, created_at, updated_at, data, ...fields } = service;
-  return fields;
-}
-
-/**
- * Demo only: before an owner-side change, copies the samples into the visitor's
- * private set so the change never affects anyone else, and clears out demo rows
- * whose day is up. Returns a map from sample id to the visitor's copy.
- */
-async function prepareDemoChange(rc, collectionName) {
-  if (!rc.demoMode) return new Map();
-  ensureKey(rc);
-  const isBookings = collectionName === "bookings";
-  const [, map] = await Promise.all([
-    demo.sweepDemoData(rc.ctx.data, rc.now),
-    demo.copySamplesForVisitor(
-      rc.ctx.data.collection(collectionName),
-      isBookings ? sampleBookingsFor(rc) : sampleServices(),
-      rc.key,
-      isBookings ? bookingRow : serviceRow,
-      rc.now
-    )
-  ]);
-  return map;
 }
 
 function newRef() {
@@ -358,16 +312,15 @@ async function submitBooking(rc) {
     return await renderBookingForm(rc, { serviceId: form.service_id, date: form.date, form, errors, status: 422 });
   }
 
-  // Demo only: give this visitor a private key and clear out expired demo rows.
-  if (rc.demoMode) ensureKey(rc);
-  const demoCleanup = rc.demoMode ? demo.sweepDemoData(rc.ctx.data, rc.now) : null;
+  if (rc.demoMode) demo.ensureKey(rc); // demo
+  const demoCleanup = rc.demoMode ? demo.sweepDemoData(rc.ctx.data, rc.now) : null; // demo
   const scope = scopeOf(rc);
 
   // Check the time again right before saving, inside a data transaction, so a
   // time that was just taken is not handed out twice.
   const result = await rc.ctx.data.transaction(async (tx) => {
     const bookings = tx.collection("bookings");
-    const existing = withDemoSamples(rc, await listAll(bookings, { where: { demo_key: scope }, order_by: [{ field: "starts_at", direction: "asc" }] }));
+    const existing = inStartOrder(rc, await listAll(bookings, { where: { demo_key: scope }, order_by: [{ field: "starts_at", direction: "asc" }] }));
     const busy = existing.filter((booking) => HOLDS_TIME.has(booking.status));
     const slot = slotsForDay(form.date, service.duration_minutes, busy, rc.now).find((item) => item.time === form.time);
     if (!openDays(rc.now).includes(form.date) || !slot || !slot.available) return { ok: false };
@@ -391,7 +344,7 @@ async function submitBooking(rc) {
     });
     return { ok: true, booking };
   });
-  await demoCleanup;
+  await demoCleanup; // demo
 
   if (!result.ok) {
     return await renderBookingForm(rc, {
@@ -410,11 +363,10 @@ async function submitBooking(rc) {
 
 async function showConfirmation(rc) {
   const ref = clean(rc.url.searchParams.get("ref"), 20);
-  const scope = scopeOf(rc);
   let booking = null;
-  if (ref && scope !== null) {
+  if (ref && scopeOf(rc) !== null) {
     const page = await rc.ctx.data.collection("bookings").list({ where: { ref }, limit: 1 });
-    booking = page.rows.find((row) => row.demo_key === scope) ?? null;
+    booking = page.rows.find((row) => inScope(rc, row)) ?? null;
   }
   if (!booking) {
     return html(rc, views.messagePage({ title: "We couldn't find that request", text: "The link may be incomplete. If you sent a request, it's safe with us and you'll hear back soon.", chrome: rc.chrome }), { status: 404 });
@@ -427,6 +379,8 @@ async function showConfirmation(rc) {
 
 async function showInbox(rc) {
   const bookings = await loadBookings(rc);
+  let isSample = () => false;
+  if (rc.demoMode) isSample = demo.isSample; // demo
   const tab = views.INBOX_TABS.find((item) => item.key === rc.url.searchParams.get("show")) ?? views.INBOX_TABS[0];
   const counts = Object.fromEntries(views.INBOX_TABS.map((item) => [item.key, bookings.filter((booking) => item.statuses.includes(booking.status)).length]));
   counts.upcoming = bookings.filter((booking) => booking.status === "confirmed" && Date.parse(booking.starts_at) > rc.now.getTime()).length;
@@ -439,7 +393,7 @@ async function showInbox(rc) {
     transitions: TRANSITIONS,
     updatedId: rc.url.searchParams.get("updated"),
     chrome: rc.chrome,
-    isSample: demo.isSample,
+    isSample,
     now: rc.now
   });
   return html(rc, body, { title: "Booking requests", area: "studio", current: "requests" });
@@ -450,11 +404,11 @@ async function updateBookingStatus(rc, bookingId) {
   const next = String(input.status ?? "");
   const show = views.INBOX_TABS.some((item) => item.key === input.show) ? input.show : "new";
 
-  const map = await prepareDemoChange(rc, "bookings");
-  const id = map.get(bookingId)?.id ?? bookingId;
+  let id = bookingId;
+  if (rc.demoMode) id = (await demo.prepareChange(rc, "bookings", STARTER_SERVICES, newRef)).get(bookingId)?.id ?? bookingId; // demo
   const collection = rc.ctx.data.collection("bookings");
   const booking = await collection.get(id);
-  if (!booking || booking.demo_key !== scopeOf(rc)) {
+  if (!booking || !inScope(rc, booking)) {
     return html(rc, views.messagePage({ title: "Booking not found", text: "It may have been removed.", chrome: rc.chrome, linkHref: "/studio", linkLabel: "Back to requests" }), { status: 404, area: "studio" });
   }
   if (!(TRANSITIONS[booking.status] ?? []).includes(next)) {
@@ -503,9 +457,9 @@ async function saveLesson(rc, serviceId) {
     return await showLessons(rc, { form: { ...form, id: serviceId }, errors, status: 422 });
   }
 
-  const map = await prepareDemoChange(rc, "services");
+  let copies = new Map();
+  if (rc.demoMode) copies = await demo.prepareChange(rc, "services", STARTER_SERVICES, newRef); // demo
   const collection = rc.ctx.data.collection("services");
-  const scope = scopeOf(rc);
   let saved;
   if (serviceId === "new") {
     const existing = await loadServices(rc, { includeHidden: true });
@@ -513,9 +467,9 @@ async function saveLesson(rc, serviceId) {
     saved = await collection.create({ ...values, sort_order: sortOrder, ...scopeFields(rc) });
     await rc.ctx.log.info("lesson added", { service_id: saved.id, demo: rc.demoMode });
   } else {
-    const id = map.get(serviceId)?.id ?? serviceId;
+    const id = copies.get(serviceId)?.id ?? serviceId;
     const service = await collection.get(id);
-    if (!service || service.demo_key !== scope) {
+    if (!service || !inScope(rc, service)) {
       return html(rc, views.messagePage({ title: "Lesson not found", text: "It may have been removed.", chrome: rc.chrome, linkHref: "/studio/lessons", linkLabel: "Back to lessons" }), { status: 404, area: "studio" });
     }
     saved = await collection.update(id, values);

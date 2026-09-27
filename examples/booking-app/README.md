@@ -42,7 +42,8 @@ Sign-in, sign-out, and invite acceptance use Userland's built-in `/_userland/aut
 - `server/schedule.js`: opening hours, time zone, notice period, and time slots.
 - `server/demo.js`: demo-only behavior (see [Demo mode](#demo-mode)).
 - `public/assets/`: stylesheet and self-hosted fonts (Newsreader and Instrument Sans, SIL Open Font License).
-- `tests/booking-app.test.ts`: the booking flow, validation, privacy between demo visitors, and the owner gate.
+- `tests/booking-app.test.ts`: the booking flow, validation, the owner gate, the owner's changes, and removing demo mode.
+- `tests/demo.test.ts`: demo mode only, including privacy between demo visitors and clean-up.
 
 ## Make it yours
 
@@ -64,9 +65,10 @@ The public demo at https://booking-demo.apps.userland.fun/ lets anyone open the 
 
 To remove demo mode completely:
 
-1. Delete `server/demo.js`, its import, and every `rc.demoMode` branch in `server/index.js` (including `scopeFields`).
-2. In `manifest.userland.json`, drop the `demo_key`, `demo_expires_at`, and `demo_copy_of` fields and rebuild both indexes without them, for example services `by_order` on `["sort_order"]` and bookings `by_status` on `["status", "starts_at"]`. Keep `by_ref`.
-3. Remove `where: { demo_key: ... }` from the queries in `server/index.js`.
+1. Delete `server/demo.js` and `tests/demo.test.ts`.
+2. In `server/index.js`, delete every line that ends with `// demo`.
+
+That's all. The `demo_key`, `demo_expires_at`, and `demo_copy_of` fields in `manifest.userland.json` can stay: every row a real studio saves has an empty `demo_key`, and the queries and ownership checks in `server/index.js` rely on that. The "removing demo mode" test in `tests/booking-app.test.ts` runs exactly these steps on a copy of `server/` and checks that booking, confirmation, status changes, and lesson edits still work, so mark any line you add for the demo the same way.
 
 ## Publish
 

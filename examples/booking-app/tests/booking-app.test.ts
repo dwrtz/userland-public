@@ -1,92 +1,84 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+import { pathToFileURL } from "node:url";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { createApp, validateBooking } from "../server/index.js";
+import { STARTER_SERVICES, createApp, validateBooking } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { studioTimeToDate } from "../server/schedule.js";
-// @ts-expect-error Example server files are plain JavaScript app bundles.
-import { sweepExpiredRows } from "../server/demo.js";
+import { NOW, OWNER, STUDENT, book, get, logged, openTime, post, rows, runtime, type Runtime } from "./helpers.js";
 
-const manifest = readExampleManifest(path.resolve(import.meta.dirname, ".."));
+// A studio outside demo mode. Demo-mode tests live in demo.test.ts.
 
-// Monday, September 28, 2026, 10:00 am in the studio (Pacific time).
-const NOW = new Date("2026-09-28T17:00:00.000Z");
-const ORIGIN = "https://booking-demo.apps.userland.fun";
-const OWNER = { id: "user_owner", app_user_id: "user_owner", email: "nora@example.com", roles: ["owner"] };
-const STUDENT = { id: "user_student", app_user_id: "user_student", email: "sam@example.com", roles: [] };
-
-type Runtime = ReturnType<typeof createFakeRuntime>;
-
-function runtime() {
-  return createFakeRuntime(manifest, { now: () => NOW });
+async function addLessons(rt: Runtime) {
+  const services = rt.ctx.data.collection("services");
+  for (const [index, service] of (STARTER_SERVICES as Array<Record<string, unknown>>).entries()) {
+    await services.create({ ...service, sort_order: index + 1, active: true, demo_key: "" });
+  }
 }
 
-function rows(rt: Runtime, collection: string) {
-  return rt.state.rows.get(collection)!;
-}
+/** Runs the public booking flow and the owner's work on an app outside demo mode. */
+async function studioFlow(app: any) {
+  const rt = runtime();
+  rt.setUser(OWNER);
+  expect((await post(app, rt, "/studio/lessons/starter", {})).status).toBe(303);
+  expect(rows(rt, "services")).toHaveLength(4);
+  rt.setUser(null);
 
-function logged(rt: Runtime, message: string) {
-  return rt.state.logs.filter((entry) => entry.message === message);
-}
+  const home = await get(app, rt, "/");
+  expect(home.status).toBe(200);
+  const homeHtml = await home.text();
+  expect(homeHtml).toContain("Voice lesson");
+  expect(homeHtml).not.toContain("noindex");
+  expect(homeHtml).not.toContain("Built with Userland");
 
-function get(app: any, rt: Runtime, pathname: string, origin = ORIGIN) {
-  return app.fetch(new Request(`${origin}${pathname}`), rt.ctx) as Promise<Response>;
-}
+  const booked = await book(app, rt, { customer_name: "Ada Lovelace" });
+  expect(booked.status).toBe(303);
+  const location = booked.headers.get("location")!;
+  expect(location).toMatch(/^\/booked\?ref=WH-[A-Z0-9]{6}$/u);
+  const confirmation = await get(app, rt, location);
+  expect(confirmation.status).toBe(200);
+  expect(await confirmation.text()).toContain("Thank you, Ada.");
 
-function post(app: any, rt: Runtime, pathname: string, form: Record<string, string>, headers: Record<string, string> = {}) {
-  return app.fetch(
-    new Request(`${ORIGIN}${pathname}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, ...headers },
-      body: new URLSearchParams(form).toString()
-    }),
-    rt.ctx
-  ) as Promise<Response>;
-}
+  const booking = rows(rt, "bookings")[0]!;
+  const signedOut = await post(app, rt, `/studio/bookings/${booking.id}/status`, { status: "confirmed" });
+  expect(signedOut.headers.get("location")).toMatch(/^\/_userland\/auth\/login/u);
 
-async function openTime(app: any, rt: Runtime) {
-  const page = await (await get(app, rt, "/book")).text();
-  return {
-    service_id: page.match(/name="service_id" value="([^"]+)"/u)![1]!,
-    date: page.match(/name="date" value="([^"]+)"/u)![1]!,
-    time: page.match(/name="time" value="([^"]+)"/u)![1]!
-  };
-}
+  rt.setUser(OWNER);
+  const inbox = await (await get(app, rt, "/studio")).text();
+  expect(inbox).toContain("Ada Lovelace");
+  expect(inbox).not.toContain("Priya Raman"); // No demo samples.
+  const confirmed = await post(app, rt, `/studio/bookings/${booking.id}/status`, { status: "confirmed", show: "new" });
+  expect(confirmed.status).toBe(303);
+  expect(rows(rt, "bookings")[0]!.data.status).toBe("confirmed");
 
-async function book(app: any, rt: Runtime, details: Record<string, string>) {
-  const slot = await openTime(app, rt);
-  return await post(app, rt, "/book", { ...slot, customer_email: "ada@example.com", student_details: "Me, adult beginner", ...details });
-}
-
-function keyFrom(location: string | null) {
-  return new URL(location!, ORIGIN).searchParams.get("v");
+  const lesson = rows(rt, "services").find((row) => row.data.name === "First lesson")!;
+  const edit = await post(app, rt, `/studio/lessons/${lesson.id}`, { name: "Trial lesson", summary: "", duration_minutes: "30", price: "30", active: "yes" });
+  expect(edit.status).toBe(303);
+  expect(rows(rt, "services").find((row) => row.id === lesson.id)!.data.name).toBe("Trial lesson");
+  const added = await post(app, rt, "/studio/lessons", { name: "Duet lesson", summary: "", duration_minutes: "60", price: "90", active: "yes" });
+  expect(added.status).toBe(303);
+  expect(await (await get(app, rt, "/studio/lessons")).text()).toContain("Duet lesson");
+  expect(await (await get(app, rt, "/studio/activity")).text()).toContain("Ada Lovelace");
+  return rt;
 }
 
 describe("public booking flow", () => {
-  const app = createApp({ demoMode: true, now: () => NOW });
-
-  it("lists lessons and marks demo pages noindex with a link to the example page", async () => {
-    const rt = runtime();
-    const response = await get(app, rt, "/");
-    const html = await response.text();
-    expect(response.status).toBe(200);
-    expect(html).toContain("Piano lesson");
-    expect(html).toContain('<meta name="robots" content="noindex,follow">');
-    expect(html).toContain('href="https://userland.fun/examples/booking-app/"');
-    expect(rows(rt, "bookings")).toHaveLength(0); // Viewing pages never writes data.
-  });
+  const app = createApp({ demoMode: false, now: () => NOW });
 
   it("takes a request and shows a confirmation", async () => {
     const rt = runtime();
+    await addLessons(rt);
     const response = await book(app, rt, { customer_name: "Ada Lovelace" });
     expect(response.status).toBe(303);
     const location = response.headers.get("location")!;
-    expect(location).toMatch(/^\/booked\?ref=WH-[A-Z0-9]{6}&v=[A-Za-z0-9_-]{22}$/u);
+    expect(location).toMatch(/^\/booked\?ref=WH-[A-Z0-9]{6}$/u);
 
     const confirmation = await (await get(app, rt, location)).text();
     expect(confirmation).toContain("Thank you, Ada.");
     expect(confirmation).toContain("a•••@example.com");
     expect(confirmation).not.toContain("ada@example.com");
+    expect(rows(rt, "bookings")[0]!.data).toMatchObject({ demo_key: "", status: "new" });
 
     // The activity log gets ids only, never contact details.
     const [entry] = logged(rt, "booking requested");
@@ -96,6 +88,7 @@ describe("public booking flow", () => {
 
   it("validates input and escapes what visitors type", async () => {
     const rt = runtime();
+    await addLessons(rt);
     const slot = await openTime(app, rt);
     const invalid = await post(app, rt, "/book", { ...slot, customer_name: "", customer_email: "not-an-email", student_details: "" });
     expect(invalid.status).toBe(422);
@@ -110,14 +103,16 @@ describe("public booking flow", () => {
     const tooLong = validateBooking({ ...slot, customer_name: "x".repeat(81), customer_email: "a@example.com", student_details: "Me" });
     expect(tooLong.errors.customer_name).toMatch(/under 80/u);
 
-    const created = await book(app, rt, { customer_name: '<script>alert("hi")</script>' });
-    const inbox = await (await get(app, rt, `/studio?v=${keyFrom(created.headers.get("location"))}`)).text();
+    await book(app, rt, { customer_name: '<script>alert("hi")</script>' });
+    rt.setUser(OWNER);
+    const inbox = await (await get(app, rt, "/studio")).text();
     expect(inbox).not.toContain("<script>alert");
     expect(inbox).toContain("&lt;script&gt;alert(&quot;hi&quot;)&lt;/script&gt;");
   });
 
   it("quietly drops requests that fill in the hidden honeypot field", async () => {
     const rt = runtime();
+    await addLessons(rt);
     const response = await book(app, rt, { customer_name: "Bot", company: "Spam Inc" });
     expect(response.status).toBe(200);
     expect(rows(rt, "bookings")).toHaveLength(0);
@@ -125,174 +120,22 @@ describe("public booking flow", () => {
 
   it("does not hand out the same time twice", async () => {
     const rt = runtime();
-    const first = await book(app, rt, { customer_name: "First" });
-    const key = keyFrom(first.headers.get("location"));
-    const firstBooking = rows(rt, "bookings").find((row) => row.data.customer_name === "First")!;
-    expect(firstBooking.data.starts_at).toBe("2026-09-29T22:00:00.000Z");
-
-    const again = await post(app, rt, `/book?v=${key}`, {
-      service_id: String(firstBooking.data.service_id),
-      date: "2026-09-29",
-      time: "15:00",
-      customer_name: "Second",
-      customer_email: "b@example.com",
-      student_details: "Me"
-    });
+    await addLessons(rt);
+    const slot = await openTime(app, rt);
+    expect((await book(app, rt, { customer_name: "First" })).status).toBe(303);
+    const again = await post(app, rt, "/book", { ...slot, customer_name: "Second", customer_email: "b@example.com", student_details: "Me" });
     expect(again.status).toBe(409);
     expect(await again.text()).toContain("that time was just taken");
+    expect(rows(rt, "bookings")).toHaveLength(1);
   });
 
   it("rejects form posts from other sites", async () => {
     const rt = runtime();
+    await addLessons(rt);
     const slot = await openTime(app, rt);
     const response = await post(app, rt, "/book", { ...slot, customer_name: "Ada", customer_email: "a@example.com", student_details: "Me" }, { origin: "https://evil.example" });
     expect(response.status).toBe(403);
     expect(rows(rt, "bookings")).toHaveLength(0);
-  });
-});
-
-describe("demo privacy", () => {
-  const app = createApp({ demoMode: true, now: () => NOW });
-
-  it("never shows one visitor's requests to another visitor", async () => {
-    const rt = runtime();
-    const alice = keyFrom((await book(app, rt, { customer_name: "Alice Private", customer_email: "alice@example.com" })).headers.get("location"));
-    const bob = keyFrom((await book(app, rt, { customer_name: "Bob Private", customer_email: "bob@example.com" })).headers.get("location"));
-    expect(alice).not.toBe(bob);
-
-    const aliceInbox = await (await get(app, rt, `/studio?show=all&v=${alice}`)).text();
-    const bobInbox = await (await get(app, rt, `/studio?show=all&v=${bob}`)).text();
-    const newVisitorInbox = await (await get(app, rt, "/studio?show=all")).text();
-
-    expect(aliceInbox).toContain("Alice Private");
-    expect(aliceInbox).not.toContain("Bob Private");
-    expect(bobInbox).toContain("Bob Private");
-    expect(bobInbox).not.toContain("Alice Private");
-    expect(newVisitorInbox).not.toContain("Alice Private");
-    expect(newVisitorInbox).not.toContain("Bob Private");
-    expect(newVisitorInbox).toContain("Priya Raman"); // Sample bookings.
-
-    // A confirmation link only works with the visitor's own key.
-    const aliceRef = rows(rt, "bookings").find((row) => row.data.customer_name === "Alice Private")!.data.ref;
-    expect((await get(app, rt, `/booked?ref=${aliceRef}&v=${bob}`)).status).toBe(404);
-    expect((await get(app, rt, `/booked?ref=${aliceRef}`)).status).toBe(404);
-  });
-
-  it("keeps status changes and lesson edits inside the visitor's own copy", async () => {
-    const rt = runtime();
-    const inbox = await (await get(app, rt, "/studio")).text();
-    const sampleId = inbox.match(/id="booking-(sample-booking-\d+)"/u)![1];
-
-    const confirmed = await post(app, rt, `/studio/bookings/${sampleId}/status`, { status: "confirmed", show: "new" });
-    expect(confirmed.status).toBe(303);
-    const key = keyFrom(confirmed.headers.get("location"));
-    expect(key).toBeTruthy();
-
-    const mine = await (await get(app, rt, `/studio?show=confirmed&v=${key}`)).text();
-    expect(mine).toContain("Priya Raman");
-    const someoneElse = await (await get(app, rt, "/studio?show=confirmed")).text();
-    expect(someoneElse).not.toContain("Priya Raman");
-
-    const rename = await post(app, rt, `/studio/lessons/sample-service-2?v=${key}`, { name: "Piano for grown-ups", summary: "", duration_minutes: "45", price: "65", active: "yes" });
-    expect(rename.status).toBe(303);
-    expect(await (await get(app, rt, `/?v=${key}`)).text()).toContain("Piano for grown-ups");
-    expect(await (await get(app, rt, "/")).text()).not.toContain("Piano for grown-ups");
-  });
-
-  it("copies samples once, on the first owner-side change, without duplicating them", async () => {
-    const rt = runtime();
-    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
-    expect(rows(rt, "bookings")).toHaveLength(1); // Booking alone does not copy the samples.
-
-    const inbox = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
-    expect(inbox.match(/<h2>Priya Raman<\/h2>/gu)).toHaveLength(1);
-    const sampleId = inbox.match(/id="booking-(sample-booking-\d+)"/u)![1];
-
-    await post(app, rt, `/studio/bookings/${sampleId}/status?v=${key}`, { status: "confirmed", show: "all" });
-    await post(app, rt, `/studio/bookings/${sampleId}/status?v=${key}`, { status: "declined", show: "all" });
-    expect(rows(rt, "bookings")).toHaveLength(6);
-
-    const after = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
-    expect(after.match(/<h2>Priya Raman<\/h2>/gu)).toHaveLength(1);
-    expect(after.match(/<h2>Casey Visitor<\/h2>/gu)).toHaveLength(1);
-  });
-});
-
-describe("demo clean-up", () => {
-  const app = createApp({ demoMode: true, now: () => NOW });
-  const HOUR = 60 * 60 * 1000;
-  const at = (offsetHours: number) => new Date(NOW.getTime() + offsetHours * HOUR).toISOString();
-
-  async function addBookings(rt: Runtime, count: number, fields: Record<string, unknown>) {
-    const bookings = rt.ctx.data.collection("bookings");
-    for (let index = 0; index < count; index += 1) {
-      await bookings.create({ ref: `WH-T${String(rows(rt, "bookings").length).padStart(5, "0")}`, status: "new", starts_at: at(48), ends_at: at(49), customer_name: "Old Visitor", history: [], ...fields });
-    }
-  }
-
-  it("finds expired rows even when more than 100 newer rows exist", async () => {
-    const rt = runtime();
-    // Expired rows are written first, so the platform's default newest-first
-    // order would put them after the 120 fresh rows.
-    await addBookings(rt, 30, { demo_key: "expiredvisitorkey00000", demo_expires_at: at(-2) });
-    await addBookings(rt, 120, { demo_key: "freshvisitorkey0000000", demo_expires_at: at(20) });
-    await addBookings(rt, 3, { demo_key: "" }); // A real studio's rows never expire.
-    const expiredLeft = () => rows(rt, "bookings").filter((row) => row.data.demo_key === "expiredvisitorkey00000").length;
-
-    expect(await sweepExpiredRows(rt.ctx.data.collection("bookings"), NOW)).toBe(20);
-    expect(expiredLeft()).toBe(10);
-
-    // Every demo write sweeps another batch.
-    await book(app, rt, { customer_name: "Next Visitor" });
-    expect(expiredLeft()).toBe(0);
-    expect(rows(rt, "bookings").filter((row) => row.data.demo_key === "freshvisitorkey0000000")).toHaveLength(120);
-    expect(rows(rt, "bookings").filter((row) => row.data.demo_key === "")).toHaveLength(3);
-  });
-
-  it("gives every visitor row an expiry a day ahead and sweeps lessons too", async () => {
-    const rt = runtime();
-    await rt.ctx.data.collection("services").create({ name: "Old lesson", duration_minutes: 30, price_cents: 100, sort_order: 1, active: true, demo_key: "expiredvisitorkey00000", demo_expires_at: at(-1) });
-    await book(app, rt, { customer_name: "Dana Visitor" });
-    expect(rows(rt, "services")).toHaveLength(0);
-    expect(rows(rt, "bookings")[0]!.data.demo_expires_at).toBe(at(24));
-  });
-});
-
-describe("double-clicked owner buttons in the demo", () => {
-  const app = createApp({ demoMode: true, now: () => NOW });
-
-  it("shows one copy of each sample booking when two changes arrive together", async () => {
-    const rt = runtime();
-    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
-    const responses = await Promise.all([
-      post(app, rt, `/studio/bookings/sample-booking-1/status?v=${key}`, { status: "confirmed", show: "new" }),
-      post(app, rt, `/studio/bookings/sample-booking-2/status?v=${key}`, { status: "confirmed", show: "new" })
-    ]);
-    expect(responses.map((response) => response.status)).toEqual([303, 303]);
-    // Both requests copied the samples, which is the case being tested.
-    expect(rows(rt, "bookings").filter((row) => row.data.demo_copy_of)).toHaveLength(10);
-
-    const all = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
-    for (const name of ["Priya Raman", "Tom Becker", "Hannah Silva", "Daniel Moreau", "Grace Liu", "Casey Visitor"]) {
-      expect(all.match(new RegExp(`<h2>${name}</h2>`, "gu"))).toHaveLength(1);
-    }
-    const confirmed = await (await get(app, rt, `/studio?show=confirmed&v=${key}`)).text();
-    expect(confirmed).toContain("<h2>Priya Raman</h2>");
-    expect(confirmed).toContain("<h2>Tom Becker</h2>");
-  });
-
-  it("shows one copy of each sample lesson when two edits arrive together", async () => {
-    const rt = runtime();
-    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
-    const edit = { summary: "", duration_minutes: "45", price: "65", active: "yes" };
-    const responses = await Promise.all([
-      post(app, rt, `/studio/lessons/sample-service-2?v=${key}`, { ...edit, name: "Piano for grown-ups" }),
-      post(app, rt, `/studio/lessons/sample-service-3?v=${key}`, { ...edit, name: "Singing for grown-ups" })
-    ]);
-    expect(responses.map((response) => response.status)).toEqual([303, 303]);
-    const page = await (await get(app, rt, `/studio/lessons?v=${key}`)).text();
-    const names = [...page.matchAll(/name="name"[^>]*value="([^"]+)"/gu)].map((match) => match[1]).filter((name) => name !== "");
-    expect(names.sort()).toEqual(["Extended lesson", "First lesson", "Piano for grown-ups", "Singing for grown-ups"]);
   });
 });
 
@@ -338,6 +181,15 @@ describe("owner pages outside demo mode", () => {
     expect(logged(rt, "booking status changed")[0]!.metadata).toMatchObject({ from: "new", to: "confirmed" });
   });
 
+  it("treats rows saved without a demo_key as the studio's own", async () => {
+    const rt = runtime();
+    rt.setUser(OWNER);
+    const booking = await rt.ctx.data.collection("bookings").create({ ref: "WH-BBBBBB", status: "new", customer_name: "No Key", starts_at: "2026-10-01T22:00:00.000Z", ends_at: "2026-10-01T22:45:00.000Z", history: [] });
+    expect((await post(app, rt, `/studio/bookings/${booking.id}/status`, { status: "confirmed" })).status).toBe(303);
+    expect(rows(rt, "bookings")[0]!.data.status).toBe("confirmed");
+    expect((await get(app, rt, "/booked?ref=WH-BBBBBB")).status).toBe(200);
+  });
+
   it("shows the inbox to the owner and keeps public pages indexable", async () => {
     const rt = runtime();
     rt.setUser(OWNER);
@@ -354,30 +206,39 @@ describe("owner pages outside demo mode", () => {
     expect(home).not.toContain("demo booking site");
   });
 
-  it("lets a new studio add starter lessons", async () => {
-    const rt = runtime();
-    rt.setUser(OWNER);
-    const response = await post(app, rt, "/studio/lessons/starter", {});
-    expect(response.status).toBe(303);
-    expect(rows(rt, "services")).toHaveLength(4);
-    expect(await (await get(app, rt, "/")).text()).toContain("Voice lesson");
+  it("lets the owner run the studio: starter lessons, bookings, status changes, and lesson edits", async () => {
+    await studioFlow(app);
   });
 });
 
-describe("demo address", () => {
-  const app = createApp({ now: () => NOW });
+describe("removing demo mode", () => {
+  // Follows the steps in README.md: delete server/demo.js and every line that
+  // ends in `// demo`, then checks the studio still works with the owner sign-in.
+  async function strippedApp() {
+    const source = path.resolve(import.meta.dirname, "../server");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "booking-app-no-demo-"));
+    for (const name of fs.readdirSync(source)) {
+      if (name === "demo.js") continue;
+      const code = fs.readFileSync(path.join(source, name), "utf8");
+      const kept = code.split("\n").filter((line) => !/\/\/ demo$/u.test(line.trimEnd()));
+      fs.writeFileSync(path.join(target, name), kept.join("\n"));
+    }
+    const stripped = fs.readFileSync(path.join(target, "index.js"), "utf8");
+    expect(stripped).not.toMatch(/\bdemo\.(?!js\b)/u); // No code uses the demo module.
+    const module = await import(pathToFileURL(path.join(target, "index.js")).href);
+    return module.createApp({ now: () => NOW });
+  }
 
-  it("turns demo mode on only at the demo address", async () => {
-    const rt = runtime();
-    expect((await get(app, rt, "/studio")).status).toBe(200);
+  it("still runs the whole studio after the demo lines are deleted, even at the demo address", async () => {
+    const app = await strippedApp();
+    const rt = await studioFlow(app);
+    expect(rows(rt, "bookings").every((row) => row.data.demo_key === "")).toBe(true);
 
-    const otherApp = await get(app, rt, "/studio", "https://1abc.apps.userland.fun");
-    expect(otherApp.status).toBe(303);
-    expect(otherApp.headers.get("location")).toBe("/_userland/auth/login?return_to=%2Fstudio");
-
-    const customDomain = await (await get(app, rt, "/", "https://lessons.example.com")).text();
-    expect(customDomain).not.toContain("noindex");
-    expect(customDomain).not.toContain("Built with Userland");
+    // With demo mode gone, the demo address needs the owner sign-in too.
+    rt.setUser(null);
+    const gated = await get(app, rt, "/studio");
+    expect(gated.status).toBe(303);
+    expect(gated.headers.get("location")).toContain("/_userland/auth/login");
   });
 });
 
