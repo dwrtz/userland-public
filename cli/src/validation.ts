@@ -357,7 +357,7 @@ export function checkManifestDocument(document: Record<string, unknown>): Manife
   }
   const normalized = normalizeLikeApi(document);
   const apiErrors = schemaErrors(normalized, schema).filter((error) => !apiToleratesSchemaError(error));
-  const errors = apiErrors.map(toIssue);
+  const errors = preferApiMessages(apiErrors.map(toIssue), normalized);
   const blockingPaths = new Set(errors.map((error) => error.manifest_path));
   const schemaStrict = strictErrors
     .map(toIssue)
@@ -372,6 +372,23 @@ export function checkManifestDocument(document: Record<string, unknown>): Manife
     schema_strict: schemaStrict,
     normalized
   };
+}
+
+/**
+ * The schema and the API's cross-field rules can flag the same field (for example a signed
+ * webhook without a secret). The cross-field message says why ("is required when provider is
+ * github"), so it replaces the schema's generic one for that path. Cross-field rules assume a
+ * well-formed document, so any failure there keeps the schema messages as they are.
+ */
+function preferApiMessages(errors: ValidationIssue[], document: Record<string, unknown>): ValidationIssue[] {
+  let semantic: ValidationIssue[];
+  try {
+    semantic = semanticManifestErrors(document);
+  } catch {
+    return errors;
+  }
+  const byPath = new Map(semantic.map((issue) => [issue.manifest_path, issue]));
+  return errors.map((issue) => byPath.get(issue.manifest_path) ?? issue);
 }
 
 /** Applies the API's lenient parsing so only the rules it enforces remain for the schema. */
