@@ -8,17 +8,25 @@
 // - Each visitor gets a random key the first time they save something. The key
 //   travels in the page address (?demo=...), because Userland only forwards
 //   its own sign-in cookie to app code.
-// - The owner view shows the sample leads below plus only the rows saved with
-//   this visitor's key (the demo_visitor field in both collections).
-// - Changes to a sample lead are saved as activity rows for this visitor only,
-//   so the shared sample leads never change.
-// - Visitors without a key see the sample leads and nothing else.
+// - Everything a visitor saves is an activity row tagged with their key
+//   (demo_visitor) and the time (demo_saved_at). A lead they add is its first
+//   row, holding the lead's details; later rows change its stage, set a
+//   follow-up, or add a note. The demo never writes to the leads collection.
+// - The owner view shows the sample leads below plus this visitor's rows.
+//   Changes to a sample lead are rows for this visitor only, so the shared
+//   sample leads never change. Visitors without a key see only the samples.
 // - The key is the only thing that ties entries to a visitor, so anyone who
 //   has a visitor's link sees that visitor's entries. The demo pages ask
 //   visitors to use made-up details for that reason.
-// - Each visitor can save a limited number of rows, and the whole demo stops
-//   taking new entries once it holds DEMO_LIMITS.everyone rows, so the public
-//   demo can't grow without bound. Clear old demo rows by hand to reopen it.
+// - Limits (DEMO_LIMITS): each visitor can save a few leads and entries, and
+//   the whole demo takes at most `perHour` entries in any hour. A visitor
+//   without a key gets a new one on their first save, so the hourly limit is
+//   the one that holds against scripts. Both are checked with a query before
+//   saving, so simultaneous saves can pass them by a few.
+// - Entries are removed DEMO_KEEP_HOURS after they're saved: every save first
+//   deletes a few expired rows (SWEEP_BATCH). With the hourly limit, the demo
+//   holds at most about perHour x DEMO_KEEP_HOURS rows (720), inside the Free
+//   plan's 1,000.
 //
 // Demo mode only turns on for the hostnames in DEMO_HOSTS, so a copy of this
 // app published anywhere else runs the real, signed-in owner board and saves
@@ -28,13 +36,13 @@
 // 1. Delete this file.
 // 2. In server/index.js, delete the `import { demo } from "./demo.js";` line and
 //    change the last line to `export default createApp();`.
-// 3. In manifest.userland.json, remove the demo_visitor fields and the
-//    by_demo_visitor indexes.
+// 3. In manifest.userland.json, in the activity collection, remove the
+//    demo_visitor and demo_saved_at fields and the by_demo_visitor index.
 // 4. Delete tests/demo.test.ts.
 // The owner routes then require a signed-in app user with the owner role.
 // ---------------------------------------------------------------------------
 
-import { byNewest, normalizeActivity, normalizeLead } from "./leads.js";
+import { DELETE_BATCH, STAGES, byNewest, byReceived, normalizeActivity, summarizeLeads } from "./leads.js";
 
 // The public demo's named address and the demo app's own address. Both belong
 // to the Userland demo deployment only; replace them if you publish your own
@@ -44,15 +52,24 @@ export const DEMO_HOSTS = new Set(["mini-crm-demo.apps.userland.fun", "4ismmfcft
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 /**
- * Most rows one visitor can save (leads, activity), and most history rows the
- * whole demo holds across all visitors. Every save writes a history row, so
- * `everyone` also caps the total number of demo leads.
+ * Most leads and entries one visitor can save, and most entries the whole
+ * demo takes in any hour. Adding a lead is one entry; each stage change,
+ * follow-up date, or note is one more.
  */
-export const DEMO_LIMITS = { leads: 25, activity: 90, everyone: 1500 };
+export const DEMO_LIMITS = { leads: 10, entries: 40, perHour: 60 };
+
+/** Hours a demo entry is kept before it's removed. */
+export const DEMO_KEEP_HOURS = 12;
+
+/** Most expired rows one save removes on its way through. */
+export const SWEEP_BATCH = 4;
+
+const HOUR_MS = 3_600_000;
 
 /**
- * Thrown when a visitor, or the demo as a whole, hits DEMO_LIMITS.
- * server/index.js shows a friendly page. `scope` is "visitor" or "everyone".
+ * Thrown when the demo refuses a change. server/index.js shows a friendly
+ * page. `scope` is "visitor" (this visitor's limit), "everyone" (the hourly
+ * limit), or "sample" (sample leads can't be deleted).
  */
 export class DemoLimitError extends Error {
   code = "demo_limit";
@@ -60,18 +77,6 @@ export class DemoLimitError extends Error {
     super(`Demo limit reached (${scope}).`);
     this.scope = scope;
   }
-}
-
-/** True when the collection holds at least `count` rows. Pages through list(). */
-async function holdsAtLeast(collection, count) {
-  let seen = 0;
-  let cursor;
-  do {
-    const page = await collection.list({ limit: 100, ...(cursor ? { cursor } : {}) });
-    seen += page.rows.length;
-    cursor = page.cursor;
-  } while (cursor && seen < count);
-  return seen >= count;
 }
 
 function newKey() {
@@ -141,6 +146,7 @@ function sampleLeads(now) {
   return SAMPLE_LEADS.map(({ ago, follow, ...lead }) => ({
     ...lead,
     follow_up_on: follow === null ? "" : daysFromToday(now, follow),
+    received_at: minutesAgo(now, ago),
     created_at: minutesAgo(now, ago),
     updated_at: minutesAgo(now, ago)
   }));
@@ -159,7 +165,7 @@ function sampleActivity(now) {
   }));
 }
 
-/** Apply this visitor's saved changes to a sample lead. */
+/** Apply this visitor's saved changes to a lead. */
 function applyChanges(lead, changes) {
   const next = { ...lead };
   for (const change of [...changes].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
@@ -170,6 +176,29 @@ function applyChanges(lead, changes) {
   return next;
 }
 
+const LEAD_FIELDS = ["name", "email", "phone", "project", "budget", "timeline", "details", "source"];
+const startsLead = (entry) => entry.kind === "received" || entry.kind === "added";
+const isDemoLeadId = (id) => id.startsWith("demo-");
+
+/** A lead added in the demo, from the entry that holds its details. */
+function leadFromEntry(entry) {
+  let saved = {};
+  try {
+    saved = JSON.parse(entry.body);
+  } catch {
+    // Not a lead's details; show what the entry itself has.
+  }
+  const lead = { id: entry.lead_id, stage: "new", follow_up_on: "", received_at: entry.created_at, created_at: entry.created_at, updated_at: entry.created_at };
+  for (const field of LEAD_FIELDS) lead[field] = typeof saved?.[field] === "string" ? saved[field] : "";
+  if (!lead.name) lead.name = entry.lead_name;
+  return lead;
+}
+
+/** History as the pages show it: a lead's details stay out of the feed. */
+function forHistory(entry) {
+  return startsLead(entry) ? { ...entry, body: "" } : entry;
+}
+
 /**
  * A store with the same methods as createStore() in leads.js, limited to the
  * sample leads plus this visitor's own rows. `key` is "" for visitors who
@@ -178,87 +207,105 @@ function applyChanges(lead, changes) {
 function openStore(ctx, key, now = new Date()) {
   const leads = () => ctx.data.collection("leads");
   const activity = () => ctx.data.collection("activity");
+  const cutoff = now.getTime() - DEMO_KEEP_HOURS * HOUR_MS;
+  const isExpired = (row) => !row.demo_saved_at || Date.parse(row.demo_saved_at) <= cutoff;
+  let own = null;
 
+  /** This visitor's entries that haven't expired, newest first. Loaded once per request. */
   async function ownActivity() {
     if (!key) return [];
-    const result = await activity().list({ where: { demo_visitor: key }, limit: 100 });
-    return result.rows.map(normalizeActivity);
-  }
-
-  async function ownLeads() {
-    if (!key) return [];
-    const result = await leads().list({ where: { demo_visitor: key }, limit: 100 });
-    return result.rows.map(normalizeLead);
+    own ??= activity()
+      .list({ where: { demo_visitor: key }, limit: 100 })
+      .then((result) => result.rows.filter((row) => !isExpired(row)).map(normalizeActivity).sort(byNewest));
+    return await own;
   }
 
   async function allActivity() {
     return [...sampleActivity(now), ...(await ownActivity())].sort(byNewest);
   }
 
+  async function allLeads() {
+    const mine = await ownActivity();
+    const added = mine.filter((entry) => startsLead(entry) && isDemoLeadId(entry.lead_id)).map(leadFromEntry);
+    return [...sampleLeads(now), ...added]
+      .map((lead) => applyChanges(lead, mine.filter((entry) => entry.lead_id === lead.id && !startsLead(entry))))
+      .sort(byReceived);
+  }
+
   /**
-   * Throw DemoLimitError unless this visitor may save more. Called once before
-   * each save, so a save never stops halfway.
+   * Remove up to SWEEP_BATCH expired rows, then return how many entries the
+   * whole demo saved in the last hour. Rows without demo_saved_at come from an
+   * older version of the demo, count as expired, and sort first when newest
+   * first; those older versions also saved each lead in the leads
+   * collection, so that row goes too.
    */
-  async function assertRoom({ lead = false } = {}) {
+  async function sweepAndCountLastHour() {
+    const [oldest, newest] = await Promise.all([
+      activity().list({ order_by: [{ field: "demo_saved_at", direction: "asc" }], limit: SWEEP_BATCH }),
+      activity().list({ order_by: [{ field: "demo_saved_at", direction: "desc" }], limit: 100 })
+    ]);
+    const expired = new Map();
+    for (const row of [...newest.rows, ...oldest.rows]) {
+      if (expired.size < SWEEP_BATCH && isExpired(row)) expired.set(row.id, row);
+    }
+    await Promise.all(
+      [...expired.values()].map(async (row) => {
+        await activity().delete(row.id);
+        if (!row.demo_saved_at && startsLead(row) && row.lead_id && !row.lead_id.startsWith("sample-") && !isDemoLeadId(row.lead_id)) {
+          await leads().delete(row.lead_id);
+        }
+      })
+    );
+    return newest.rows.filter((row) => !isExpired(row) && Date.parse(row.demo_saved_at) > now.getTime() - HOUR_MS).length;
+  }
+
+  /** Throw DemoLimitError unless this visitor, and the demo, can take `entries` more. */
+  async function assertRoom({ lead = false, entries = 1 } = {}) {
     if (!key) throw new Error("Demo writes need a visitor key.");
-    if (lead && (await ownLeads()).length >= DEMO_LIMITS.leads) throw new DemoLimitError("visitor");
-    if ((await ownActivity()).length >= DEMO_LIMITS.activity) throw new DemoLimitError("visitor");
-    if (await holdsAtLeast(activity(), DEMO_LIMITS.everyone)) throw new DemoLimitError("everyone");
+    const mine = await ownActivity();
+    if (lead && mine.filter((entry) => startsLead(entry) && isDemoLeadId(entry.lead_id)).length >= DEMO_LIMITS.leads) throw new DemoLimitError("visitor");
+    if (mine.length + entries > DEMO_LIMITS.entries) throw new DemoLimitError("visitor");
+    if ((await sweepAndCountLastHour()) + entries > DEMO_LIMITS.perHour) throw new DemoLimitError("everyone");
   }
 
   async function record(entry) {
-    const row = await activity().create({ ...entry, demo_visitor: key });
+    const row = await activity().create({ ...entry, demo_visitor: key, demo_saved_at: new Date().toISOString() });
+    own = null;
     return normalizeActivity(row);
   }
 
   return {
-    async listLeads() {
-      const history = await allActivity();
-      const samples = sampleLeads(now).map((lead) =>
-        applyChanges(
-          lead,
-          history.filter((entry) => entry.lead_id === lead.id && !entry.id.startsWith("sample-"))
-        )
+    async listLeads({ stage = "" } = {}) {
+      const all = await allLeads();
+      return { leads: stage ? all.filter((lead) => lead.stage === stage) : all, cursor: "" };
+    },
+
+    async summarize(summaryNow) {
+      const all = await allLeads();
+      return summarizeLeads(
+        STAGES.map(({ value }) => ({ stage: value, leads: all.filter((lead) => lead.stage === value), more: false })),
+        summaryNow
       );
-      return [...samples, ...(await ownLeads())].sort(byNewest);
     },
 
     async getLead(id) {
-      if (id.startsWith("sample-")) {
-        return (await this.listLeads()).find((lead) => lead.id === id) ?? null;
-      }
-      if (!key) return null;
-      const row = await leads().get(id);
-      // Never show a row saved under a different visitor's key.
-      return row && row.demo_visitor === key ? normalizeLead(row) : null;
+      if (!id.startsWith("sample-") && !(key && isDemoLeadId(id))) return null;
+      // Only this visitor's rows are loaded, so another visitor's lead id finds nothing.
+      return (await allLeads()).find((lead) => lead.id === id) ?? null;
     },
 
     async createLead(values, { via }) {
       await assertRoom({ lead: true });
-      const row = await leads().create({
-        name: values.name,
-        email: values.email,
-        phone: values.phone,
-        project: values.project,
-        budget: values.budget,
-        timeline: values.timeline || undefined,
-        details: values.details,
-        source: values.source,
-        stage: "new",
-        follow_up_on: "",
-        demo_visitor: key
-      });
-      await record({ lead_id: row.id, lead_name: values.name, kind: via === "public" ? "received" : "added", stage: "new", body: "" });
-      return normalizeLead(row);
+      const details = Object.fromEntries(LEAD_FIELDS.map((field) => [field, values[field] ?? ""]));
+      const entry = await record({ lead_id: `demo-${newKey()}`, lead_name: values.name, kind: via === "public" ? "received" : "added", stage: "new", body: JSON.stringify(details) });
+      return leadFromEntry(entry);
     },
 
     async updateLead(lead, values) {
       const stageChanged = values.stage !== lead.stage;
       const followChanged = values.follow_up_on !== lead.follow_up_on;
-      if (stageChanged || followChanged) await assertRoom();
-      if (!lead.id.startsWith("sample-") && (stageChanged || followChanged)) {
-        await leads().update(lead.id, { stage: values.stage, follow_up_on: values.follow_up_on });
-      }
+      if (!stageChanged && !followChanged) return lead;
+      await assertRoom({ entries: (stageChanged ? 1 : 0) + (followChanged ? 1 : 0) });
       if (stageChanged) await record({ lead_id: lead.id, lead_name: lead.name, kind: "stage", stage: values.stage, body: "" });
       if (followChanged) await record({ lead_id: lead.id, lead_name: lead.name, kind: "follow_up", body: values.follow_up_on });
       return { ...lead, ...values };
@@ -269,14 +316,31 @@ function openStore(ctx, key, now = new Date()) {
       return await record({ lead_id: lead.id, lead_name: lead.name, kind: "note", body });
     },
 
-    async listActivity({ leadId, limit = 100 } = {}) {
-      const history = await allActivity();
-      return (leadId ? history.filter((entry) => entry.lead_id === leadId) : history).slice(0, limit);
+    async recentActivity(limit) {
+      return (await allActivity()).slice(0, limit).map(forHistory);
+    },
+
+    async leadHistory(leadId) {
+      return { entries: (await allActivity()).filter((entry) => entry.lead_id === leadId).map(forHistory), more: false };
+    },
+
+    /** Visitors can delete leads they added. Sample leads stay for everyone. */
+    async deleteLead(lead) {
+      if (!isDemoLeadId(lead.id)) throw new DemoLimitError("sample");
+      const rows = (await ownActivity()).filter((entry) => entry.lead_id === lead.id);
+      // The entry holding the lead's details goes last, like the lead row in leads.js.
+      const ordered = [...rows.filter((entry) => !startsLead(entry)), ...rows.filter(startsLead)];
+      const batch = ordered.slice(0, DELETE_BATCH);
+      await Promise.all(batch.map((entry) => activity().delete(entry.id)));
+      own = null;
+      return { done: batch.length === ordered.length };
     }
   };
 }
 
 export const demo = {
+  /** Hours a demo entry is kept, for the demo notes on the pages. */
+  keepHours: DEMO_KEEP_HOURS,
   /** True when this request is for the public demo (one of DEMO_HOSTS). */
   activeFor(url) {
     return DEMO_HOSTS.has(url.hostname);

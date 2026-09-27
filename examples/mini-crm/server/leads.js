@@ -88,7 +88,10 @@ export function cleanText(value) {
     .trim();
 }
 
-const EMAIL_PATTERN = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+// A plain address: letters, digits, and . _ + ' - ! $ * / = ^ ` { | } ~ before
+// the @, then a domain with at least one dot. No ? & % or #, so an address can't
+// carry extra parts (subject, bcc) into the owner's "mailto:" link.
+const EMAIL_PATTERN = /^[A-Za-z0-9.!$'*+/=^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
 const PHONE_PATTERN = /^[0-9+().\-\s]{7,}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -164,16 +167,63 @@ export function validateNote(form) {
   return { values: { body }, errors };
 }
 
+
 // ---------------------------------------------------------------------------
 // Production store. Two managed data collections declared in the manifest:
-//   leads     one row per lead, holding the current stage and follow-up date
-//   activity  an append-only history: received, added, stage, follow_up, note
+//   leads     one row per lead, holding the current stage and follow-up date.
+//             Indexes: by_stage (stage + received_at) for the board's tabs and
+//             pages, and by_request_key (unique) for the per-email limit on the
+//             public form.
+//   activity  an append-only history: received, added, stage, follow_up, note.
+//             Index: by_lead (lead_id) for a lead's history.
 // Both collections are server_only, so every read and write goes through the
 // routes in server/index.js.
+//
+// Every method makes a small, fixed number of ctx.data calls, because each
+// call counts toward the plan's subrequests per request (25 on Free). Nothing
+// pages through a whole collection.
 // ---------------------------------------------------------------------------
 
-/** Upper bound on leads loaded for the board: five pages of 100 rows. */
-const MAX_LEAD_PAGES = 5;
+/** Leads per page on the board. Older leads are one "Older leads" click away. */
+export const PAGE_SIZE = 50;
+
+/** Leads counted per stage for the board's tabs and stats. More show as "100+". */
+export const COUNT_LIMIT = 100;
+
+/** History entries loaded on a lead page: up to 3 pages of 100, newest first. */
+const HISTORY_PAGES = 3;
+
+/**
+ * History entries removed per request when the owner deletes a lead. A lead
+ * with a longer history needs another press of Delete; the lead itself goes
+ * last, so it never disappears while history still points to it.
+ */
+export const DELETE_BATCH = 15;
+
+/**
+ * Limits on the public request form, so a script can't use up the app's data
+ * rows (Free includes 1,000, and each request uses 2):
+ * - perEmailPerDay: requests one email address can send in a UTC day. Enforced
+ *   with the unique by_request_key index, so it holds even when requests arrive
+ *   at the same moment.
+ * - perHour, perDay: requests the form takes across everyone. Checked with one
+ *   query before saving, so a burst of simultaneous requests can pass it by
+ *   a few. Leads the owner adds count toward these but are never refused.
+ */
+export const REQUEST_LIMITS = { perEmailPerDay: 3, perHour: 20, perDay: 60 };
+
+/** Thrown when the public form refuses a request. `scope` is "email" or "busy". */
+export class RequestLimitError extends Error {
+  code = "request_limit";
+  constructor(scope) {
+    super(`Request limit reached (${scope}).`);
+    this.scope = scope;
+  }
+}
+
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+const NEWEST_FIRST = [{ field: "received_at", direction: "desc" }];
 
 export function normalizeLead(row) {
   return {
@@ -188,6 +238,7 @@ export function normalizeLead(row) {
     stage: row.stage ?? "new",
     source: row.source ?? "other",
     follow_up_on: row.follow_up_on ?? "",
+    received_at: row.received_at || row.created_at,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -209,22 +260,117 @@ export function byNewest(left, right) {
   return String(right.created_at).localeCompare(String(left.created_at));
 }
 
+export function byReceived(left, right) {
+  return String(right.received_at).localeCompare(String(left.received_at));
+}
+
+export function today(now) {
+  return now.toISOString().slice(0, 10);
+}
+
+/** An open lead with a follow-up date of today or earlier. */
+export function isDue(lead, now) {
+  return OPEN_STAGES.has(lead.stage) && Boolean(lead.follow_up_on) && lead.follow_up_on <= today(now);
+}
+
+/**
+ * Board numbers from the leads loaded for each stage. `groups` is
+ * [{ stage, leads, more }], where `more` means the stage has leads beyond the
+ * ones loaded. Every number is { count, more }; views show "100+" when `more`.
+ */
+export function summarizeLeads(groups, now) {
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+  const sum = (list) => ({ count: list.reduce((total, group) => total + group.leads.length, 0), more: list.some((group) => group.more) });
+  const open = groups.filter((group) => OPEN_STAGES.has(group.stage));
+  const dueCount = open.reduce((total, group) => total + group.leads.filter((lead) => isDue(lead, now)).length, 0);
+  const weekCount = groups.reduce((total, group) => total + group.leads.filter((lead) => Date.parse(lead.received_at) >= weekAgo).length, 0);
+  // Leads beyond the loaded ones are older than the last loaded one, so they
+  // can only add to "this week" when that last one is from this week.
+  const weekMore = groups.some((group) => group.more && group.leads.length > 0 && Date.parse(group.leads.at(-1).received_at) >= weekAgo);
+  return {
+    counts: Object.fromEntries(groups.map((group) => [group.stage, { count: group.leads.length, more: group.more }])),
+    total: sum(groups),
+    open: sum(open),
+    due: { count: dueCount, more: open.some((group) => group.more) },
+    thisWeek: { count: weekCount, more: weekMore }
+  };
+}
+
+/** A per-day key for one email address, without storing the address again. */
+async function requestKeyBase(email, now) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(email));
+  const hex = [...new Uint8Array(digest).slice(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${today(now)}:${hex}`;
+}
+
+function isUniqueConflict(error) {
+  return error?.code === "unique_conflict";
+}
+
 export function createStore(ctx) {
   const leads = () => ctx.data.collection("leads");
   const activity = () => ctx.data.collection("activity");
 
+  /** Refuse public requests while the form is over REQUEST_LIMITS.perHour or perDay. */
+  async function assertFormOpen(now) {
+    const { rows } = await leads().list({ order_by: NEWEST_FIRST, limit: REQUEST_LIMITS.perDay });
+    const since = (ms) => rows.filter((row) => Date.parse(row.received_at || row.created_at) > now.getTime() - ms).length;
+    if (since(HOUR_MS) >= REQUEST_LIMITS.perHour || since(DAY_MS) >= REQUEST_LIMITS.perDay) {
+      throw new RequestLimitError("busy");
+    }
+  }
+
+  /**
+   * Save a lead and its first history entry. ctx.data.transaction groups the
+   * two writes but does not undo the first if the second fails, so a lead can
+   * exist without its "received" entry; the pages handle that.
+   */
+  async function saveLead(values, { via, receivedAt, requestKey }) {
+    return await ctx.data.transaction(async (tx) => {
+      const lead = await tx.collection("leads").create({
+        name: values.name,
+        email: values.email,
+        phone: values.phone,
+        project: values.project,
+        budget: values.budget,
+        timeline: values.timeline || undefined,
+        details: values.details,
+        source: values.source,
+        stage: "new",
+        follow_up_on: "",
+        received_at: receivedAt,
+        request_key: requestKey
+      });
+      await tx.collection("activity").create({
+        lead_id: lead.id,
+        lead_name: values.name,
+        kind: via === "public" ? "received" : "added",
+        stage: "new",
+        body: ""
+      });
+      return normalizeLead(lead);
+    });
+  }
+
   return {
-    /** Every lead, newest first. A small shop's list fits in a few pages. */
-    async listLeads() {
-      const rows = [];
-      let cursor;
-      for (let page = 0; page < MAX_LEAD_PAGES; page += 1) {
-        const result = await leads().list({ limit: 100, ...(cursor ? { cursor } : {}) });
-        rows.push(...result.rows);
-        cursor = result.cursor;
-        if (!cursor) break;
-      }
-      return rows.map(normalizeLead).sort(byNewest);
+    /** One page of leads, newest first, optionally for one stage. */
+    async listLeads({ stage = "", cursor = "" } = {}) {
+      const page = await leads().list({
+        ...(stage ? { where: { stage } } : {}),
+        order_by: NEWEST_FIRST,
+        limit: PAGE_SIZE,
+        ...(cursor ? { cursor } : {})
+      });
+      return { leads: page.rows.map(normalizeLead), cursor: page.cursor ?? "" };
+    },
+
+    /** Counts for the board's tabs and stats: one query per stage. */
+    async summarize(now) {
+      const pages = await Promise.all(STAGES.map(({ value }) => leads().list({ where: { stage: value }, order_by: NEWEST_FIRST, limit: COUNT_LIMIT })));
+      return summarizeLeads(
+        STAGES.map(({ value }, index) => ({ stage: value, leads: pages[index].rows.map(normalizeLead), more: Boolean(pages[index].cursor) })),
+        now
+      );
     },
 
     async getLead(id) {
@@ -232,30 +378,26 @@ export function createStore(ctx) {
       return row ? normalizeLead(row) : null;
     },
 
-    /** Create a lead and its first activity entry together. */
-    async createLead(values, { via }) {
-      return await ctx.data.transaction(async (tx) => {
-        const lead = await tx.collection("leads").create({
-          name: values.name,
-          email: values.email,
-          phone: values.phone,
-          project: values.project,
-          budget: values.budget,
-          timeline: values.timeline || undefined,
-          details: values.details,
-          source: values.source,
-          stage: "new",
-          follow_up_on: ""
-        });
-        await tx.collection("activity").create({
-          lead_id: lead.id,
-          lead_name: values.name,
-          kind: via === "public" ? "received" : "added",
-          stage: "new",
-          body: ""
-        });
-        return normalizeLead(lead);
-      });
+    /**
+     * Create a lead. Public requests pass REQUEST_LIMITS first: each email
+     * address gets perEmailPerDay slots a day in the unique request_key index,
+     * and a request takes the first free slot. When every slot is taken the
+     * platform refuses the write, so two requests can never share one.
+     */
+    async createLead(values, { via, now = new Date() }) {
+      const receivedAt = now.toISOString();
+      if (via !== "public") return await saveLead(values, { via, receivedAt });
+
+      await assertFormOpen(now);
+      const base = await requestKeyBase(values.email, now);
+      for (let slot = 0; slot < REQUEST_LIMITS.perEmailPerDay; slot += 1) {
+        try {
+          return await saveLead(values, { via, receivedAt, requestKey: `${base}:${slot}` });
+        } catch (error) {
+          if (!isUniqueConflict(error)) throw error;
+        }
+      }
+      throw new RequestLimitError("email");
     },
 
     /** Change the stage and/or follow-up date, recording each change. */
@@ -283,16 +425,39 @@ export function createStore(ctx) {
     },
 
     /**
-     * Recent activity across all leads, or the full history of one lead.
-     * Rows come back most recently updated first, and activity rows are never
-     * updated, so `limit` keeps the newest entries.
+     * The newest history entries across all leads, for the board's feed.
+     * Without order_by, rows come back most recently updated first, and
+     * history rows are never updated, so this is the newest `limit` entries.
      */
-    async listActivity({ leadId, limit = 100 } = {}) {
-      const result = await activity().list({
-        ...(leadId ? { where: { lead_id: leadId } } : {}),
-        limit
-      });
+    async recentActivity(limit) {
+      const result = await activity().list({ limit });
       return result.rows.map(normalizeActivity).sort(byNewest);
+    },
+
+    /** One lead's history, newest first. `more` is true when older entries weren't loaded. */
+    async leadHistory(leadId) {
+      const rows = [];
+      let cursor;
+      for (let page = 0; page < HISTORY_PAGES; page += 1) {
+        const result = await activity().list({ where: { lead_id: leadId }, limit: 100, ...(cursor ? { cursor } : {}) });
+        rows.push(...result.rows);
+        cursor = result.cursor;
+        if (!cursor) break;
+      }
+      return { entries: rows.map(normalizeActivity).sort(byNewest), more: Boolean(cursor) };
+    },
+
+    /**
+     * Delete a lead and its history, DELETE_BATCH history entries at a time.
+     * Returns { done: false } when history is left and the lead is kept, so
+     * the owner can press Delete again.
+     */
+    async deleteLead(lead) {
+      const page = await activity().list({ where: { lead_id: lead.id }, limit: DELETE_BATCH });
+      await Promise.all(page.rows.map((row) => activity().delete(row.id)));
+      if (page.cursor) return { done: false };
+      await leads().delete(lead.id);
+      return { done: true };
     }
   };
 }

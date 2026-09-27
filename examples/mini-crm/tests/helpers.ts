@@ -1,60 +1,76 @@
 // Shared helpers for the mini-crm tests.
 
-export type Row = Record<string, unknown> & { id: string; created_at: string; updated_at: string };
+import path from "node:path";
+import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
+
 export type User = { id: string; email: string; roles: string[] } | null;
 
 export const ORIGIN = "https://crm.example.test";
 /** The public demo's address, where demo mode turns on (DEMO_HOSTS in server/demo.js). */
 export const DEMO_ORIGIN = "https://mini-crm-demo.apps.userland.fun";
 
-/** In-memory stand-in for the Userland runtime ctx: data, auth, and log. */
-export function makeCtx({ user = null as User } = {}) {
-  const state: Record<string, Row[]> = { leads: [], activity: [] };
-  let clock = Date.parse("2026-09-01T12:00:00.000Z");
-  const tick = () => new Date((clock += 1000)).toISOString();
+export const EXAMPLE_DIR = path.resolve(import.meta.dirname, "..");
+
+/**
+ * A test ctx built from this example's manifest by the shared runtime harness,
+ * so queries on fields without an index fail here as they do on Userland.
+ * Differences from the plain harness, to match deployed apps:
+ * - a unique index clash throws code "unique_conflict";
+ * - ctx.data.transaction does not undo earlier writes when a later one throws;
+ * - `faults.quotaFull` makes every create throw code "quota_exceeded", like an
+ *   app that has used its plan's data rows.
+ */
+export function makeCtx({ user = null as User, manifest = readExampleManifest(EXAMPLE_DIR) } = {}) {
+  const rt = createFakeRuntime(manifest, { user: user ? { ...user, app_user_id: user.id } : null });
+  const faults = { quotaFull: false };
+
+  const rethrow = (error: any): never => {
+    if (error?.code === "unique_violation") throw Object.assign(new Error(error.message), { code: "unique_conflict", status: 409 });
+    throw error;
+  };
 
   const collection = (name: string) => {
-    const rows = state[name];
-    if (!rows) throw new Error(`Unknown collection ${name}`);
+    const inner = rt.ctx.data.collection(name);
     return {
       async create(input: Record<string, unknown>) {
-        const now = tick();
-        const row = { ...input, id: `${name}_${rows.length + 1}`, created_at: now, updated_at: now } as Row;
-        rows.push(row);
-        return { ...row };
+        if (faults.quotaFull) throw Object.assign(new Error("Data row quota exceeded."), { code: "quota_exceeded", status: 402 });
+        return await inner.create(input).catch(rethrow);
       },
-      async get(id: string) {
-        const row = rows.find((candidate) => candidate.id === id);
-        return row ? { ...row } : null;
-      },
-      async update(id: string, patch: Record<string, unknown>) {
-        const row = rows.find((candidate) => candidate.id === id);
-        if (!row) throw new Error(`Missing row ${id}`);
-        Object.assign(row, patch, { updated_at: tick() });
-        return { ...row };
-      },
-      async list(options: { where?: Record<string, unknown>; limit?: number; cursor?: string } = {}) {
-        const matches = rows
-          .filter((row) => Object.entries(options.where ?? {}).every(([key, value]) => row[key] === value))
-          .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
-        const offset = options.cursor ? Number(atob(options.cursor)) : 0;
-        const limit = options.limit ?? 50;
-        const page = matches.slice(offset, offset + limit);
-        return { rows: page.map((row) => ({ ...row })), ...(offset + limit < matches.length ? { cursor: btoa(String(offset + limit)) } : {}) };
-      }
+      get: inner.get,
+      update: (id: string, patch: Record<string, unknown>) => inner.update(id, patch).catch(rethrow),
+      delete: inner.delete,
+      list: inner.list,
+      query: inner.query
     };
   };
 
-  const data = { collection, async transaction<T>(callback: (tx: { collection: typeof collection }) => Promise<T>) { return await callback({ collection }); } };
+  const data = {
+    app_id: "app_test",
+    collection,
+    async transaction<T>(callback: (tx: { collection: typeof collection }) => Promise<T>) {
+      return await callback({ collection });
+    }
+  };
+
   return {
-    state,
+    rt,
+    faults,
     data,
-    auth: { currentUser: vi.fn(async () => user) },
-    log: { info: vi.fn(async () => {}), error: vi.fn(async () => {}) }
+    /** The rows saved so far, by collection. */
+    get state() {
+      return { leads: rt.state.rows.get("leads")!, activity: rt.state.rows.get("activity")! };
+    },
+    setUser(next: User) {
+      rt.setUser(next ? { ...next, app_user_id: next.id } : null);
+    },
+    auth: { currentUser: vi.fn(async (request: Request) => await rt.ctx.auth.currentUser(request)) },
+    log: { info: vi.fn(async () => {}), warn: vi.fn(async () => {}), error: vi.fn(async () => {}) }
   };
 }
 
 export type Ctx = ReturnType<typeof makeCtx>;
+
+export const OWNER = { id: "u_1", email: "owner@example.com", roles: ["owner"] };
 
 /** Request helpers for one origin. */
 export function at(origin: string) {
