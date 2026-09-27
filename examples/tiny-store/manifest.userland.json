@@ -13,7 +13,7 @@
   "resources": {
     "auth": {
       "mode": "app_users",
-      "roles": ["admin", "customer"],
+      "roles": ["admin"],
       "public_signup": true
     },
     "data": {

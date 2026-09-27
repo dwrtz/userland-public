@@ -146,8 +146,8 @@ manifest=examples/webhook-automation/manifest.userland.json
 plan=free
 plan_source=flag
 required_plan=starter
-release_files=6
-release_bytes=12612
+release_files=7
+release_bytes=17631
 
 manifest_path=resources.webhooks
 feature=webhooks.enabled
@@ -253,8 +253,8 @@ Docs: https://docs.userland.fun/reference/limits/
   "warnings": [],
   "manifest_file": "manifest.userland.json",
   "release": {
-    "file_count": 6,
-    "bundle_bytes": 12612
+    "file_count": 7,
+    "bundle_bytes": 17631
   }
 }
 ```

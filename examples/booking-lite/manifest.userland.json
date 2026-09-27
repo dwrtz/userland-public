@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Booking Lite",
-    "summary": "Claim available booking slots with Userland data transactions.",
+    "summary": "Book open time slots, one booking per slot.",
     "visibility": "public",
     "tags": ["booking", "data"]
   },
@@ -27,6 +27,11 @@
             {
               "name": "by_status",
               "fields": ["status", "starts_at"]
+            },
+            {
+              "name": "by_time",
+              "fields": ["starts_at", "title"],
+              "unique": true
             }
           ],
           "access": {
@@ -41,7 +46,7 @@
             "email": "string",
             "status": {
               "type": "enum",
-              "values": ["confirmed", "cancelled"]
+              "values": ["confirmed"]
             }
           },
           "indexes": [
@@ -49,6 +54,10 @@
               "name": "by_slot",
               "fields": ["slot_id"],
               "unique": true
+            },
+            {
+              "name": "by_email",
+              "fields": ["email"]
             }
           ],
           "access": {

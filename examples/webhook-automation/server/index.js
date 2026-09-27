@@ -1,49 +1,50 @@
-function json(data, init = {}) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      ...(init.headers ?? {})
-    }
-  });
-}
+// Senders must give every event a stable id of their own. It is how repeats
+// are recognized: a retry or a replayed request carries the same id.
+const EXTERNAL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/u;
 
-async function listEvents(ctx) {
-  // Without an `order_by`, rows come back most recently updated first.
-  // Return a summary only: stored payloads stay server-side.
-  const events = await ctx.data.collection("automation-events").list({ limit: 50 });
-  return json({
-    events: events.rows.map((row) => ({
-      id: row.id,
-      external_id: row.external_id,
-      status: row.status,
-      created_at: row.created_at
-    }))
-  });
+// Keep only the fields this automation needs. Everything else in the body is
+// dropped rather than stored, so customer details the sender includes do not
+// pile up in app data.
+function storedFields(body) {
+  return {
+    type: typeof body.type === "string" ? body.type.slice(0, 100) : null
+  };
 }
 
 // When a manifest webhook uses `deliver_to: "job"`, Userland verifies the
 // signature and enqueues the job with this payload:
 //   { webhook_delivery_id, name, headers, payload }
-// where `payload` is the parsed request body.
+// where `payload` is the parsed request body. `webhook_delivery_id` is new for
+// every request Userland receives, including a sender's retry, so it cannot
+// be used to spot repeats.
 async function processAutomationEvent(event, ctx) {
   const delivery = event.payload ?? {};
-  const body = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
-  const externalId = String(body.external_id ?? delivery.webhook_delivery_id ?? event.job_id);
-  const events = ctx.data.collection("automation-events");
-
-  // Webhook providers retry. Skip deliveries that were already processed.
-  const existing = await events.list({ where: { external_id: externalId }, limit: 1 });
-  if (existing.rows.length > 0) {
-    await ctx.log.info("automation event already processed", { automation_event_id: existing.rows[0].id, external_id: externalId });
+  const body = delivery.payload && typeof delivery.payload === "object" && !Array.isArray(delivery.payload) ? delivery.payload : {};
+  const externalId = typeof body.external_id === "string" ? body.external_id : "";
+  if (!EXTERNAL_ID_PATTERN.test(externalId)) {
+    await ctx.log.warn("automation event skipped", { reason: "missing_external_id", webhook_delivery_id: delivery.webhook_delivery_id });
     return;
   }
 
-  const row = await events.create({
-    external_id: externalId,
-    status: "processed",
-    payload: body
-  });
+  // The by_external_id unique index records each event once. A retry, a
+  // replay, or two deliveries processed at the same moment all hit the index,
+  // and the second one is treated as already done.
+  let row;
+  try {
+    row = await ctx.data.collection("automation-events").create({
+      external_id: externalId,
+      status: "processed",
+      payload: storedFields(body)
+    });
+  } catch (error) {
+    if (error?.code !== "unique_conflict") throw error;
+    await ctx.log.info("automation event already processed", { external_id: externalId, webhook_delivery_id: delivery.webhook_delivery_id });
+    return;
+  }
+
+  // Put side effects (emails, API calls) after the row is created, so each
+  // external_id is acted on at most once. If one fails, log it with
+  // ctx.log.error and fix it by hand; a retry of the job would skip it.
   await ctx.log.info("automation event processed", {
     automation_event_id: row.id,
     external_id: externalId,
@@ -51,23 +52,11 @@ async function processAutomationEvent(event, ctx) {
   });
 }
 
-// HEAD asks for a page's status and headers without the page itself (link
-// checkers and uptime monitors send it). Answer it exactly as GET would, then
-// drop the body.
-async function answerHead(request, ctx, fetchGet) {
-  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
-  await response.body?.cancel();
-  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
-}
-
-const app = {
-  async fetch(request, ctx) {
-    if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
-    const url = new URL(request.url);
-    if (url.pathname === "/api/events" && request.method === "GET") {
-      return await listEvents(ctx);
-    }
-    return new Response("Not found", { status: 404 });
+export default {
+  // The app has no public routes. Processed events are in the activity log:
+  //   userland apps events <app-id> --type runtime.log.info
+  async fetch(request) {
+    return new Response(request.method === "HEAD" ? null : "Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
   },
 
   async job(event, ctx) {
@@ -76,5 +65,3 @@ const app = {
     }
   }
 };
-
-export default app;

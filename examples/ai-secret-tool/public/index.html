@@ -4,12 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Secret Tool</title>
+    <link rel="stylesheet" href="/assets/app.css">
   </head>
   <body>
     <main>
       <h1>AI Secret Tool</h1>
-      <p>The browser calls the app server. The server reads MODEL_API_KEY and calls the model provider.</p>
+      <p>Ask a question and this app asks the AI model for you. The key it uses to reach the model stays private and never reaches your browser.</p>
+      <form id="ask">
+        <label for="prompt">Your question</label>
+        <textarea id="prompt" name="prompt" required maxlength="4000"></textarea>
+        <button type="submit">Ask</button>
+      </form>
+      <section id="answer" aria-live="polite"></section>
     </main>
+    <script type="module" src="/assets/app.js"></script>
   </body>
 </html>
-

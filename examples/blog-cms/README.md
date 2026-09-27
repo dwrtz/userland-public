@@ -8,6 +8,8 @@ A blog where admins write posts and upload images, and anyone can read published
 - App sign-in with an `admin` role. Only admins can create, publish, or upload.
 - A `posts` data collection. Visitors only ever see published posts.
 - A public `media` file store for images (up to 5 MB each).
+- A home page that lists posts 20 at a time with a "Show more" button. Signed-in admins also get a post editor and a list of drafts with Publish buttons; everyone else gets a sign-in link.
+- Admin actions only work from the blog's own pages. Another site, including another app on `apps.userland.fun`, cannot post to them on a signed-in admin's behalf.
 
 ## Plan
 
@@ -27,7 +29,9 @@ userland apps publish examples/blog-cms
 
 ## Add an admin
 
-Sign-up is closed, so invite the first admin after publishing. The invite creates an app user for this blog only. It does not give access to your Userland account. See the Auth guide for the `POST /v0/apps/<app-id>/admin-invites` request.
+Sign-up is closed, so invite the first admin after publishing. The invite creates an app user for this blog only. It does not give access to your Userland account. See the Auth guide for the `POST /v0/apps/<app-id>/admin-invites` request (use `"roles":["admin"]`).
+
+Once the admin has set a password, they open the blog, choose **sign in**, and the editor appears on the home page.
 
 ## Try it
 
@@ -35,7 +39,9 @@ Sign-up is closed, so invite the first admin after publishing. The invite create
 curl https://<app-id>.apps.userland.fun/api/posts
 ```
 
-Creating a post without signing in as an admin returns `401`. Signing in without the `admin` role returns `403`.
+The list returns up to 20 posts and, when there are more, a `cursor`. Pass it back as `?cursor=<cursor>` for the next page.
+
+Creating a post without signing in as an admin returns `401`. Signing in without the `admin` role returns `403`. A post sent from another website returns `403`, and a post body that is not JSON returns `415`.
 
 ## Troubleshoot or undo
 
