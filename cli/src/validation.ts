@@ -80,10 +80,19 @@ export interface ValidationReport {
 }
 
 export interface ValidateOptions {
+  /** Treat schema-only strictness the API tolerates (code schema_strict) as errors. */
+  strict?: boolean;
   planKey?: PlanKey;
   planSource?: "flag" | "account";
   /** Effective account entitlements; defaults to the public plan table entry for planKey. */
   entitlements?: EntitlementConfig;
+}
+
+/** Plan-independent result of reading an app directory; apply a plan with applyPlan. */
+export interface AppAnalysis {
+  report: ValidationReport;
+  /** Plan requirements, or null when manifest errors prevent the analysis. */
+  requirements: Requirement[] | null;
 }
 
 export interface ReleaseFileEntry {
@@ -102,7 +111,9 @@ type JsonSchema = Record<string, unknown>;
 
 const MANIFEST_FILE = "manifest.userland.json";
 const LEGACY_MANIFEST_FILE = "manifest.json";
-const CLI_MANIFEST_KEYS = new Set(["files", "message", "provenance"]);
+// Top-level keys the CLI reads itself (never sent to the API as manifest fields). `$schema`
+// is the editor hint for schemas/resource-manifest-v0.schema.json and is ignored.
+const CLI_MANIFEST_KEYS = new Set(["$schema", "files", "message", "provenance"]);
 const RESERVED_RESOURCE_NAMES = new Set(["_userland", "system", "auth", "session", "sessions", "secrets", "runtime"]);
 const CONTENT_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9a-z]+\/[!#$%&'*+\-.^_`|~0-9a-z]+(?:\s*;\s*[!#$%&'*+\-.^_`|~0-9a-z]+=(?:"[^"]*"|[!#$%&'*+\-.^_`|~0-9a-z]+))*$/iu;
 
@@ -158,10 +169,18 @@ function readSchemaArtifact(name: string): unknown {
 // ---------------------------------------------------------------------------
 
 export async function validateAppDirectory(rootDir: string, options: ValidateOptions = {}): Promise<ValidationReport> {
+  return applyPlan(await analyzeAppDirectory(rootDir, { strict: options.strict }), options);
+}
+
+/**
+ * Reads the manifest and release files once and runs every plan-independent check.
+ * The `apps publish` preflight calls this, then applyPlan with the account's entitlements.
+ */
+export async function analyzeAppDirectory(rootDir: string, options: { strict?: boolean } = {}): Promise<AppAnalysis> {
   const report: ValidationReport = {
     ok: false,
-    plan: options.planKey ?? null,
-    plan_source: options.planKey ? options.planSource ?? "flag" : null,
+    plan: null,
+    plan_source: null,
     required_plan_key: null,
     violations: [],
     plan_gated: [],
@@ -174,12 +193,12 @@ export async function validateAppDirectory(rootDir: string, options: ValidateOpt
   const stat = await fs.stat(absoluteRoot).catch(() => null);
   if (!stat?.isDirectory()) {
     report.errors.push({ code: "directory_not_found", manifest_path: "", message: `Directory not found: ${rootDir}` });
-    return report;
+    return { report, requirements: null };
   }
 
   const loaded = await loadManifestFile(absoluteRoot, report);
   if (loaded === undefined) {
-    return finish(report);
+    return { report: finish(report), requirements: null };
   }
   const { document } = loaded;
 
@@ -198,34 +217,49 @@ export async function validateAppDirectory(rootDir: string, options: ValidateOpt
     }
   }
 
-  const cliKeyErrors = validateCliKeys(cliKeys);
-  const manifestErrors = [...validateManifestDocument(manifestDocument), ...cliKeyErrors];
+  const check = checkManifestDocument(manifestDocument);
+  const manifestErrors = [...check.errors, ...validateCliKeys(cliKeys)];
   report.errors.push(...manifestErrors);
+  if (options.strict) {
+    report.errors.push(...check.schema_strict);
+  } else {
+    report.warnings.push(...check.schema_strict);
+  }
 
   const releaseFiles = await collectReleaseFiles(absoluteRoot, document, report);
-  await checkRuntimePaths(absoluteRoot, manifestDocument, releaseFiles, report);
+  await checkRuntimePaths(absoluteRoot, check.normalized, releaseFiles, report);
 
+  let requirements: Requirement[] | null = null;
   if (manifestErrors.length === 0) {
+    const normalized = check.normalized;
     const input: ManifestInput = {
-      app: manifestDocument.app as Record<string, unknown>,
-      runtime: manifestDocument.runtime as Record<string, unknown>,
-      resources: (manifestDocument.resources as Record<string, unknown> | undefined) ?? {}
+      app: normalized.app as Record<string, unknown>,
+      runtime: normalized.runtime as Record<string, unknown>,
+      resources: (normalized.resources as Record<string, unknown> | undefined) ?? {}
     };
-    const requirements = [
+    requirements = [
       ...analyzeManifestRequirements(input),
       ...releaseRequirements(report.release.file_count, report.release.bundle_bytes)
     ];
     report.required_plan_key = minimumPlanFor(requirements);
     report.plan_gated = evaluateRequirements(requirements, "free", planData().plans.free);
-    if (options.planKey) {
-      const config = options.entitlements ?? planData().plans[options.planKey];
-      if (!config) {
-        throw new Error(`Unknown plan: ${options.planKey}`);
-      }
-      report.violations = evaluateRequirements(requirements, options.planKey, config);
-    }
   }
 
+  return { report: finish(report), requirements };
+}
+
+/** Checks an analysis against a plan (the public plan table, or an account's entitlements). */
+export function applyPlan(analysis: AppAnalysis, options: ValidateOptions = {}): ValidationReport {
+  const report: ValidationReport = { ...analysis.report, violations: [] };
+  report.plan = options.planKey ?? null;
+  report.plan_source = options.planKey ? options.planSource ?? "flag" : null;
+  if (options.planKey && analysis.requirements) {
+    const config = options.entitlements ?? planData().plans[options.planKey];
+    if (!config) {
+      throw new Error(`Unknown plan: ${options.planKey}`);
+    }
+    report.violations = evaluateRequirements(analysis.requirements, options.planKey, config);
+  }
   return finish(report);
 }
 
@@ -269,12 +303,127 @@ async function loadManifestFile(rootDir: string, report: ValidationReport): Prom
 
 /** Schema validation plus the cross-field rules the API enforces for app, runtime, and resources. */
 export function validateManifestDocument(document: Record<string, unknown>): ValidationIssue[] {
-  const schemaErrors = validateAgainstSchema(document, manifestSchema());
-  return schemaErrors.length > 0 ? schemaErrors : semanticManifestErrors(document);
+  return checkManifestDocument(document).errors;
+}
+
+export interface ManifestCheck {
+  /** Problems the API rejects when publishing (400 invalid_*_manifest). */
+  errors: ValidationIssue[];
+  /** Places the published schema is stricter than the API; the API accepts these today. */
+  schema_strict: ValidationIssue[];
+  /** The document after the API's own normalization (what plan analysis runs on). */
+  normalized: Record<string, unknown>;
+}
+
+/**
+ * Validates a manifest document ({ app, runtime, resources }) against the published schema,
+ * then separates what the API would reject from schema-only strictness it tolerates:
+ * unknown keys under the top level, app, runtime, or resources; `resources: null`; null
+ * defaults; whitespace the API trims; and a few schema-only name rules. Publishing must
+ * not block on the second group, so it is reported with code `schema_strict`.
+ */
+export function checkManifestDocument(document: Record<string, unknown>): ManifestCheck {
+  const schema = manifestSchema();
+  const strictErrors = schemaErrors(document, schema);
+  if (strictErrors.length === 0) {
+    return { errors: semanticManifestErrors(document), schema_strict: [], normalized: document };
+  }
+  const normalized = normalizeLikeApi(document);
+  const apiErrors = schemaErrors(normalized, schema).filter((error) => !apiToleratesSchemaError(error));
+  const errors = apiErrors.map(toIssue);
+  const blockingPaths = new Set(errors.map((error) => error.manifest_path));
+  const schemaStrict = strictErrors
+    .map(toIssue)
+    .filter((error) => !blockingPaths.has(error.manifest_path))
+    .map((error) => ({
+      code: "schema_strict",
+      manifest_path: error.manifest_path,
+      message: `${error.message} in the published manifest schema; the API accepts it today, but fix it to keep the manifest schema-valid.`
+    }));
+  return {
+    errors: errors.length > 0 ? errors : semanticManifestErrors(normalized),
+    schema_strict: schemaStrict,
+    normalized
+  };
+}
+
+/** Applies the API's lenient parsing so only the rules it enforces remain for the schema. */
+function normalizeLikeApi(document: Record<string, unknown>): Record<string, unknown> {
+  const copy = structuredClone(document);
+  const dropUnknown = (value: unknown, allowed: Set<string>): void => {
+    if (!isPlainObject(value)) return;
+    for (const key of Object.keys(value)) {
+      if (!allowed.has(key)) delete value[key];
+    }
+  };
+  dropUnknown(copy, schemaPropertyKeys([]));
+  dropUnknown(copy.app, schemaPropertyKeys(["app"]));
+  dropUnknown(copy.runtime, schemaPropertyKeys(["runtime"]));
+  if (copy.resources === null) {
+    delete copy.resources;
+  }
+  dropUnknown(copy.resources, schemaPropertyKeys(["resources"]));
+
+  const trimStrings = (values: unknown, transform: (value: string) => string = (value) => value.trim()): unknown =>
+    Array.isArray(values) ? values.map((value) => (typeof value === "string" ? transform(value) : value)) : values;
+  if (isPlainObject(copy.app) && copy.app.tags !== undefined) {
+    copy.app.tags = trimStrings(copy.app.tags);
+  }
+  const resources = isPlainObject(copy.resources) ? copy.resources : {};
+  if (isPlainObject(resources.auth) && resources.auth.mode === null) {
+    delete resources.auth.mode;
+  }
+  if (isPlainObject(resources.secrets) && resources.secrets.required !== undefined) {
+    resources.secrets.required = trimStrings(resources.secrets.required);
+  }
+  for (const [, store] of objectEntries(isPlainObject(resources.files) ? resources.files.stores : undefined)) {
+    if (isPlainObject(store) && store.allowed_content_types !== undefined) {
+      store.allowed_content_types = trimStrings(store.allowed_content_types, (value) => value.trim().toLowerCase());
+    }
+  }
+  for (const [, job] of objectEntries(resources.jobs)) {
+    if (!isPlainObject(job)) continue;
+    if (job.trigger === null) delete job.trigger;
+    if (job.max_attempts === null) delete job.max_attempts;
+  }
+  for (const [, webhook] of objectEntries(resources.webhooks)) {
+    if (isPlainObject(webhook) && typeof webhook.secret === "string") {
+      webhook.secret = webhook.secret.trim();
+    }
+  }
+  return copy;
+}
+
+/** Schema rules with no API counterpart: reserved data index names and empty enum values. */
+function apiToleratesSchemaError(error: SchemaError): boolean {
+  const at = error.path;
+  const last = at[at.length - 1];
+  const parent = at[at.length - 2];
+  if (at[0] !== "resources" || at[1] !== "data") return false;
+  if (last === "name" && typeof parent === "number" && at[at.length - 3] === "indexes") {
+    return error.keyword === "not";
+  }
+  if (typeof last === "number" && parent === "values") {
+    return error.keyword === "minLength";
+  }
+  return false;
+}
+
+function schemaPropertyKeys(at: string[]): Set<string> {
+  const root = manifestSchema();
+  const deref = (node: unknown): unknown => (isPlainObject(node) && typeof node.$ref === "string" ? deref(resolveRef(root, node.$ref)) : node);
+  let node = deref(root);
+  for (const part of at) {
+    node = isPlainObject(node) && isPlainObject(node.properties) ? deref(node.properties[part]) : undefined;
+  }
+  return new Set(isPlainObject(node) && isPlainObject(node.properties) ? Object.keys(node.properties) : []);
 }
 
 function validateCliKeys(cliKeys: Record<string, unknown>): ValidationIssue[] {
   const errors: ValidationIssue[] = [];
+  if (cliKeys.$schema !== undefined && typeof cliKeys.$schema !== "string") {
+    errors.push({ code: "schema", manifest_path: "$schema", message: "must be a string" });
+  }
   if (cliKeys.message !== undefined && typeof cliKeys.message !== "string") {
     errors.push({ code: "schema", manifest_path: "message", message: "must be a string" });
   }
@@ -363,6 +512,9 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
   const jobs = (resources.jobs as Record<string, unknown> | undefined) ?? {};
   for (const [webhookName, webhookValue] of objectEntries(resources.webhooks)) {
     const webhook = webhookValue as Record<string, unknown>;
+    if (webhook.provider !== "none" && typeof webhook.secret !== "string") {
+      errors.push({ code: "invalid_resource_manifest", manifest_path: `resources.webhooks.${webhookName}.secret`, message: `is required when provider is ${String(webhook.provider)}` });
+    }
     const target = webhook.deliver_to === "job" ? webhook.job : typeof webhook.deliver_to === "string" && webhook.deliver_to.startsWith("job:") ? webhook.deliver_to.slice("job:".length) : undefined;
     if (typeof target === "string" && !(target in jobs)) {
       const targetPath = webhook.deliver_to === "job" ? "job" : "deliver_to";
@@ -377,7 +529,7 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
 // ---------------------------------------------------------------------------
 
 /** Lists the files `apps publish` would upload, mirroring its selection rules. */
-export async function listReleaseFiles(rootDir: string, document: Record<string, unknown>): Promise<ReleaseFileEntry[]> {
+export async function listReleaseFiles(rootDir: string, document: Record<string, unknown>, skippedSymlinks?: string[]): Promise<ReleaseFileEntry[]> {
   const manifestFiles = Array.isArray(document.files) ? document.files : null;
   if (manifestFiles && manifestFiles.length > 0) {
     return manifestFiles
@@ -388,19 +540,28 @@ export async function listReleaseFiles(rootDir: string, document: Record<string,
         ...(typeof entry.content_type === "string" ? { contentType: entry.content_type } : {})
       }));
   }
-  return (await walk(rootDir))
+  const skipped: string[] = [];
+  const files = (await walk(rootDir, skipped))
     .filter((filePath) => !isManifestFile(filePath))
     .sort()
     .map((filePath) => ({
-      path: path.relative(rootDir, filePath).split(path.sep).join("/"),
+      path: toReleasePath(rootDir, filePath),
       absolutePath: filePath
     }));
+  skippedSymlinks?.push(...skipped.map((filePath) => toReleasePath(rootDir, filePath)).sort());
+  return files;
+}
+
+function toReleasePath(rootDir: string, filePath: string): string {
+  return path.relative(rootDir, filePath).split(path.sep).join("/");
 }
 
 async function collectReleaseFiles(rootDir: string, document: Record<string, unknown>, report: ValidationReport): Promise<Set<string>> {
   const bundle = planData().bundle_limits;
-  const entries = await listReleaseFiles(rootDir, document);
+  const skippedSymlinks: string[] = [];
+  const entries = await listReleaseFiles(rootDir, document, skippedSymlinks);
   const fromManifest = Array.isArray(document.files) && document.files.length > 0;
+  const realRoot = await fs.realpath(rootDir);
   const seen = new Set<string>();
   let totalBytes = 0;
   let fileCount = 0;
@@ -422,6 +583,16 @@ async function collectReleaseFiles(rootDir: string, document: Record<string, unk
       report.errors.push({ code: "missing_file", manifest_path: entryPath, file: entry.path, message: "does not exist or is not a file" });
       continue;
     }
+    const realFile = await fs.realpath(entry.absolutePath).catch(() => entry.absolutePath);
+    const fromRoot = path.relative(realRoot, realFile);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot)) {
+      report.warnings.push({
+        code: "outside_app_directory",
+        manifest_path: entryPath,
+        file: entry.path,
+        message: `is a symlink (or under a symlinked directory) that resolves outside the app directory; publish uploads the contents of ${realFile}.`
+      });
+    }
     fileCount += 1;
     totalBytes += fileStat.size;
     if (fileStat.size > bundle["file_bytes.max"]) {
@@ -437,6 +608,14 @@ async function collectReleaseFiles(rootDir: string, document: Record<string, unk
   }
   if (totalBytes > bundle["bundle_bytes.max"]) {
     report.errors.push({ code: "bundle_too_large", manifest_path: "release.bundle_bytes", message: `Release is ${totalBytes} bytes; the maximum is ${bundle["bundle_bytes.max"]}` });
+  }
+  if (skippedSymlinks.length > 0) {
+    const shown = skippedSymlinks.slice(0, 5).join(", ");
+    report.warnings.push({
+      code: "symlinks_skipped",
+      manifest_path: "",
+      message: `${skippedSymlinks.length} symlink${skippedSymlinks.length === 1 ? " is" : "s are"} not uploaded (${shown}${skippedSymlinks.length > 5 ? ", ..." : ""}); copy the files into the app directory or list them in manifest.userland.json files.`
+    });
   }
   if (!fromManifest) {
     for (const directory of [".git", "node_modules"]) {
@@ -485,7 +664,7 @@ async function checkRuntimePaths(rootDir: string, document: Record<string, unkno
 export function releasePathError(releasePath: string): string | undefined {
   if (releasePath.length === 0 || releasePath.length > 512) return "path must be 1-512 characters";
   if (releasePath.includes("\0")) return "path must not contain NUL";
-  if (releasePath.startsWith("/") || /^[A-Za-z]:/u.test(releasePath)) return "absolute paths are not allowed; use a path relative to the app directory";
+  if (releasePath.startsWith("/")) return "absolute paths are not allowed; use a path relative to the app directory";
   if (releasePath.includes("\\")) return "backslashes are not allowed; use / separators";
   const parts = releasePath.split("/");
   if (parts.some((part) => part === "..")) return "parent directory segments (..) are not allowed";
@@ -499,16 +678,23 @@ export function isManifestFile(filePath: string): boolean {
   return basename === MANIFEST_FILE || basename === LEGACY_MANIFEST_FILE;
 }
 
-export async function walk(dir: string): Promise<string[]> {
+/**
+ * Lists regular files under dir. Symlinks are never followed or uploaded; pass `skipped`
+ * to collect their paths.
+ */
+export async function walk(dir: string, skipped?: string[]): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files = await Promise.all(
     entries.map(async (entry) => {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        return await walk(entryPath);
+        return await walk(entryPath, skipped);
       }
       if (entry.isFile()) {
         return [entryPath];
+      }
+      if (entry.isSymbolicLink()) {
+        skipped?.push(entryPath);
       }
       return [];
     })
@@ -757,7 +943,7 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
   lines.push(`release_files=${report.release.file_count}`);
   lines.push(`release_bytes=${report.release.bundle_bytes}`);
   for (const warning of report.warnings) {
-    lines.push(`warning=${warning.code}${warning.manifest_path ? ` manifest_path=${warning.manifest_path}` : ""} ${warning.message}`);
+    lines.push(formatWarning(warning));
   }
 
   for (const error of report.errors) {
@@ -801,6 +987,10 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
   return `${lines.join("\n")}\n`;
 }
 
+export function formatWarning(warning: ValidationIssue): string {
+  return `warning=${warning.code}${warning.manifest_path ? ` manifest_path=${warning.manifest_path}` : ""}${warning.file !== undefined ? ` file=${warning.file}` : ""} ${warning.message}`;
+}
+
 function findingLines(finding: ValidationFinding, includeAllowed: boolean): string[] {
   const lines = [`manifest_path=${finding.manifest_path}`];
   if (finding.feature_key) lines.push(`feature=${finding.feature_key}`);
@@ -838,7 +1028,8 @@ const PATTERN_DESCRIPTIONS: Record<string, string> = {
   "^(?!USERLAND_)(?!CF_)(?!CLOUDFLARE_)[A-Z][A-Z0-9_]{0,63}$": "must be 1-64 uppercase letters, numbers, or underscores, starting with a letter, and must not start with USERLAND_, CF_, or CLOUDFLARE_",
   "^(?!/)(?!.*\\\\)(?!_userland(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$": "must be a relative path without a leading /, backslashes, . or .. segments, empty segments, or _userland/",
   "^role:[a-z][a-z0-9-]{0,63}$": "must look like role:<role-name>",
-  "^job:[a-z][a-z0-9-]{0,63}$": "must look like job:<job-name>"
+  "^job:[a-z][a-z0-9-]{0,63}$": "must look like job:<job-name>",
+  "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+(?:\\s*;\\s*[!#$%&'*+\\-.^_`|~0-9A-Za-z]+=(?:\\\"[^\\\"]*\\\"|[!#$%&'*+\\-.^_`|~0-9A-Za-z]+))*$": "must be a MIME type such as text/html or image/png"
 };
 
 /** Keywords validateAgainstSchema understands; tests fail if the published schema starts using others. */
@@ -873,11 +1064,15 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
 const patternCache = new Map<string, RegExp>();
 
 export function validateAgainstSchema(value: unknown, schema: JsonSchema): ValidationIssue[] {
-  return validateNode(value, schema, schema, []).map((error) => ({
-    code: "schema",
-    manifest_path: formatPath(error.path),
-    message: error.message
-  }));
+  return schemaErrors(value, schema).map(toIssue);
+}
+
+function schemaErrors(value: unknown, schema: JsonSchema): SchemaError[] {
+  return validateNode(value, schema, schema, []);
+}
+
+function toIssue(error: SchemaError): ValidationIssue {
+  return { code: "schema", manifest_path: formatPath(error.path), message: error.message };
 }
 
 function validateNode(value: unknown, schema: unknown, root: JsonSchema, at: Array<string | number>): SchemaError[] {

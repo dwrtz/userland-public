@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  analyzeAppDirectory,
   analyzeManifestRequirements,
+  applyPlan,
+  checkManifestDocument,
   evaluateRequirements,
   manifestSchema,
   minimumPlanFor,
@@ -190,8 +193,7 @@ describe("manifest schema validation", () => {
         files: { stores: { media: { max_file_size_bytes: 0, allowed_content_types: ["image"] } } },
         secrets: { required: ["USERLAND_TOKEN"] },
         jobs: { nightly: { trigger: "schedule", schedule: "weekly" }, cleanup: { trigger: "schedule" } },
-        webhooks: { gh: { provider: "github", deliver_to: "server" } },
-        queues: {}
+        webhooks: { gh: { provider: "github", deliver_to: "server" } }
       }
     });
     const byPath = Object.fromEntries(errors.map((error) => [error.manifest_path, error.message]));
@@ -207,9 +209,56 @@ describe("manifest schema validation", () => {
       "resources.secrets.required[0]": expect.stringContaining("USERLAND_"),
       "resources.jobs.nightly.schedule": "must be one of: every_15_minutes, hourly, daily",
       "resources.jobs.cleanup.schedule": "is required",
-      "resources.webhooks.gh.secret": "is required",
-      "resources.queues": expect.stringContaining("is not an allowed key")
+      "resources.webhooks.gh.secret": "is required"
     });
+  });
+
+  test("separates schema-only strictness the API tolerates from API errors", () => {
+    const tolerated: Array<[string, Record<string, unknown>, string[]]> = [
+      ["unknown app, runtime, and resources keys", { app: { name: "x", description: "d" }, runtime: { static_root: "public", headers: {} }, resources: { queues: {} } }, ["app.description", "runtime.headers", "resources.queues"]],
+      ["unknown top-level key", { app: { name: "x" }, runtime: { static_root: "public" }, extra: true }, ["extra"]],
+      ["resources null", { app: { name: "x" }, runtime: { static_root: "public" }, resources: null }, ["resources"]],
+      ["null defaults", { app: { name: "x" }, runtime: { static_root: "public" }, resources: { auth: { mode: null }, jobs: { a: { trigger: null, max_attempts: null } } } }, ["resources.auth.mode", "resources.jobs.a.trigger", "resources.jobs.a.max_attempts"]],
+      ["whitespace the API trims", {
+        app: { name: "x", tags: [" cms"] },
+        runtime: { static_root: "public" },
+        resources: {
+          secrets: { required: [" API_KEY"] },
+          files: { stores: { media: { allowed_content_types: [" text/html"] } } },
+          webhooks: { gh: { provider: "github", deliver_to: "server", secret: "GH_SECRET " } }
+        }
+      }, ["app.tags[0]", "resources.secrets.required[0]", "resources.files.stores.media.allowed_content_types[0]", "resources.webhooks.gh.secret"]],
+      ["schema-only data rules", {
+        app: { name: "x" },
+        runtime: { static_root: "public" },
+        resources: { data: { collections: { posts: { fields: { title: "string", state: { type: "enum", values: ["", "done"] } }, indexes: [{ name: "id", fields: ["title"] }, { name: "created_at", fields: ["title"] }] } } } }
+      }, ["resources.data.collections.posts.indexes[0].name", "resources.data.collections.posts.indexes[1].name", "resources.data.collections.posts.fields.state.values[0]"]]
+    ];
+    for (const [name, document, paths] of tolerated) {
+      const check = checkManifestDocument(document);
+      expect(check.errors, name).toEqual([]);
+      expect(check.schema_strict.map((issue) => issue.manifest_path).sort(), name).toEqual([...paths].sort());
+      expect(check.schema_strict.every((issue) => issue.code === "schema_strict" && issue.message.includes("the API accepts it today")), name).toBe(true);
+    }
+
+    // Unknown keys deeper in resources are API errors, and real errors still block alongside tolerated ones.
+    const mixed = checkManifestDocument({
+      app: { name: "x", description: "d", visibility: "secret" },
+      runtime: { static_root: "public" },
+      resources: { auth: { extra: true }, data: { collections: { posts: { extra: 1 } } } }
+    });
+    expect(mixed.errors.map((error) => error.manifest_path)).toEqual(["app.visibility", "resources.auth.extra", "resources.data.collections.posts.extra"]);
+    expect(mixed.schema_strict.map((issue) => issue.manifest_path)).toEqual(["app.description"]);
+  });
+
+  test("requires a webhook secret for signed providers on every delivery target", () => {
+    const jobs = { sync: {} };
+    const paths = (webhook: Record<string, unknown>) =>
+      validateManifestDocument({ app: { name: "x" }, runtime: { static_root: "public" }, resources: { jobs, webhooks: { hook: webhook } } }).map((error) => `${error.manifest_path}: ${error.message}`);
+    expect(paths({ provider: "github", deliver_to: "job:sync" })).toEqual(["resources.webhooks.hook.secret: is required when provider is github"]);
+    expect(paths({ provider: "generic_hmac", deliver_to: "job", job: "sync" })).toEqual(["resources.webhooks.hook.secret: is required when provider is generic_hmac"]);
+    expect(paths({ provider: "github", deliver_to: "job:sync", secret: "GH_SECRET" })).toEqual([]);
+    expect(paths({ provider: "none", deliver_to: "job:sync" })).toEqual([]);
   });
 
   test("enforces the cross-field rules the API checks", () => {
@@ -244,7 +293,8 @@ describe("manifest schema validation", () => {
   test("rejects unsafe release paths", () => {
     expect(releasePathError("public/index.html")).toBeUndefined();
     expect(releasePathError("/etc/passwd")).toContain("absolute");
-    expect(releasePathError("C:/app")).toContain("absolute");
+    // The API accepts drive-letter-looking names; on Userland they are ordinary relative paths.
+    expect(releasePathError("C:/app")).toBeUndefined();
     expect(releasePathError("public/../secret")).toContain("..");
     expect(releasePathError("public\\index.html")).toContain("backslashes");
     expect(releasePathError("_userland/state.json")).toContain("_userland");
@@ -312,10 +362,73 @@ describe("validateAppDirectory", () => {
     expect(implicit.required_plan_key).toBe("free");
   });
 
-  test("tolerates CLI-only keys and flags unknown top-level keys", async () => {
-    const dir = await appDir({ app: { name: "Keys" }, runtime: { static_root: "public" }, message: "hello", provenance: { source: "test" }, extra: true });
-    const report = await validateAppDirectory(dir);
-    expect(report.errors).toEqual([{ code: "schema", manifest_path: "extra", message: "is not an allowed key (allowed: app, runtime, resources)" }]);
+  test("tolerates CLI-only keys and $schema, and warns about unknown top-level keys", async () => {
+    const manifest = {
+      $schema: "https://docs.userland.fun/schemas/resource-manifest-v0.schema.json",
+      app: { name: "Keys" },
+      runtime: { static_root: "public" },
+      message: "hello",
+      provenance: { source: "test" },
+      extra: true
+    };
+    const report = await validateAppDirectory(await appDir(manifest));
+    expect(report.ok).toBe(true);
+    expect(report.errors).toEqual([]);
+    expect(report.warnings).toEqual([
+      expect.objectContaining({ code: "schema_strict", manifest_path: "extra", message: expect.stringContaining("is not an allowed key (allowed: app, runtime, resources)") })
+    ]);
+
+    const strict = await validateAppDirectory(await appDir(manifest), { strict: true });
+    expect(strict.ok).toBe(false);
+    expect(strict.errors.map((error) => [error.code, error.manifest_path])).toEqual([["schema_strict", "extra"]]);
+    expect(strict.required_plan_key).toBe("free");
+
+    const badSchemaKey = await validateAppDirectory(await appDir({ ...manifest, $schema: 1, extra: undefined }));
+    expect(badSchemaKey.errors).toEqual([{ code: "schema", manifest_path: "$schema", message: "must be a string" }]);
+  });
+
+  test("warns when listed files resolve outside the app directory and when symlinks are skipped", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "userland-outside-"));
+    tempDirs.push(outside);
+    await fs.writeFile(path.join(outside, "secret.txt"), "outside");
+
+    const listed = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/leak.txt" }] });
+    await fs.symlink(path.join(outside, "secret.txt"), path.join(listed, "public", "leak.txt"));
+    const listedReport = await validateAppDirectory(listed);
+    expect(listedReport.ok).toBe(true);
+    expect(listedReport.release.file_count).toBe(2);
+    expect(listedReport.warnings).toEqual([
+      expect.objectContaining({ code: "outside_app_directory", manifest_path: "files[1].path", file: "public/leak.txt", message: expect.stringContaining("resolves outside the app directory") })
+    ]);
+
+    const inside = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/alias.html" }] });
+    await fs.symlink("index.html", path.join(inside, "public", "alias.html"));
+    expect((await validateAppDirectory(inside)).warnings).toEqual([]);
+
+    const walked = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" } });
+    await fs.symlink(path.join(outside, "secret.txt"), path.join(walked, "public", "leak.txt"));
+    const walkedReport = await validateAppDirectory(walked);
+    expect(walkedReport.release.file_count).toBe(1);
+    expect(walkedReport.warnings).toEqual([
+      expect.objectContaining({ code: "symlinks_skipped", message: expect.stringContaining("1 symlink is not uploaded (public/leak.txt)") })
+    ]);
+  });
+
+  test("applies plans to one analysis without re-reading the directory", async () => {
+    const dir = await appDir({ app: { name: "Plan", visibility: "private" }, runtime: { static_root: "public" } });
+    const analysis = await analyzeAppDirectory(dir);
+    expect(analysis.report.plan).toBeNull();
+    expect(analysis.requirements).not.toBeNull();
+    await fs.rm(dir, { recursive: true, force: true });
+
+    const free = applyPlan(analysis, { planKey: "free", planSource: "account" });
+    expect(free.ok).toBe(false);
+    expect(free.plan_source).toBe("account");
+    expect(free.violations.map((finding) => finding.feature_key)).toEqual(["private_apps"]);
+    const business = applyPlan(analysis, { planKey: "business" });
+    expect(business.ok).toBe(true);
+    expect(business.plan_source).toBe("flag");
+    expect(analysis.report.violations).toEqual([]);
   });
 
   test("gates releases above the plan file count", async () => {

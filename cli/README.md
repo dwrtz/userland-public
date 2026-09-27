@@ -125,13 +125,16 @@ userland validate <dir> --json
 userland validate <dir> --plan free
 userland validate <dir> --plan starter
 userland validate <dir> --plan business --json
+userland validate <dir> --strict
 ```
 
 It checks:
 
-- `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist).
-- Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps.
+- `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist, signed webhooks need a `secret`).
+- Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps. It warns when a file listed in `files` is a symlink that resolves outside the app directory (publish uploads the target's contents) and when directory publishing skips symlinks.
 - Plan limits from `schemas/plans-v0.json`: private apps, app-user auth, public signup, data collection and index counts, file stores and upload sizes, required secrets, scheduled jobs and schedules, webhooks and providers, and release file count and size.
+
+A few schema rules are stricter than the API: unknown keys directly under the top level, `app`, `runtime`, or `resources`; `resources: null`; `null` for `auth.mode`, `jobs.*.trigger`, or `jobs.*.max_attempts`; leading or trailing spaces in tags, secret names, and content types; data index names such as `id`; and empty enum values. The API accepts these today, so validation reports them as `schema_strict` warnings and publishing is not blocked. `--strict` turns them into errors for CI checks against the published schema. A top-level `$schema` key (for editor support) and the CLI keys `files`, `message`, and `provenance` are always allowed.
 
 `--plan` accepts `free`, `starter`, `business`, `business_plus`, and `agency` (`pro` and `team` are accepted as older names for Starter and Business). Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them.
 
@@ -189,9 +192,9 @@ requires=business
 
 `violations` are checked against the selected plan. `plan_gated` lists everything the Free plan does not include, whether or not `--plan` is passed. `errors` hold schema, path, and file problems with `code`, `manifest_path`, optional `file`, and `message`. Limit violations use `limit_key` instead of `feature_key`, and `allowed` is the plan's limit (a number, a list of allowed schedules, or `null` for unlimited). `required_plan_key` is `null` when no public plan allows a value.
 
-Exit codes: `0` valid, `1` manifest, file, or usage errors, `2` plan limits exceeded.
+Exit codes: `0` valid, `1` manifest, file, or usage errors (including `schema_strict` issues with `--strict`), `2` plan limits exceeded.
 
-`userland apps publish` runs the same validation before uploading anything. It checks plan limits against `--plan` when given, otherwise against the account's own plan and entitlements from `GET /v0/accounts/:account_id/limits` (for `--app` updates, the account that owns the app). Validation errors and plan violations stop the publish with the same output and nothing is uploaded. If the account plan cannot be read, the CLI prints a warning and lets the API decide. `--skip-local-validation` sends the directory to the API without local checks.
+`userland apps publish` runs the same validation before uploading anything. It checks plan limits against `--plan` when given, otherwise against the account's own plan and entitlements from `GET /v0/accounts/:account_id/limits` (for `--app` updates, the account that owns the app). Validation errors and plan violations stop the publish with the same output and nothing is uploaded; warnings, including `schema_strict`, print to stderr and do not block. If the account plan cannot be read, the CLI prints a warning and lets the API decide. `--skip-local-validation` sends the directory to the API without local checks.
 
 The Userland API remains authoritative. Local validation mirrors the API's manifest and plan rules for fast feedback; the API can still reject a publish because of billing state, account flags, deployment limits, usage quotas, or newer rules, and returns structured `402` details when it does.
 
@@ -237,7 +240,7 @@ recent_errors:
 2026-06-03T10:00:00.000Z error runtime.exception TypeError: boom
 ```
 
-API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API default (30 days) applies. The API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus and Agency 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
+API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API uses 30 days or the plan's retention window, whichever is shorter. When `--range` asks for more, the API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus and Agency 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
 
 App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
 

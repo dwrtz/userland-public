@@ -36,7 +36,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("userland --version");
     expect(result.stdout).toContain("userland apps publish");
     expect(result.stdout).toContain("userland support open");
-    expect(result.stdout).toContain("userland validate <dir> [--plan <plan>] [--json]");
+    expect(result.stdout).toContain("userland validate <dir> [--plan <plan>] [--strict] [--json]");
     expect(result.stdout).toContain("--skip-local-validation");
     expect(result.stdout).toContain("userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]");
     expect(result.stdout).toContain("userland analytics <app-id>");
@@ -970,6 +970,84 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("warning=plan_check_skipped This app needs the Business plan or higher; the API will check your account plan.");
     expect(result.stdout).toContain("local_validation=passed_without_plan");
     expect(requests.at(-1)?.url).toBe("/v0/apps");
+  });
+
+  test("publishes manifests the API accepts even when the published schema is stricter", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
+      "PUT /v0/apps": publishResponse("app_schema")
+    });
+    const dir = await temporaryAppDir({
+      $schema: "https://docs.userland.fun/schemas/resource-manifest-v0.schema.json",
+      app: { name: "Schema hint", description: "Ignored by the API" },
+      runtime: { static_root: "public" },
+      resources: null
+    });
+
+    const result = await runCli(["apps", "publish", dir], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("local_validation=passed\nlocal_validation_plan=free");
+    expect(result.stderr).toContain("warning=schema_strict manifest_path=app.description is not an allowed key");
+    expect(result.stderr).toContain("warning=schema_strict manifest_path=resources must be an object");
+    expect(result.stderr).not.toContain("$schema");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts", "GET /v0/accounts/acct_owner/limits", "PUT /v0/apps"]);
+    expect(requests[2].body).toMatchObject({ app: { name: "Schema hint" }, resources: {} });
+
+    const validate = await runCli(["validate", dir], api.baseUrl, { apiKey: null });
+    expect(validate.code).toBe(0);
+    expect(validate.stdout).toContain("Validation passed.");
+    expect(validate.stdout).toContain("warning=schema_strict manifest_path=app.description");
+
+    const strict = await runCli(["validate", dir, "--strict", "--json"], api.baseUrl, { apiKey: null });
+    expect(strict.code).toBe(1);
+    const output = JSON.parse(strict.stdout) as { ok: boolean; errors: Array<{ code: string; manifest_path: string }> };
+    expect(output.ok).toBe(false);
+    expect(output.errors.map((error) => [error.code, error.manifest_path])).toEqual([
+      ["schema_strict", "app.description"],
+      ["schema_strict", "resources"]
+    ]);
+  });
+
+  test("fails validation and blocks publish for signed webhooks without a secret", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {});
+    const dir = await temporaryAppDir({
+      app: { name: "Hooks" },
+      runtime: { static_root: "public" },
+      resources: { jobs: { sync: {} }, webhooks: { gh: { provider: "github", deliver_to: "job:sync" } } }
+    });
+
+    const validate = await runCli(["validate", dir, "--plan", "business"], api.baseUrl, { apiKey: null });
+    expect(validate.code).toBe(1);
+    expect(validate.stdout).toContain("error=invalid_resource_manifest\nmanifest_path=resources.webhooks.gh.secret\nmessage=is required when provider is github");
+
+    const publish = await runCli(["apps", "publish", dir], api.baseUrl);
+    expect(publish.code).toBe(1);
+    expect(publish.stderr).toContain("manifest_path=resources.webhooks.gh.secret");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("explains a skipped plan check for features no public plan includes", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": { __status: 500, error: { code: "internal", message: "Boom." } },
+      "PUT /v0/apps": publishResponse("app_verify")
+    });
+    const dir = await temporaryAppDir({
+      app: { name: "Verify" },
+      runtime: { static_root: "public" },
+      resources: { auth: { mode: "app_users", email_verification: true } }
+    });
+
+    const result = await runCli(["apps", "publish", dir], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("warning=plan_check_skipped This app uses features that are not available on any public plan; the API will check your account plan.");
+    expect(result.stderr).not.toContain("no public plan plan");
+    expect(result.stdout).toContain("local_validation=passed_without_plan");
   });
 
   test("prints compact app analytics", async () => {

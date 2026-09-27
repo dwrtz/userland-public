@@ -5,15 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
+  analyzeAppDirectory,
+  applyPlan,
   formatValidationReport,
-  isManifestFile,
+  formatWarning,
+  listReleaseFiles,
   normalizePlanKey,
   planDisplayName,
   publicPlanKeys,
   validateAppDirectory,
   validationExitCode,
   validationJson,
-  walk,
   type EntitlementConfig,
   type ManifestLimitValue,
   type ValidationReport
@@ -46,6 +48,7 @@ interface CliOptions {
 interface ValidateOptions {
   json?: boolean;
   plan?: string;
+  strict?: boolean;
 }
 
 interface AnalyticsOptions {
@@ -934,7 +937,7 @@ async function validateCommand(args: string[]): Promise<void> {
   }
   const options = parseValidateOptions(args.slice(1));
   const planKey = options.plan === undefined ? undefined : requirePlanKey(options.plan);
-  const report = await validateAppDirectory(dir, { planKey, planSource: "flag" });
+  const report = await validateAppDirectory(dir, { planKey, planSource: "flag", strict: options.strict });
 
   if (options.json) {
     console.log(JSON.stringify(validationJson(report), null, 2));
@@ -988,7 +991,8 @@ async function publishCommand(args: string[]): Promise<void> {
  * Returns false when the publish is blocked.
  */
 async function publishPreflight(dir: string, options: CliOptions): Promise<boolean> {
-  const structural = await validateAppDirectory(dir);
+  const analysis = await analyzeAppDirectory(dir);
+  const structural = analysis.report;
   if (structural.errors.length > 0) {
     printPublishBlocked(structural, dir);
     return false;
@@ -1018,22 +1022,24 @@ async function publishPreflight(dir: string, options: CliOptions): Promise<boole
 
   if (!planKey) {
     for (const warning of structural.warnings) {
-      console.error(`warning=${warning.code} ${warning.message}`);
+      console.error(formatWarning(warning));
     }
-    if (structural.required_plan_key !== "free") {
+    if (structural.required_plan_key === null) {
+      console.error("warning=plan_check_skipped This app uses features that are not available on any public plan; the API will check your account plan.");
+    } else if (structural.required_plan_key !== "free") {
       console.error(`warning=plan_check_skipped This app needs the ${planDisplayName(structural.required_plan_key)} plan or higher; the API will check your account plan.`);
     }
     console.log("local_validation=passed_without_plan");
     return true;
   }
 
-  const report = await validateAppDirectory(dir, { planKey, planSource, entitlements });
+  const report = applyPlan(analysis, { planKey, planSource, entitlements });
   if (!report.ok) {
     printPublishBlocked(report, dir);
     return false;
   }
   for (const warning of report.warnings) {
-    console.error(`warning=${warning.code} ${warning.message}`);
+    console.error(formatWarning(warning));
   }
   console.log("local_validation=passed");
   console.log(`local_validation_plan=${planKey}`);
@@ -1490,36 +1496,24 @@ async function readPublishDirectory(rootDir: string, options: CliOptions): Promi
 }
 
 async function readReleaseFiles(rootDir: string, manifest: Record<string, unknown>): Promise<Array<{ path: string; content_type: string; content_base64: string }>> {
-  const manifestFiles = Array.isArray(manifest.files) ? manifest.files : null;
-  const publishFiles =
-    manifestFiles && manifestFiles.length > 0
-      ? manifestFiles.map(async (entry) => {
-          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-            throw new Error("manifest.userland.json files entries must be objects.");
-          }
-          const file = entry as { path?: unknown; content_type?: unknown };
-          if (typeof file.path !== "string") {
-            throw new Error("manifest.userland.json files entries require path.");
-          }
-          const contents = await fs.readFile(path.join(rootDir, file.path));
-          return {
-            path: file.path,
-            content_type: typeof file.content_type === "string" ? file.content_type : contentTypeForPath(file.path),
-            content_base64: contents.toString("base64")
-          };
-        })
-      : (await walk(rootDir))
-          .filter((filePath) => !isManifestFile(filePath))
-          .sort()
-          .map(async (filePath) => {
-            const relativePath = path.relative(rootDir, filePath).split(path.sep).join("/");
-            const contents = await fs.readFile(filePath);
-            return {
-              path: relativePath,
-              content_type: contentTypeForPath(relativePath),
-              content_base64: contents.toString("base64")
-            };
-          });
+  if (Array.isArray(manifest.files)) {
+    manifest.files.forEach((entry) => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new Error("manifest.userland.json files entries must be objects.");
+      }
+      if (typeof (entry as { path?: unknown }).path !== "string") {
+        throw new Error("manifest.userland.json files entries require path.");
+      }
+    });
+  }
+  const publishFiles = (await listReleaseFiles(rootDir, manifest)).map(async (entry) => {
+    const contents = await fs.readFile(entry.absolutePath);
+    return {
+      path: entry.path,
+      content_type: entry.contentType ?? contentTypeForPath(entry.path),
+      content_base64: contents.toString("base64")
+    };
+  });
   const files = await Promise.all(publishFiles);
 
   if (files.length === 0) {
@@ -1783,6 +1777,8 @@ function parseValidateOptions(args: string[]): ValidateOptions {
       options.json = true;
     } else if (arg === "--plan") {
       options.plan = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--strict") {
+      options.strict = true;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -2153,7 +2149,7 @@ function usage(exitCode: number): never {
   userland accounts limits [--account <account-id>]
   userland accounts downgrade preview --to <plan> [--account <account-id>]
   userland support open --subject <subject> [--message <message>] [--app <app-id>] [--account <account-id>] [--json]
-  userland validate <dir> [--plan <plan>] [--json]
+  userland validate <dir> [--plan <plan>] [--strict] [--json]
   userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>] [--plan <plan>] [--skip-local-validation]
   userland apps list [--account <account-id>]
   userland apps status <app-id> [--account <account-id>]
@@ -2183,6 +2179,7 @@ Aliases:
 Validation:
   validate checks manifest.userland.json against the public schema, file paths, and plan limits offline.
   Plans: free, starter, business, business_plus, agency. Without --plan it reports the minimum plan.
+  Schema rules the API does not enforce are schema_strict warnings; --strict fails on them too.
   Exit codes: 0 valid, 1 manifest or file errors, 2 plan limits exceeded.
   apps publish runs the same checks first, using --plan or the account's plan; the API stays authoritative.
 
