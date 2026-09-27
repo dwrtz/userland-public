@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
-import { APP_ORIGIN, DEMO_ORIGIN, get, makeCtx, ownerPages, post, production, seedApproved, seedMany, validListing, type Ctx } from "./helpers.js";
+import { APP_ORIGIN, DEMO_ORIGIN, countingCtx, get, makeCtx, ownerPages, post, production, seedApproved, seedMany, validListing, type Ctx } from "./helpers.js";
 
 describe("public board (production)", () => {
   it("lists approved jobs only and never shows contact details or notes", async () => {
@@ -306,11 +306,12 @@ describe("long lists (more than one page of data)", () => {
 
     const first = await (await get(production, ctx, `${APP_ORIGIN}/owner`, "owner")).text();
     expect(first).toMatch(/To review <span class="count">100\+<\/span>/u);
-    expect(first).toMatch(/Live <span class="count">100\+<\/span>/u);
+    const liveTab = await (await get(production, ctx, `${APP_ORIGIN}/owner?tab=approved`, "owner")).text();
+    expect(liveTab).toMatch(/Live <span class="count">100\+<\/span>/u);
 
     // Paging through the review queue reaches every waiting listing, including the oldest.
     const pending = await ownerPages(production, ctx, "pending");
-    expect(pending.length).toBe(3);
+    expect(pending.length).toBe(2);
     const titles = pending.join("").match(/Waiting job \d+/gu) ?? [];
     expect(new Set(titles).size).toBe(110);
     expect(pending.join("")).not.toContain("Live job");
@@ -325,30 +326,81 @@ describe("long lists (more than one page of data)", () => {
     expect(approved).toContain("Live job 1<");
   });
 
-  it("shows every live job on the public board, a page at a time, with full counts", async () => {
+  it("reaches every live job on the public board, 100 at a time, with exact filters", async () => {
     const ctx = makeCtx();
-    await seedMany(ctx, 130, (index) => ({ title: `Farm job ${index}`, category: index === 0 ? "orchards" : "livestock", summary: index === 0 ? "The very first pear orchard job on the board." : validListing.summary }));
+    await seedMany(ctx, 130, (index) => ({
+      title: `Farm job ${index}`,
+      category: index === 0 ? "orchards" : "livestock",
+      job_type: index === 0 ? "seasonal" : "full-time",
+      summary: index === 0 ? "The very first pear orchard job on the board." : validListing.summary
+    }));
+    const nextLink = (body: string) => /<a [^>]*href="([^"]+)" rel="next">Older jobs<\/a>/u.exec(body)?.[1]?.replaceAll("&amp;", "&");
 
     const board = await (await get(production, ctx, `${APP_ORIGIN}/`)).text();
-    expect(board).toContain("130 open jobs");
-    expect(board).toContain("Page 1 of 6");
+    expect(board).toContain("100+ open jobs");
+    expect(board).toContain("100 jobs on this page");
     expect(board).toContain("Farm job 129<");
-    expect(board).not.toContain("Farm job 0<");
-    expect(board).toMatch(/Orchards &amp; vineyards<\/span><span class="count">1</u);
+    expect(board).not.toContain("Farm job 29<");
 
-    const last = await (await get(production, ctx, `${APP_ORIGIN}/?page=6`)).text();
-    expect(last).toContain("Farm job 0<");
-    expect(last).toContain("Page 6 of 6");
-    expect((await (await get(production, ctx, `${APP_ORIGIN}/?page=999`)).text())).toContain("Page 6 of 6");
+    // "Older jobs" reads the next 100 and reaches the oldest live job.
+    const older = await (await get(production, ctx, `${APP_ORIGIN}${nextLink(board)}`)).text();
+    expect(older).toContain("30 jobs on this page");
+    expect(older).toContain("Farm job 0<");
+    expect(older).toContain("Farm job 29<");
+    expect(older).not.toContain("Farm job 30<");
+    expect(older).toContain("Back to the newest");
+    expect(nextLink(older)).toBeUndefined();
 
-    // Search and filters look at every live job, not just the newest 100.
+    // Category and schedule filters are part of the data query, so they cover every live job.
+    for (const query of ["?category=orchards", "?type=seasonal", "?category=orchards&type=seasonal"]) {
+      const filtered = await (await get(production, ctx, `${APP_ORIGIN}/${query}`)).text();
+      expect(filtered).toMatch(/<h2 id="results-title">1 job /u);
+      expect(filtered).toContain("Farm job 0<");
+      expect(nextLink(filtered)).toBeUndefined();
+    }
+    expect(await (await get(production, ctx, `${APP_ORIGIN}/?category=orchards&type=full-time`)).text()).toContain("Nothing matches those filters");
+
+    // Search words look through one page at a time and say so, with a link to older jobs.
     const search = await (await get(production, ctx, `${APP_ORIGIN}/?q=pear`)).text();
-    expect(search).toContain("Farm job 0<");
-    const filtered = await (await get(production, ctx, `${APP_ORIGIN}/?category=orchards`)).text();
-    expect(filtered).toContain("1 job");
-    expect(filtered).not.toContain("Page 1 of");
+    expect(search).not.toContain("Farm job 0<");
+    expect(search).toContain("Search looks through 100 jobs at a time");
+    const searchOlder = await (await get(production, ctx, `${APP_ORIGIN}${nextLink(search)}`)).text();
+    expect(searchOlder).toContain("Farm job 0<");
+    expect(searchOlder).toMatch(/1 job on this page/u);
   });
 
+  it("keeps each page to one or two full reads of the data, even with 1,000 listings", async () => {
+    const base = makeCtx();
+    // 600 live, 100 waiting, 200 declined, 100 closed: every row Free allows.
+    const live = await seedMany(base, 600, (index) => ({ title: `Live job ${index}`, category: index % 2 ? "livestock" : "orchards" }));
+    await seedMany(base, 100, (index) => ({ title: `Waiting job ${index}`, status: "pending", contact_email: `employer${index}@example.com` }));
+    await seedMany(base, 200, (index) => ({ title: `Declined job ${index}`, status: "rejected" }));
+    await seedMany(base, 100, (index) => ({ title: `Closed job ${index}`, status: "closed" }));
+    const { ctx, calls, reset } = countingCtx(base);
+
+    const pages: Array<[string, number, string?]> = [
+      ["/", 1],
+      ["/?category=orchards&type=full-time&q=cheese", 1],
+      [`/jobs/${live[0].id}`, 1],
+      ["/owner", 1, "owner"],
+      ["/owner?tab=approved", 2, "owner"],
+      ["/owner?tab=all", 2, "owner"],
+      ["/owner?tab=rejected&done=rejected&id=nope", 2, "owner"],
+      ["/owner/declined/delete", 1, "owner"]
+    ];
+    for (const [path, lists, session] of pages) {
+      reset();
+      const response = await get(production, ctx, `${APP_ORIGIN}${path}`, session);
+      expect(response.status, path).toBe(200);
+      expect(calls.list ?? 0, path).toBe(lists);
+    }
+
+    // "Show more" pages and older board pages are one or two reads as well.
+    reset();
+    const more = await ownerPages(production, ctx, "approved");
+    expect(more.length).toBe(6);
+    expect(calls.list).toBe(more.length * 2);
+  });
   it("ignores a broken “Show more” link and starts from the first page", async () => {
     const ctx = makeCtx();
     await seedApproved(ctx, { status: "pending" });
@@ -401,6 +453,15 @@ describe("spam limits and cleanup", () => {
     expect(await fourth.text()).toContain("You already have listings waiting");
     expect(ctx.state.listings).toHaveLength(3);
     expect((await post(production, ctx, `${APP_ORIGIN}/post`, { ...validListing, contact_email: "someone.else@example.com" })).status).toBe(303);
+  });
+
+  it("holds the 3-per-email limit when one email posts many times at once", async () => {
+    const ctx = makeCtx();
+    const responses = await Promise.all(Array.from({ length: 10 }, (_, index) => post(production, ctx, `${APP_ORIGIN}/post`, { ...validListing, title: `Same sender ${index}` })));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 303)).toHaveLength(3);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(7);
+    expect(pendingCount(ctx)).toBe(3);
   });
 
   it("shows a clear page when the plan's saved-row allowance is used up", async () => {

@@ -121,3 +121,36 @@ export async function ownerPages(server: Server, ctx: Ctx, tab: string) {
   }
   return pages;
 }
+
+/**
+ * Wrap ctx so every ctx.data call is counted by method ("list", "create", ...).
+ * On Userland today each `list` call reads the whole collection, so tests use
+ * this to keep page views to one or two of them.
+ */
+export function countingCtx(ctx: Ctx) {
+  const calls: Record<string, number> = {};
+  const counted = {
+    ...ctx,
+    data: {
+      ...ctx.data,
+      collection(name: string) {
+        const real = ctx.data.collection(name) as unknown as Record<string, (...args: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get(target, method: string) {
+            const value = target[method];
+            if (typeof value !== "function") return value;
+            return (...args: unknown[]) => {
+              calls[method] = (calls[method] ?? 0) + 1;
+              return value.apply(target, args);
+            };
+          }
+        });
+      }
+    }
+  } as Ctx;
+  const total = () => Object.values(calls).reduce((sum, count) => sum + count, 0);
+  const reset = () => {
+    for (const key of Object.keys(calls)) delete calls[key];
+  };
+  return { ctx: counted, calls, total, reset };
+}

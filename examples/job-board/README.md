@@ -10,23 +10,23 @@ A niche job board with public listings, search and category filters, an employer
 
 Visitors can:
 
-- browse open jobs, newest and featured first, 25 to a page;
+- browse open jobs, newest and featured first, 100 to a page with an "Older jobs" link;
 - filter by kind of work and schedule, and search by job, farm, or town;
 - open a job page with pay, location, the full description, and how to apply;
 - post a job through a form that goes to the owner for review.
 
 The owner can:
 
-- sign in and see every listing, grouped by status (to review, live, declined, closed), 50 to a page with a "Show more" link;
+- sign in and see every listing, grouped by status (to review, live, declined, closed), 100 to a page with a "Show more" link;
 - approve or decline new listings, and mark live ones as filled;
 - delete a listing, or clear out declined listings (spam) in batches of 15;
 - edit any listing, feature it at the top of the board, and keep a private note;
-- see recent activity in the app, and the activity log and errors in the Userland console (visits, top pages, and referrers need Starter).
+- see recent activity on the listings in view, and the activity log and errors in the Userland console (visits, top pages, and referrers need Starter).
 
 ## Capabilities
 
 - Server routes that render every page as plain HTML (no client-side JavaScript).
-- Managed data: a `listings` collection with two indexes, `status` + `published_at` (the public board) and `status` + `submitted_at` (the owner's lists). Lists are read page by page, so nothing drops off after the first 100 rows.
+- Managed data: a `listings` collection with two indexes, `by_status` (`status`, `category`, `job_type`, `published_at`) for the public board and its filters, and `by_submitted` (`status`, `submitted_at`) for the owner's lists. Lists are read one page at a time, so nothing drops off after the first 100 rows, and each page view makes at most two list calls (see [Data](#data)).
 - App-user auth with a single `owner` role and public signup turned off.
 - App events: each submission, review decision, and edit is written with `ctx.log`.
 - A JobPosting structured-data block on each job page.
@@ -50,7 +50,7 @@ tests/demo.test.ts       Demo mode tests (delete with server/demo.js)
 
 | Route | Who | What |
 | --- | --- | --- |
-| `GET /` | Everyone | Job board. Query: `q`, `category`, `type`, `page` |
+| `GET /` | Everyone | Job board. Query: `q`, `category`, `type`, `after` (older jobs) |
 | `GET /jobs/:id` | Everyone | Job page (live listings only) |
 | `GET /post` | Everyone | Post a job form |
 | `POST /post` | Everyone | Saves the listing as waiting for review |
@@ -81,7 +81,14 @@ Sign-in pages are provided by Userland at `/_userland/auth/login` and `/_userlan
 | `history` | Recent submitted/approved/edited entries for the activity panel |
 | `submitted_at`, `published_at` | Dates used for sorting |
 
-Tab counts on the owner page are exact up to 100 and show "100+" past that; the lists themselves page through every listing. The public board reads every live job (up to 1,000, which is all the rows Free allows) so search, filters, and counts cover the whole board.
+Why pages read so little: on Userland today every `list` call reads the whole collection before it filters, sorts, and returns up to 100 rows, and the Free plan gives each request 10 ms of CPU. Reading all 1,000 rows Free allows ten times over (once per 100 rows) would run past that. So each page makes at most two `list` calls, however many listings are saved:
+
+- The public board reads one page of up to 100 live jobs, newest first. Category and schedule filters are part of that query (they're in the `by_status` index), so they cover every live job. Search words narrow down the page already read; when there are older jobs, the board says "Search looks through 100 jobs at a time" and "Older jobs" searches the next 100.
+- A job page reads the job and up to four live jobs in the same category.
+- The owner page reads the review queue (at most 100 listings, see `MAX_PENDING`) and the chosen tab's page of up to 100. "To review" always shows its count; the open tab shows one when its first page holds all of it, or "100+". Recent activity is built from the listings on the page.
+- "Delete declined listings" makes one `list` call and up to 15 deletes.
+
+The test "keeps each page to one or two full reads of the data, even with 1,000 listings" counts these calls. If you add a page, keep to the same budget: page through with the cursor instead of reading everything up front.
 
 Categories and job types are plain strings validated in code, so you can change them without a data migration.
 
@@ -117,9 +124,9 @@ Publish updates with `userland apps publish examples/job-board --app "$APP_ID" -
 
 The public demo lets anyone try the owner side without signing in. That code lives in `server/demo.js` and only switches on for the demo's two addresses, `job-board-demo.apps.userland.fun` and `4fz14jppml2y13cxqx1.apps.userland.fun` (`DEMO_HOSTS` in `demo.js`), so a copy published anywhere else always requires the owner sign-in.
 
-How the demo keeps visitors apart: sample listings live in `demo.js`, not in your data. The first time a visitor posts a job or makes an owner change, they get a random key that stays in their page links (`?demo=...`). Userland only passes its own sign-in cookie through to server code, so a link key is used instead of a cookie. The visitor's listings, and their changes to sample listings, are saved in the `demo-listings` collection under that key. They stop showing after a day and are deleted the next time anyone uses the demo, a few at a time on each page view or change, which keeps each request well under Free's per-request limits. Nobody without the key sees them. Anyone the visitor shares a link with gets the same key, so the banner says so.
+How the demo keeps visitors apart: sample listings live in `demo.js`, not in your data. The first time a visitor posts a job or makes an owner change, they get a random key that stays in their page links (`?demo=...`). Userland only passes its own sign-in cookie through to server code, so a link key is used instead of a cookie. The visitor's listings, and their changes to sample listings, are saved in the `demo-listings` collection under that key. They stop showing after a day and are deleted the next time anyone uses the demo, up to five at a time on each page view or change, which keeps each request to a handful of data calls. Nobody without the key sees them. Anyone the visitor shares a link with gets the same key, so the banner says so.
 
-Each key can save up to 30 changes, and the whole demo keeps at most 300 unexpired rows, so a script that posts without a key can't fill the demo's storage. Past either limit, or if the demo app runs out of rows, visitors see a friendly "come back later" page.
+Each key can save up to 30 changes. The whole demo keeps about 200 unexpired rows (`MAX_ACTIVE_ROWS`): once it's full, each new save deletes the oldest demo rows to make room, so a script that posts without a key can't fill the demo's storage or lock other visitors out; it only makes older demo changes disappear sooner. If many saves arrive at the same moment and push past the cap, the extra ones are taken back out and those visitors see a "The demo is busy, please try again in a minute" page, which is also what shows if the demo app runs out of rows. A visitor past 30 changes is asked to start fresh in a private window. In the demo, "Delete declined listings" clears 10 per press.
 
 Demo mode is meant only for the hosted demo; a real board has no reason to keep it.
 
@@ -144,8 +151,9 @@ The manifest fits the Free plan: server routes, app-user auth with one role, and
 
 - Every field has a length limit, and category, schedule, email, and apply link are checked on the server.
 - A hidden "website" field catches form-filling bots; those submissions are dropped quietly.
-- At most 100 listings can wait for review at once (`MAX_PENDING` in `server/listings.js`). Past that, the form shows "New listings are paused for now" until the owner works through the queue. The limit is checked before saving and again right after, so a burst of posts at the same moment can't push past it.
-- One contact email can have at most 3 listings waiting for review (`MAX_PENDING_PER_EMAIL`).
+- At most 100 listings can wait for review at once (`MAX_PENDING` in `server/listings.js`). Past that, the form shows "New listings are paused for now" until the owner works through the queue.
+- One contact email can have at most 3 listings waiting for review (`MAX_PENDING_PER_EMAIL`). Someone can get around this by using another address, but the 100-listing queue limit still holds.
+- Both limits are checked before saving and again right after, so a burst of posts at the same moment can't push past them.
 - The owner can delete any listing, and clear out declined ones 15 at a time, so a wave of spam can be removed from the owner page.
 - Email addresses may only use letters, digits, and `. _ + ' -` before the `@`, so an apply address can't slip extra recipients (like `?bcc=`) into the "Email the employer" link.
 - All visitor text is escaped before it goes on a page, and pages send a strict Content Security Policy.

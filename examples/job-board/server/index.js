@@ -1,7 +1,7 @@
 // Loamwork job board: server routes.
 //
 // Public pages
-//   GET  /                     Job board with search and filters (?q=, ?category=, ?type=)
+//   GET  /                     Job board with search and filters (?q=, ?category=, ?type=, ?after= for older jobs)
 //   GET  /jobs/:id             One job, with how to apply
 //   GET  /post                 "Post a job" form for employers
 //   POST /post                 Save a listing as "waiting for review"
@@ -24,8 +24,6 @@ import { html, messagePage, OWNER_TABS, confirmDeletePage, ownerEditPage, ownerP
 import { demoMode } from "./demo.js"; // DEMO: delete this line to remove the public demo (see demo.js).
 
 const MAX_FORM_BYTES = 32 * 1024;
-const BOARD_PAGE_SIZE = 25;
-const OWNER_PAGE_SIZE = 50;
 
 /**
  * Forms must be posted from this app's own pages. Userland's sign-in cookie is
@@ -110,16 +108,11 @@ async function ownerAccess(request, ctx, url, site) {
   return { user };
 }
 
-// The data service's page cursor, passed through the owner page's "Show more"
-// link. Anything that doesn't look like one is ignored (first page).
+// The data service's page cursor, passed through the "Older jobs" and "Show
+// more" links. Anything that doesn't look like one is ignored (first page).
 function readCursor(url) {
   const value = url.searchParams.get("after") ?? "";
   return value.length <= 64 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/u.test(value) ? value : "";
-}
-
-function readPageNumber(url) {
-  const value = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
-  return Number.isInteger(value) && value >= 1 && value <= 1000 ? value : 1;
 }
 
 // A data error with this code means the plan's saved-row allowance is used up.
@@ -138,17 +131,15 @@ function readFilters(url) {
   };
 }
 
-function matchesFilters(job, filters) {
-  if (filters.category && job.category !== filters.category) return false;
-  if (filters.type && job.job_type !== filters.type) return false;
-  if (filters.q) {
-    const haystack = `${job.title} ${job.employer} ${job.location} ${job.summary}`.toLowerCase();
-    return filters.q
-      .toLowerCase()
-      .split(/\s+/u)
-      .every((word) => haystack.includes(word));
-  }
-  return true;
+// Search words are matched in code, against the page of jobs already read.
+// Category and schedule are matched by the data query itself (see listLive).
+function matchesSearch(job, q) {
+  if (!q) return true;
+  const haystack = `${job.title} ${job.employer} ${job.location} ${job.summary}`.toLowerCase();
+  return q
+    .toLowerCase()
+    .split(/\s+/u)
+    .every((word) => haystack.includes(word));
 }
 
 // Featured jobs first, then newest first.
@@ -161,15 +152,16 @@ function byFeaturedThenNewest(a, b) {
 // Handlers
 // ---------------------------------------------------------------------------
 
+// The board reads one page of up to PAGE_ROWS live jobs (one data call), with
+// the category and schedule filters applied by the query. Search words narrow
+// that page down; "Older jobs" reads the next page.
 async function showBoard(store, site, url) {
   const filters = readFilters(url);
-  const { jobs: live, complete } = await store.listLive();
-  const allLive = live.map(publicListing).sort(byFeaturedThenNewest);
-  const matching = allLive.filter((job) => matchesFilters(job, filters));
-  const pageCount = Math.max(1, Math.ceil(matching.length / BOARD_PAGE_SIZE));
-  const pageNumber = Math.min(readPageNumber(url), pageCount);
-  const jobs = matching.slice((pageNumber - 1) * BOARD_PAGE_SIZE, pageNumber * BOARD_PAGE_SIZE);
-  return boardPage(site, { jobs, matchCount: matching.length, allLive, complete, filters, pageNumber, pageCount });
+  const after = readCursor(url);
+  const { jobs: live, cursor } = await store.listLive({ category: filters.category, type: filters.type, cursor: after });
+  const pageJobs = live.map(publicListing).sort(byFeaturedThenNewest);
+  const jobs = pageJobs.filter((job) => matchesSearch(job, filters.q));
+  return boardPage(site, { jobs, pageJobs, filters, after, nextCursor: cursor });
 }
 
 async function showJob(store, site, id) {
@@ -177,9 +169,9 @@ async function showJob(store, site, id) {
   if (!job || job.status !== "approved") {
     return messagePage(site, { title: "This job isn't available", message: "It may have been filled or taken down. Take a look at the other open jobs.", status: 404 });
   }
-  // Related jobs only need a few, so one page of live jobs is plenty.
-  const related = (await store.listLive({ maxRows: 100 })).jobs
-    .filter((item) => item.id !== job.id && item.category === job.category)
+  // Up to three other live jobs of the same kind: one small data call.
+  const related = (await store.listLive({ category: job.category, limit: 4 })).jobs
+    .filter((item) => item.id !== job.id)
     .slice(0, 3)
     .map(publicListing);
   return jobPage(site, { job: publicListing(job), related });
@@ -221,19 +213,25 @@ async function submitListing(request, ctx, store, site) {
   return redirect(site.link("/post/thanks"));
 }
 
+// The owner page makes at most two data calls: the review queue (for its count,
+// at most MAX_PENDING listings, so one call holds it all) and the chosen tab's
+// page. On the "To review" tab's first page the queue call is the page.
 async function showOwner(store, site, url, user, notice) {
-  const { counts, recent } = await store.summary();
+  const queue = await store.listByStatus("pending");
   const requested = url.searchParams.get("tab") ?? "";
-  const tab = OWNER_TABS.some((item) => item.id === requested) ? requested : counts.pending.count > 0 ? "pending" : "all";
+  const tab = OWNER_TABS.some((item) => item.id === requested) ? requested : queue.jobs.length > 0 ? "pending" : "all";
   const after = readCursor(url);
-  const { jobs, cursor } = await store.listByStatus(tab === "all" ? null : tab, { cursor: after, limit: OWNER_PAGE_SIZE });
+  const { jobs, cursor } = tab === "pending" && !after ? queue : await store.listByStatus(tab === "all" ? null : tab, { cursor: after });
+  const pending = { count: queue.jobs.length, more: Boolean(queue.cursor) };
   const done = url.searchParams.get("done") ?? "";
   const doneId = url.searchParams.get("id") ?? "";
   let doneJob = null;
-  if (doneId) doneJob = jobs.find((job) => job.id === doneId) ?? recent.find((job) => job.id === doneId) ?? (await store.get(doneId));
+  if (doneId) doneJob = jobs.find((job) => job.id === doneId) ?? queue.jobs.find((job) => job.id === doneId) ?? (await store.get(doneId));
+  // Recent activity comes from the listings already read for this page.
+  const recent = [...new Map([...queue.jobs, ...jobs].map((job) => [job.id, job])).values()];
   return ownerPage(site, {
     jobs,
-    counts,
+    pending,
     recent,
     tab,
     after,
@@ -367,8 +365,8 @@ export function createApp({ demo = null } = {}) {
           }
           if (parts[1] === "declined" && parts[2] === "delete" && parts.length === 3) {
             if (method === "GET") {
-              const { counts } = await store.summary();
-              return confirmDeletePage(site, { declined: counts.rejected, notice });
+              const declined = await store.listByStatus("rejected");
+              return confirmDeletePage(site, { declined: { count: declined.jobs.length, more: Boolean(declined.cursor) }, notice });
             }
             if (method === "POST") return await deleteDeclined(ctx, store, site);
           }

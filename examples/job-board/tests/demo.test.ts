@@ -5,7 +5,7 @@ import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 import app from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { demoMode } from "../server/demo.js";
-import { APP_ORIGIN, DEMO_ORIGIN, get, makeCtx, post, validListing, type Ctx } from "./helpers.js";
+import { APP_ORIGIN, DEMO_ORIGIN, countingCtx, get, makeCtx, post, validListing, type Ctx } from "./helpers.js";
 
 describe("public demo", () => {
   async function visitorPosts(ctx: Ctx, title: string) {
@@ -91,15 +91,15 @@ describe("public demo", () => {
 
   it("clears day-old visitor listings even when many newer ones exist", async () => {
     const ctx = makeCtx();
-    // 250 fresh rows first, then 3 expired ones at the end of the list.
-    await seedDemoRows(ctx, 250, { title: "Fresh", visitor: "x", expires_at: later() });
+    // 150 fresh rows first, then 3 expired ones at the end of the list.
+    await seedDemoRows(ctx, 150, { title: "Fresh", visitor: "x", expires_at: later() });
     await seedDemoRows(ctx, 3, { title: "Old", visitor: "y", expires_at: past() });
 
     await visitorPosts(ctx, "Carmen cider maker");
 
     const rows = ctx.state["demo-listings"];
     expect(rows.some((row) => String(row.title).startsWith("Old"))).toBe(false);
-    expect(rows.filter((row) => String(row.title).startsWith("Fresh"))).toHaveLength(250);
+    expect(rows.filter((row) => String(row.title).startsWith("Fresh"))).toHaveLength(150);
     expect(rows.find((row) => row.title === "Carmen cider maker")?.expires_at).toEqual(expect.any(String));
   });
 
@@ -114,22 +114,43 @@ describe("public demo", () => {
     expect(ctx.state["demo-listings"]).toHaveLength(0);
   });
 
-  it("caps the whole demo, so posts without a visitor key can't fill its storage", async () => {
+  const active = (ctx: Ctx) => ctx.state["demo-listings"].filter((row) => String(row.expires_at) > new Date().toISOString()).length;
+
+  it("caps the whole demo by dropping the oldest rows, so a flood can't fill storage or lock visitors out", async () => {
     const ctx = makeCtx();
-    await seedDemoRows(ctx, 300, { title: "Scripted", visitor: "", expires_at: later() });
+    // A script posts 230 listings without a key: each gets a brand-new key, so
+    // only the demo-wide cap applies.
+    for (let index = 0; index < 230; index += 1) {
+      const response = await post(app, ctx, `${DEMO_ORIGIN}/post`, { ...validListing, title: `Scripted ${index}` });
+      expect(response.status).toBe(303);
+    }
+    expect(ctx.state["demo-listings"]).toHaveLength(200);
+    expect(ctx.state["demo-listings"].some((row) => row.title === "Scripted 0")).toBe(false);
+    expect(ctx.state["demo-listings"].some((row) => row.title === "Scripted 229")).toBe(true);
 
-    // Each post without ?demo= gets a brand-new key, so only the demo-wide cap stops it.
-    const response = await post(app, ctx, `${DEMO_ORIGIN}/post`, validListing);
-    expect(response.status).toBe(429);
-    expect(await response.text()).toContain("The demo is busy");
-    const change = await post(app, ctx, `${DEMO_ORIGIN}/owner/jobs/orchard-crew-lead/status`, { status: "closed" });
-    expect(change.status).toBe(429);
-    expect(ctx.state["demo-listings"]).toHaveLength(300);
+    // A new visitor can still post and make owner changes.
+    const carmen = await visitorPosts(ctx, "Carmen cider maker");
+    const change = await post(app, ctx, `${DEMO_ORIGIN}/owner/jobs/egg-crew/status?demo=${carmen}`, { status: "approved" });
+    expect(change.status).toBe(303);
+    const board = await (await get(app, ctx, `${DEMO_ORIGIN}/?demo=${carmen}`)).text();
+    expect(board).toContain("Pasture poultry crew");
+    expect(ctx.state["demo-listings"]).toHaveLength(200);
+  });
 
-    // Expired rows don't count toward the cap.
-    await seedDemoRows(ctx, 1, { title: "Expired", visitor: "", expires_at: past() });
+  it("holds the demo-wide cap when many saves arrive at the same moment", async () => {
+    const ctx = makeCtx();
+    await seedDemoRows(ctx, 190, { title: "Earlier", visitor: "", expires_at: later() });
+    const responses = await Promise.all(Array.from({ length: 100 }, (_, index) => post(app, ctx, `${DEMO_ORIGIN}/post`, { ...validListing, title: `Burst ${index}` })));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 303).length).toBeGreaterThan(0);
+    expect(statuses.every((status) => status === 303 || status === 429)).toBe(true);
+    expect(await responses.find((response) => response.status === 429)?.text()).toContain("The demo is busy");
+    expect(active(ctx)).toBeLessThanOrEqual(202);
+
+    // Expired rows don't count toward the cap and are cleared a few at a time.
     for (const row of ctx.state["demo-listings"].slice(0, 5)) await ctx.data.collection("demo-listings").update(row.id, { expires_at: past() });
     expect((await post(app, ctx, `${DEMO_ORIGIN}/post`, validListing)).status).toBe(303);
+    expect(ctx.state["demo-listings"].filter((row) => String(row.expires_at) <= new Date().toISOString())).toHaveLength(0);
   });
 
   it("keeps each visitor to 30 saved changes", async () => {
@@ -156,9 +177,12 @@ describe("public demo", () => {
         })
       }
     } as Ctx;
+    await seedDemoRows(ctx, 3, { title: "Oldest", visitor: "", expires_at: later() });
     const response = await post(app, quotaCtx, `${DEMO_ORIGIN}/post`, validListing);
     expect(response.status).toBe(429);
-    expect(await response.text()).toContain("The demo is busy");
+    expect(await response.text()).toContain("Please try again in a minute.");
+    // It also frees a little room, so the next try can go through.
+    expect(ctx.state["demo-listings"]).toHaveLength(1);
   });
 
   it("lets a visitor delete listings in their own copy only", async () => {
@@ -179,6 +203,32 @@ describe("public demo", () => {
     const everyoneElse = await (await get(app, ctx, `${DEMO_ORIGIN}/owner?tab=all`)).text();
     expect(everyoneElse).toContain("Orchard crew lead");
     expect(everyoneElse).toContain("Earn $5,000");
+  });
+
+  it("deletes declined listings in a few data calls, even with many of them", async () => {
+    const ctx = makeCtx();
+    const alice = await visitorPosts(ctx, "Alice goat herder");
+    for (let index = 1; index < 16; index += 1) {
+      expect((await post(app, ctx, `${DEMO_ORIGIN}/post?demo=${alice}`, { ...validListing, title: `Alice extra ${index}` })).status).toBe(303);
+    }
+    for (const row of [...ctx.state["demo-listings"]]) {
+      expect((await post(app, ctx, `${DEMO_ORIGIN}/owner/jobs/${row.id}/status?demo=${alice}`, { status: "rejected" })).status).toBe(303);
+    }
+    await seedDemoRows(ctx, 10, { title: "Expired", visitor: "someone", expires_at: past() });
+
+    const counted = countingCtx(ctx);
+    const first = await post(app, counted.ctx, `${DEMO_ORIGIN}/owner/declined/delete?demo=${alice}`, {});
+    expect(first.status).toBe(303);
+    expect(counted.total()).toBeLessThanOrEqual(16);
+    expect(first.headers.get("location")).toContain("more=1");
+
+    counted.reset();
+    const second = await post(app, counted.ctx, `${DEMO_ORIGIN}/owner/declined/delete?demo=${alice}`, {});
+    expect(second.status).toBe(303);
+    expect(counted.total()).toBeLessThanOrEqual(16);
+    const owner = await (await get(app, ctx, `${DEMO_ORIGIN}/owner?demo=${alice}&tab=rejected`)).text();
+    expect(owner).not.toContain("Alice");
+    expect(owner).not.toContain("Earn $5,000");
   });
 
   it("keeps demo mode off on any host other than the demo host", async () => {

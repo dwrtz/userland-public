@@ -42,7 +42,7 @@
             "published_at": "datetime"
           },
           "indexes": [
-            { "name": "by_status", "fields": ["status", "published_at"] },
+            { "name": "by_status", "fields": ["status", "category", "job_type", "published_at"] },
             { "name": "by_submitted", "fields": ["status", "submitted_at"] }
           ],
           "access": {

@@ -53,18 +53,19 @@ const EMAIL_PATTERN = /^[a-z0-9._+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/i
 
 // Spam limits for the public "Post a job" form. The board never holds more than
 // MAX_PENDING listings waiting for review, and one contact email can have at most
-// MAX_PENDING_PER_EMAIL of them. Both are checked before saving and the queue
-// size again right after (see create() below). Raise them if your board is busy,
-// keeping MAX_PENDING at 100 or less so one data call can read the whole queue.
+// MAX_PENDING_PER_EMAIL of them. Both are checked before saving and again right
+// after (see create() below), so posts that arrive at the same moment can't push
+// past them. Raise them if your board is busy, keeping MAX_PENDING at 100 or less
+// so one data call can read the whole queue.
 export const MAX_PENDING = 100;
 export const MAX_PENDING_PER_EMAIL = 3;
 
-// Pages read at most this many rows of live jobs (100 per data call). 1,000 is
-// every row the Free plan allows, so the board sees every live job there.
-export const MAX_LIVE_ROWS = 1000;
+// How many rows one data call returns at most (the platform's `list` limit).
+// The board and the owner lists show this many listings per page.
+export const PAGE_ROWS = 100;
 
-// "Delete all declined" removes this many listings per press, which keeps one
-// request well under the plan's limit on data calls per request (Free: 25).
+// "Delete all declined" removes this many listings per press: 1 list call plus
+// up to 15 deletes, well under Free's 25 subrequests per request.
 export const BULK_DELETE_MAX = 15;
 
 /** Thrown when the review queue is full or one email has sent too many listings. */
@@ -202,39 +203,40 @@ export function publicListing(listing) {
  * operations a job board needs. server/demo.js provides the same shape for
  * the public demo.
  *
- * Reads use the two indexes in the manifest: by_status (status, published_at)
- * for the public board and by_submitted (status, submitted_at) for the owner's
- * lists. Lists are read page by page with the returned cursor, never cut off
- * silently at the first page.
+ * Page views stay cheap on purpose. Today every `list` call reads the whole
+ * collection before it filters and sorts, and Free gives each request 10 ms of
+ * CPU, so a page makes at most two `list` calls however many listings are
+ * saved: the board makes one, the owner page two. Long lists are read one page
+ * of up to PAGE_ROWS at a time through the returned cursor ("Older jobs",
+ * "Show more"), never cut off silently.
+ *
+ * Reads use the two indexes in the manifest: by_status (status, category,
+ * job_type, published_at) for the public board and its filters, and
+ * by_submitted (status, submitted_at) for the owner's lists.
  */
 export function listingStore(ctx) {
   const listings = ctx.data.collection("listings");
   return {
     /**
-     * Every live job, newest first. Reads up to `maxRows` (default
-     * MAX_LIVE_ROWS); `complete` is false when more live jobs exist than that.
+     * One page of live jobs, newest first, optionally only one category and/or
+     * job type. Pass the returned `cursor` back for the next page; an empty
+     * cursor means this was the last page. One data call.
      */
-    async listLive({ maxRows = MAX_LIVE_ROWS } = {}) {
-      const jobs = [];
-      let cursor;
-      do {
-        const page = await listings.list({
-          where: { status: "approved" },
-          order_by: [{ field: "published_at", direction: "desc" }],
-          limit: Math.min(100, maxRows - jobs.length),
-          ...(cursor ? { cursor } : {})
-        });
-        jobs.push(...page.rows.map(toListing));
-        cursor = page.cursor;
-      } while (cursor && jobs.length < maxRows);
-      return { jobs, complete: !cursor };
+    async listLive({ category = "", type = "", cursor = "", limit = PAGE_ROWS } = {}) {
+      const page = await listings.list({
+        where: { status: "approved", ...(category ? { category } : {}), ...(type ? { job_type: type } : {}) },
+        order_by: [{ field: "published_at", direction: "desc" }],
+        limit,
+        ...(cursor ? { cursor } : {})
+      });
+      return { jobs: page.rows.map(toListing), cursor: page.cursor ?? "" };
     },
     /**
      * One page of listings with a status (or every status when `status` is
      * null), newest submission first. Pass the returned `cursor` back for the
-     * next page; no cursor means this was the last page.
+     * next page; an empty cursor means this was the last page. One data call.
      */
-    async listByStatus(status, { cursor = "", limit = 50 } = {}) {
+    async listByStatus(status, { cursor = "", limit = PAGE_ROWS } = {}) {
       const page = await listings.list({
         ...(status ? { where: { status } } : {}),
         order_by: [{ field: "submitted_at", direction: "desc" }],
@@ -243,21 +245,6 @@ export function listingStore(ctx) {
       });
       return { jobs: page.rows.map(toListing), cursor: page.cursor ?? "" };
     },
-    /**
-     * How many listings have each status (counted up to 100; `more` is true
-     * past that), plus the most recently changed listings for the activity panel.
-     */
-    async summary() {
-      const statuses = Object.keys(STATUS_LABELS);
-      const pages = await Promise.all(statuses.map((status) => listings.list({ where: { status }, limit: 100 })));
-      const counts = {};
-      const recent = [];
-      statuses.forEach((status, index) => {
-        counts[status] = { count: pages[index].rows.length, more: Boolean(pages[index].cursor) };
-        recent.push(...pages[index].rows.map(toListing));
-      });
-      return { counts, recent };
-    },
     async get(id) {
       return toListing(await listings.get(id));
     },
@@ -265,8 +252,8 @@ export function listingStore(ctx) {
       const queue = await listings.list({ where: { status: "pending" }, limit: MAX_PENDING });
       if (queue.rows.length >= MAX_PENDING) throw new SubmissionLimitError("queue");
       const email = values.contact_email.toLowerCase();
-      const fromEmail = queue.rows.filter((row) => String(row.contact_email ?? "").toLowerCase() === email).length;
-      if (fromEmail >= MAX_PENDING_PER_EMAIL) throw new SubmissionLimitError("email");
+      const fromEmail = (row) => String(row.contact_email ?? "").toLowerCase() === email;
+      if (queue.rows.filter(fromEmail).length >= MAX_PENDING_PER_EMAIL) throw new SubmissionLimitError("email");
 
       const now = new Date().toISOString();
       const row = await listings.create({
@@ -278,17 +265,26 @@ export function listingStore(ctx) {
         submitted_at: now
       });
 
-      // Posts that arrive at the same moment can all pass the check above. Look
-      // again now that this one is saved: if it isn't among the MAX_PENDING
-      // oldest waiting listings, take it back out.
+      // Posts that arrive at the same moment can all pass the checks above.
+      // Look again now that this one is saved, oldest first: it must be among
+      // the MAX_PENDING oldest waiting listings, and among the first
+      // MAX_PENDING_PER_EMAIL from its email. If not, take it back out.
       const first = await listings.list({
         where: { status: "pending" },
         order_by: [{ field: "submitted_at", direction: "asc" }],
         limit: MAX_PENDING
       });
+      let reason = "";
       if (first.cursor && !first.rows.some((item) => item.id === row.id)) {
+        reason = "queue";
+      } else {
+        const sameEmail = first.rows.filter(fromEmail).sort(oldestFirst);
+        const position = sameEmail.findIndex((item) => item.id === row.id);
+        if (position >= MAX_PENDING_PER_EMAIL) reason = "email";
+      }
+      if (reason) {
         await listings.delete(row.id);
-        throw new SubmissionLimitError("queue");
+        throw new SubmissionLimitError(reason);
       }
       return toListing(row);
     },
@@ -305,4 +301,10 @@ export function listingStore(ctx) {
       return { deleted: page.rows.length, more: Boolean(page.cursor) };
     }
   };
+}
+
+// Oldest submission first; the row id breaks ties so every request that looks
+// at the same rows puts them in the same order.
+function oldestFirst(a, b) {
+  return String(a.submitted_at).localeCompare(String(b.submitted_at)) || String(a.id).localeCompare(String(b.id));
 }

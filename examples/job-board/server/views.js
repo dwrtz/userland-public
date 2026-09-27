@@ -4,7 +4,7 @@
 // that came from a visitor or the database goes through the `html` tag below,
 // which escapes it, so a listing titled "<script>" shows up as text.
 
-import { BULK_DELETE_MAX, CATEGORIES, JOB_TYPES, MAX_LIVE_ROWS, STATUS_LABELS, FIELD_LIMITS, applyHref, categoryLabel, isEmail, jobTypeLabel } from "./listings.js";
+import { BULK_DELETE_MAX, CATEGORIES, JOB_TYPES, PAGE_ROWS, STATUS_LABELS, FIELD_LIMITS, applyHref, categoryLabel, isEmail, jobTypeLabel } from "./listings.js";
 
 export const BRAND = {
   name: "Loamwork",
@@ -209,36 +209,49 @@ function filterParams(filters) {
   return params;
 }
 
-function filterLink(site, filters, change, label, count, current) {
-  return html`<li><a class="filter-link" href="${site.link("/", filterParams({ ...filters, ...change }))}"${current ? raw(' aria-current="true"') : ""}><span>${label}</span><span class="count">${count}</span></a></li>`;
+function filterLink(site, filters, change, label, current) {
+  return html`<li><a class="filter-link" href="${site.link("/", filterParams({ ...filters, ...change }))}"${current ? raw(' aria-current="true"') : ""}><span>${label}</span></a></li>`;
 }
 
-// "Newer jobs / Page 2 of 4 / Older jobs" links under the job list.
-function boardPager(site, filters, pageNumber, pageCount) {
-  if (pageCount <= 1) return "";
-  const pageLink = (number) => site.link("/", { ...filterParams(filters), page: number > 1 ? String(number) : undefined });
+// "Back to the newest / Older jobs" links under the job list. The board reads
+// PAGE_ROWS live jobs at a time; `nextCursor` points at the next batch.
+function boardPager(site, filters, after, nextCursor) {
+  if (!after && !nextCursor) return "";
   return html`<nav class="pager" aria-label="More jobs">
-    ${pageNumber > 1 ? html`<a class="button button-small button-quiet" href="${pageLink(pageNumber - 1)}" rel="prev">Newer jobs</a>` : html`<span></span>`}
-    <span class="pager-status">Page ${pageNumber} of ${pageCount}</span>
-    ${pageNumber < pageCount ? html`<a class="button button-small button-quiet" href="${pageLink(pageNumber + 1)}" rel="next">Older jobs</a>` : html`<span></span>`}
+    ${after ? html`<a class="button button-small button-quiet" href="${site.link("/", filterParams(filters))}">Back to the newest</a>` : html`<span></span>`}
+    ${nextCursor ? html`<a class="button button-small button-quiet" href="${site.link("/", { ...filterParams(filters), after: nextCursor })}" rel="next">Older jobs</a>` : html`<span></span>`}
   </nav>`;
 }
 
-export function boardPage(site, { jobs, matchCount = jobs.length, allLive, complete = true, filters, pageNumber = 1, pageCount = 1, now = Date.now() }) {
-  const categoryCounts = Object.fromEntries(CATEGORIES.map((category) => [category.id, allLive.filter((job) => job.category === category.id).length]));
-  const typeCounts = Object.fromEntries(JOB_TYPES.map((type) => [type.id, allLive.filter((job) => job.job_type === type.id).length]));
-  const employers = new Set(allLive.map((job) => job.employer)).size;
+/**
+ * The public board. `pageJobs` is one page of live jobs (up to PAGE_ROWS,
+ * already narrowed by category and schedule); `jobs` is the ones that also
+ * match the search words. `after` is set on older pages, and `nextCursor` when
+ * there are older jobs still to show.
+ */
+export function boardPage(site, { jobs, pageJobs = jobs, filters, after = "", nextCursor = "", now = Date.now() }) {
   const activeParts = [
     filters.category ? categoryLabel(filters.category) : "",
     filters.type ? jobTypeLabel(filters.type) : "",
     filters.q ? `matching “${filters.q}”` : ""
   ].filter(Boolean);
   const anyFilter = activeParts.length > 0;
+  // The total is only known when every live job fits on this one page.
+  const unfiltered = !filters.category && !filters.type && !after;
+  const employers = new Set(pageJobs.map((job) => job.employer)).size;
+  const eyebrow = !unfiltered
+    ? "Farm and food jobs"
+    : nextCursor
+      ? `${pageJobs.length}+ open jobs`
+      : `${pageJobs.length} open ${pageJobs.length === 1 ? "job" : "jobs"} from ${employers} ${employers === 1 ? "employer" : "employers"}`;
+  const partial = Boolean(after || nextCursor);
+  const heading = `${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}${partial ? " on this page" : ""}`;
+  const nothingAtAll = pageJobs.length === 0 && !anyFilter && !after;
 
   const body = html`<section class="hero" aria-labelledby="hero-title">
   <div class="wrap hero-inner">
     <div class="hero-copy">
-      <p class="eyebrow">${allLive.length}${complete ? "" : "+"} open ${allLive.length === 1 ? "job" : "jobs"} from ${employers} ${employers === 1 ? "employer" : "employers"}</p>
+      <p class="eyebrow">${eyebrow}</p>
       <h1 id="hero-title">Work that grows things.</h1>
       <p class="lede">Jobs on small farms, orchards, ranches, and food projects across the Pacific Northwest. A real person reads every listing before it goes up.</p>
     </div>
@@ -260,15 +273,15 @@ export function boardPage(site, { jobs, matchCount = jobs.length, allLive, compl
     <nav class="filter-group" aria-labelledby="filter-category">
       <h2 id="filter-category">Kind of work</h2>
       <ul>
-        ${filterLink(site, filters, { category: "" }, "All kinds", allLive.length, !filters.category)}
-        ${CATEGORIES.map((category) => filterLink(site, filters, { category: category.id }, category.label, categoryCounts[category.id], filters.category === category.id))}
+        ${filterLink(site, filters, { category: "" }, "All kinds", !filters.category)}
+        ${CATEGORIES.map((category) => filterLink(site, filters, { category: category.id }, category.label, filters.category === category.id))}
       </ul>
     </nav>
     <nav class="filter-group" aria-labelledby="filter-type">
       <h2 id="filter-type">Schedule</h2>
       <ul>
-        ${filterLink(site, filters, { type: "" }, "Any schedule", allLive.length, !filters.type)}
-        ${JOB_TYPES.map((type) => filterLink(site, filters, { type: type.id }, type.label, typeCounts[type.id], filters.type === type.id))}
+        ${filterLink(site, filters, { type: "" }, "Any schedule", !filters.type)}
+        ${JOB_TYPES.map((type) => filterLink(site, filters, { type: type.id }, type.label, filters.type === type.id))}
       </ul>
     </nav>
     <div class="hiring-card">
@@ -279,19 +292,20 @@ export function boardPage(site, { jobs, matchCount = jobs.length, allLive, compl
   </aside>
   <section class="results" aria-labelledby="results-title">
     <div class="results-head">
-      <h2 id="results-title">${matchCount} ${matchCount === 1 ? "job" : "jobs"}${anyFilter ? html` <span class="results-filter">${activeParts.join(" · ")}</span>` : ""}</h2>
+      <h2 id="results-title">${heading}${anyFilter ? html` <span class="results-filter">${activeParts.join(" · ")}</span>` : ""}</h2>
       ${anyFilter ? html`<a class="clear-link" href="${site.link("/")}">Clear filters</a>` : ""}
     </div>
-    ${complete ? "" : html`<p class="muted">Showing the newest ${MAX_LIVE_ROWS.toLocaleString("en-US")} open jobs.</p>`}
+    ${filters.q && nextCursor ? html`<p class="muted">Search looks through ${PAGE_ROWS} jobs at a time. Choose “Older jobs” below to search further back.</p>` : ""}
     ${
       jobs.length > 0
-        ? html`<ol class="job-list">${jobs.map((job) => jobCard(site, job, now))}</ol>${boardPager(site, filters, pageNumber, pageCount)}`
+        ? html`<ol class="job-list">${jobs.map((job) => jobCard(site, job, now))}</ol>`
         : html`<div class="empty">
-      <h3>${allLive.length === 0 ? "No jobs posted yet" : "Nothing matches those filters"}</h3>
-      <p>${allLive.length === 0 ? "New listings show up here as soon as they're approved." : "Try a different kind of work or schedule, or clear the filters to see every open job."}</p>
-      ${allLive.length === 0 ? html`<a class="button" href="${site.link("/post")}">Post the first job</a>` : html`<a class="button" href="${site.link("/")}">See all jobs</a>`}
+      <h3>${nothingAtAll ? "No jobs posted yet" : "Nothing matches those filters"}</h3>
+      <p>${nothingAtAll ? "New listings show up here as soon as they're approved." : nextCursor ? "There are older jobs to look through below, or clear the filters to see every open job." : "Try a different kind of work or schedule, or clear the filters to see every open job."}</p>
+      ${nothingAtAll ? html`<a class="button" href="${site.link("/post")}">Post the first job</a>` : html`<a class="button" href="${site.link("/")}">See all jobs</a>`}
     </div>`
     }
+    ${boardPager(site, filters, after, nextCursor)}
   </section>
 </div>`;
 
@@ -526,7 +540,7 @@ function flashMessage({ done, doneJob, doneCount, doneMore }) {
   return doneJob && Object.hasOwn(DONE_MESSAGES, done) ? DONE_MESSAGES[done](doneJob.title) : "";
 }
 
-// A count for a tab: "100+" when there are more than one data page holds.
+// A count for a tab: "100+" when there are more than one data call reads.
 function countLabel({ count, more }) {
   return more ? `${count}+` : String(count);
 }
@@ -568,20 +582,17 @@ function statusButtons(site, job, tab) {
 }
 
 /**
- * The owner's listings page. `jobs` is one page of the chosen tab; `counts`
- * holds each status's count; `recent` is the recently changed listings used for
- * the activity panel; `nextCursor` links to the next page.
+ * The owner's listings page. `jobs` is one page of the chosen tab; `pending` is
+ * the review queue's { count, more }; `recent` is the listings already read for
+ * this page, used for the activity panel; `nextCursor` links to the next page.
+ *
+ * Counting every status would mean reading every listing, so only "To review"
+ * always shows a count. The open tab shows one too when its first page holds
+ * all of it (or "100+" when it doesn't).
  */
-export function ownerPage(site, { jobs, counts, recent, tab, after = "", nextCursor = "", done = "", doneJob = null, doneCount = 0, doneMore = false, user, now = Date.now(), notice = "" }) {
-  const statusCounts = Object.values(counts);
-  const tabCounts = Object.fromEntries(
-    OWNER_TABS.map((item) => [
-      item.id,
-      item.id === "all"
-        ? countLabel({ count: statusCounts.reduce((sum, entry) => sum + entry.count, 0), more: statusCounts.some((entry) => entry.more) })
-        : countLabel(counts[item.id])
-    ])
-  );
+export function ownerPage(site, { jobs, pending, recent, tab, after = "", nextCursor = "", done = "", doneJob = null, doneCount = 0, doneMore = false, user, now = Date.now(), notice = "" }) {
+  const tabCounts = { pending: countLabel(pending) };
+  if (!after && tab !== "pending") tabCounts[tab] = countLabel({ count: jobs.length, more: Boolean(nextCursor) });
   const shown = jobs;
   const flash = flashMessage({ done, doneJob, doneCount, doneMore });
   const activity = recent
@@ -600,7 +611,7 @@ export function ownerPage(site, { jobs, counts, recent, tab, after = "", nextCur
   </div>
   ${flash ? html`<p class="flash" role="status">${flash}${done === "approved" && doneJob ? html` <a href="${site.link(`/jobs/${doneJob.id}`)}">View listing</a>` : ""}</p>` : ""}
   <nav class="tabs" aria-label="Listings by status">
-    ${OWNER_TABS.map((item) => html`<a href="${site.link("/owner", { tab: item.id })}"${tab === item.id ? raw(' aria-current="page"') : ""}>${item.label} <span class="count">${tabCounts[item.id]}</span></a>`)}
+    ${OWNER_TABS.map((item) => html`<a href="${site.link("/owner", { tab: item.id })}"${tab === item.id ? raw(' aria-current="page"') : ""}>${item.label}${Object.hasOwn(tabCounts, item.id) ? html` <span class="count">${tabCounts[item.id]}</span>` : ""}</a>`)}
   </nav>
   <div class="owner-grid">
     <section aria-label="${OWNER_TABS.find((item) => item.id === tab)?.label ?? "Listings"}">
@@ -633,7 +644,7 @@ export function ownerPage(site, { jobs, counts, recent, tab, after = "", nextCur
           : html`<div class="empty"><h3>Nothing here right now</h3><p>${tab === "pending" ? "New listings land here for you to review." : "Listings with this status will show up here."}</p></div>`
       }
       ${
-        tab === "rejected" && counts.rejected.count > 0
+        tab === "rejected" && jobs.length > 0
           ? html`<div class="owner-tools"><a class="button button-small button-quiet" href="${site.link("/owner/declined/delete")}">Delete declined listings</a><p class="fine">Clears out spam and listings you turned down. Deleted listings can't be brought back.</p></div>`
           : ""
       }
@@ -698,7 +709,7 @@ export function ownerEditPage(site, { job, values, errors = {}, status = 200, no
 
 /**
  * "Are you sure?" page before deleting. Pass `job` to delete one listing, or
- * `declined` (a count from store.summary()) to delete declined listings.
+ * `declined` ({ count, more } for the Declined tab) to delete declined listings.
  */
 export function confirmDeletePage(site, { job = null, declined = null, notice = "" }) {
   const action = job ? site.link(`/owner/jobs/${job.id}/delete`) : site.link("/owner/declined/delete");
