@@ -1,0 +1,100 @@
+{
+  "app": {
+    "name": "Invoice Generator",
+    "summary": "Quotes and invoices for a small studio: clients request a quote, the owner prices it, sends a link, and turns accepted quotes into invoices.",
+    "visibility": "public",
+    "tags": ["invoices", "quotes", "billing"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["owner"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "clients": {
+          "fields": {
+            "workspace": "string",
+            "name": "string",
+            "company": "string",
+            "email": "string",
+            "address": "string",
+            "notes": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_workspace",
+              "fields": ["workspace", "email"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        },
+        "documents": {
+          "fields": {
+            "workspace": "string",
+            "kind": {
+              "type": "enum",
+              "values": ["quote", "invoice"]
+            },
+            "number": "string",
+            "status": {
+              "type": "enum",
+              "values": ["requested", "draft", "sent", "accepted", "declined", "converted", "paid", "void"]
+            },
+            "client_id": {
+              "type": "reference",
+              "collection": "clients"
+            },
+            "title": "string",
+            "issue_date": "string",
+            "due_date": "string",
+            "line_items": "json",
+            "tax_percent": "number",
+            "subtotal_cents": "integer",
+            "tax_cents": "integer",
+            "total_cents": "integer",
+            "currency": "string",
+            "notes": "string",
+            "request_message": "string",
+            "public_token": "string",
+            "quote_id": "string",
+            "invoice_id": "string",
+            "sent_on": "string",
+            "accepted_on": "string",
+            "paid_on": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_workspace",
+              "fields": ["workspace", "kind", "status", "client_id"]
+            },
+            {
+              "name": "by_public_token",
+              "fields": ["public_token"],
+              "unique": true
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    },
+    "jobs": {
+      "clear-demo": {
+        "trigger": "manual",
+        "max_attempts": 3
+      }
+    }
+  }
+}

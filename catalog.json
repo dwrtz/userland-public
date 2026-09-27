@@ -45,6 +45,20 @@
       "page_url": "https://userland.fun/examples/mini-crm/"
     },
     {
+      "slug": "invoice-generator",
+      "title": "Invoice Generator",
+      "summary": "Quote and invoice app: clients request a quote, the owner prices and sends it, and accepted quotes become printable invoices.",
+      "path": "examples/invoice-generator",
+      "capabilities": ["static", "server", "auth", "data", "jobs", "transactions"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://invoice-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/invoice-generator/"
+    },
+    {
       "slug": "hello-static",
       "title": "Hello Static",
       "summary": "Small static app with no server runtime or managed resources.",
