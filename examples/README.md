@@ -2,24 +2,81 @@
 
 Each example directory must include:
 
-- `README.md` for humans.
-- `AGENT.md` for coding agents.
-- `example.json` metadata.
-- `manifest.userland.json`.
+- `README.md` for the person supervising the agent: what the app does, the plan it needs, and how to publish it.
+- `AGENT.md` for coding agents: plan details, adaptation steps, validation commands, and safety rules.
+- `example.json` metadata. It must match the example's `catalog.json` entry exactly.
+- `manifest.userland.json`. It must validate against `schemas/resource-manifest-v0.schema.json` and pass `userland validate <dir> --strict`. At the top level it may set `app`, `runtime`, and `resources`, plus the optional keys the CLI reads: `$schema` (an editor hint), a release `message` (a `--message` flag on `userland apps publish` overrides it), `files` (an explicit release file list), and `provenance`. None of the examples set `files`, so publishing sends every regular file in the example directory.
 - `public/` files when the app has static assets.
 - `server/index.js` when the app has dynamic routes, jobs, webhooks, or resource access.
+- `tests/*.test.ts` for server code (recommended). `scripts/runtime-harness.ts` builds a test `ctx` from the manifest and rejects calls the Userland runtime rejects, such as queries on unindexed fields or undeclared secrets.
 
 Example metadata follows this shape:
 
 ```json
 {
-  "slug": "blog-cms",
-  "title": "Blog CMS",
-  "summary": "Admin-authored blog with posts and media uploads.",
-  "path": "examples/blog-cms",
-  "capabilities": ["auth", "data", "files", "server", "rollback"],
-  "difficulty": "intermediate",
-  "userland_api_version": "v0"
+  "slug": "tiny-store",
+  "title": "Tiny Store",
+  "summary": "Small storefront with products, orders, checkout secrets, jobs, and webhooks.",
+  "path": "examples/tiny-store",
+  "capabilities": ["server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback"],
+  "difficulty": "advanced",
+  "userland_api_version": "v0",
+  "required_plan": "business",
+  "paid_features": ["auth.public_signup", "jobs.schedule.allowed", "webhooks.enabled"],
+  "launch_role": "capability-fixture"
 }
 ```
 
+(`paid_features` is shortened here; the real entry lists every key.)
+
+Launch examples also set a live demo and a marketing page:
+
+```json
+{
+  "launch_role": "launch-example",
+  "demo_url": "https://<demo-slug>.apps.userland.fun/",
+  "page_url": "https://userland.fun/examples/<slug>/"
+}
+```
+
+## Plan metadata
+
+- `required_plan` is the lowest plan that can publish the example: `free`, `starter`, `business`, or `business_plus`. Examples must fit a self-serve plan.
+- `paid_features` lists the feature and limit keys that need more than the Free plan, using the same `feature_key` and `limit_key` names `userland validate --json` lists under `plan_gated` and a publish `402` error reports. It is `[]` for Free examples.
+- Both are exactly what `userland validate examples/<slug>` reports (`required_plan_key` and `plan_gated`), using the plan rules in `schemas/plans-v0.json`. `npm run validate:catalog` recomputes them with the CLI and fails on any mismatch, so update them whenever the manifest's resources change, and state the plan plainly in `README.md` and `AGENT.md`. Plan limits: https://docs.userland.fun/reference/limits/.
+- `capabilities` must list every resource the manifest declares (`server`, `auth`, `data`, `files`, `secrets`, `jobs`, `webhooks`), and no resource it does not declare. `static` is required only for examples with no server; examples with a server may also list it. `rollback` and `transactions` describe behavior and are not checked.
+- `launch_role` is `launch-example` for the polished examples featured at launch, or `capability-fixture` for small examples that each show one platform capability.
+
+## Current plans
+
+Launch examples (live demos, each with a page at `https://userland.fun/examples/<slug>/`):
+
+| Example | Demo | Plan needed | Why |
+| --- | --- | --- | --- |
+| `booking-app` | https://booking-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+| `waitlist-app` | https://waitlist-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+| `mini-crm` | https://mini-crm-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+| `invoice-generator` | https://invoice-demo.apps.userland.fun/ | Free | One owner role, two collections, and one manual job. |
+| `link-in-bio-app` | https://link-in-bio-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+| `job-board` | https://job-board-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+
+Capability examples:
+
+| Example | Plan needed | Why |
+| --- | --- | --- |
+| `hello-static` | Free | Static files only. |
+| `blog-cms` | Free | One admin role, one collection, one public file store, 5 MB uploads. |
+| `server-notes` | Free | One collection. |
+| `ai-secret-tool` | Free | One secret. |
+| `booking-lite` | Free | Two collections. |
+| `webhook-automation` | Starter | Webhooks are not on Free. |
+| `tiny-store` | Business | Open customer sign-up and an hourly job. |
+
+Validate one example while others are in progress:
+
+```sh
+npm run userland -- validate examples/<slug> --strict --plan <required_plan>
+npm run validate:manifests -- <slug>
+npm run validate:links -- <slug>
+npx vitest run examples/<slug>
+```

@@ -1,0 +1,14 @@
+{
+  "slug": "link-in-bio-app",
+  "title": "Link-in-Bio App",
+  "summary": "Creator link page with featured products, an email list, a contact form, and an owner view for links and messages.",
+  "path": "examples/link-in-bio-app",
+  "capabilities": ["static", "server", "auth", "data"],
+  "difficulty": "intermediate",
+  "userland_api_version": "v0",
+  "required_plan": "free",
+  "paid_features": [],
+  "launch_role": "launch-example",
+  "demo_url": "https://link-in-bio-demo.apps.userland.fun/",
+  "page_url": "https://userland.fun/examples/link-in-bio-app/"
+}

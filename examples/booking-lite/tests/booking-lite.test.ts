@@ -1,76 +1,62 @@
+import path from "node:path";
+import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
-function makeCtx() {
-  const state: Record<string, Array<Record<string, unknown>>> = {
-    slots: [{ id: "slot_1", title: "Intro call", starts_at: "2026-06-01T16:00:00.000Z", status: "available", booked_by: "" }],
-    bookings: []
-  };
+const manifest = readExampleManifest(path.resolve(import.meta.dirname, ".."));
 
-  const namespace: any = {
-    collection(name: string) {
-      const rows = state[name];
-      if (!rows) throw new Error(`Unknown collection ${name}`);
-      return {
-        async create(input: Record<string, unknown>) {
-          const row = { id: `${name}_${rows.length + 1}`, ...input };
-          rows.push(row);
-          return row;
-        },
-        async get(id: string) {
-          return rows.find((row) => row.id === id) ?? null;
-        },
-        async list(options: { where?: Record<string, unknown> } = {}) {
-          const where = options.where ?? {};
-          return {
-            rows: rows.filter((row) => Object.entries(where).every(([key, value]) => row[key] === value))
-          };
-        },
-        async update(id: string, patch: Record<string, unknown>) {
-          const index = rows.findIndex((row) => row.id === id);
-          if (index === -1) throw new Error(`Missing row ${id}`);
-          rows[index] = { ...rows[index], ...patch };
-          return rows[index];
-        }
-      };
-    },
-    async transaction<T>(callback: (tx: typeof namespace) => Promise<T> | T) {
-      return await callback(namespace);
-    }
-  };
-
-  return {
-    data: namespace,
-    log: {
-      info: vi.fn()
-    }
-  };
+async function seededRuntime() {
+  const runtime = createFakeRuntime(manifest);
+  const seed = await app.fetch(new Request("https://example.test/api/seed", { method: "POST" }), runtime.ctx);
+  expect(seed.status).toBe(201);
+  const slots = await app.fetch(new Request("https://example.test/api/slots"), runtime.ctx);
+  const body = await slots.json();
+  return { runtime, slots: body.slots as Array<{ id: string; starts_at: string }> };
 }
 
-async function book(ctx: ReturnType<typeof makeCtx>) {
+async function book(ctx: unknown, slotId: string) {
   return await app.fetch(
     new Request("https://example.test/api/bookings", {
       method: "POST",
-      body: JSON.stringify({ slot_id: "slot_1", name: "Ada", email: "ada@example.test" })
+      body: JSON.stringify({ slot_id: slotId, name: "Ada", email: "ada@example.test" })
     }),
     ctx
   );
 }
 
-it("claims a slot only once inside a transaction", async () => {
-  const ctx = makeCtx();
+it("seeds upcoming slots once, sorted by start time", async () => {
+  const { runtime, slots } = await seededRuntime();
+  expect(slots).toHaveLength(2);
+  expect(Date.parse(slots[0]!.starts_at)).toBeGreaterThan(Date.now());
+  expect(slots[0]!.starts_at < slots[1]!.starts_at).toBe(true);
 
-  const first = await book(ctx);
+  const again = await app.fetch(new Request("https://example.test/api/seed", { method: "POST" }), runtime.ctx);
+  expect(await again.json()).toEqual({ seeded: false });
+});
+
+it("claims a slot only once inside a transaction", async () => {
+  const { runtime, slots } = await seededRuntime();
+  const slotId = slots[0]!.id;
+
+  const first = await book(runtime.ctx, slotId);
   expect(first.status).toBe(201);
   expect(await first.json()).toMatchObject({
-    booking: { id: "bookings_1", slot_id: "slot_1", status: "confirmed" },
-    slot: { id: "slot_1", status: "booked", booked_by: "bookings_1" }
+    booking: { slot_id: slotId, status: "confirmed" },
+    slot: { id: slotId, status: "booked" }
   });
 
-  const second = await book(ctx);
+  const second = await book(runtime.ctx, slotId);
   expect(second.status).toBe(409);
   expect(await second.json()).toEqual({ error: "slot_unavailable" });
 
-  const available = await app.fetch(new Request("https://example.test/api/slots"), ctx);
-  expect(await available.json()).toEqual({ slots: [] });
+  const available = await app.fetch(new Request("https://example.test/api/slots"), runtime.ctx);
+  const body = await available.json();
+  expect(body.slots.map((slot: { id: string }) => slot.id)).not.toContain(slotId);
+  expect(JSON.stringify(body)).not.toContain("ada@example.test");
+});
+
+it("rejects incomplete booking requests", async () => {
+  const { runtime } = await seededRuntime();
+  const response = await app.fetch(new Request("https://example.test/api/bookings", { method: "POST", body: JSON.stringify({ slot_id: "x" }) }), runtime.ctx);
+  expect(response.status).toBe(400);
 });

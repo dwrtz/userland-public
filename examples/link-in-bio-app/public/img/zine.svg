@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240">
+  <rect width="320" height="240" fill="#2B45D8"/>
+  <circle cx="286" cy="200" r="70" fill="#3957E6"/>
+  <circle cx="30" cy="30" r="44" fill="#3957E6"/>
+  <g transform="rotate(-7 160 120)">
+    <rect x="98" y="30" width="136" height="180" rx="10" fill="#1E32A8"/>
+    <rect x="90" y="24" width="136" height="180" rx="10" fill="#FFF1DC"/>
+    <rect x="90" y="24" width="136" height="54" rx="10" fill="#F2542D"/>
+    <rect x="90" y="60" width="136" height="18" fill="#F2542D"/>
+    <text x="158" y="62" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="26" fill="#FFF1DC">CRUMB</text>
+    <circle cx="158" cy="132" r="38" fill="#FFD84D" stroke="#E0A21B" stroke-width="6"/>
+    <path d="M158 132 L158 94 A38 38 0 0 1 191 113 Z" fill="#FFF1DC"/>
+    <text x="158" y="192" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="17" fill="#2A1433">12 PIES</text>
+  </g>
+</svg>

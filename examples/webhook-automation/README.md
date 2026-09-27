@@ -1,26 +1,78 @@
 # Webhook Automation
 
-Generic HMAC webhook pattern that delivers signed webhook payloads to a manual Userland job.
+Receive signed webhooks from another service and process each one in a background job.
 
-## Plan requirement
+## What it shows
 
-This example requires a Starter account plan or higher because it declares a generic HMAC webhook.
+- A webhook that Userland verifies before the app sees it.
+- A background job that records each event once, even when the sender retries.
+- An `automation-events` data collection that only server code can read or write.
+- A summary route that lists processed events without their contents.
 
-## Required secret
+## Plan
 
-```sh
-userland apps secrets set <app-id> AUTOMATION_WEBHOOK_SECRET --value <value>
-```
+**Plan needed: Starter.** This example is intentionally paid: the Free plan does not include webhooks.
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/webhook-automation
 ```
 
-## Mock webhook flow
+The first publish creates the app and prints its app id. That release is not live yet: its activation status is `pending_secrets` because the secret is missing. Setting a secret does not activate a stored release, so set it and then publish again into the same app:
 
-Configure the external provider to sign payloads with `AUTOMATION_WEBHOOK_SECRET` and deliver to the Userland webhook URL for the `automation` webhook. The platform verifies the HMAC signature and delivers the payload to the `process-automation-event` job.
+```sh
+printf '%s' "$AUTOMATION_WEBHOOK_SECRET" | userland apps secrets set <app-id> AUTOMATION_WEBHOOK_SECRET
+userland apps publish examples/webhook-automation --app <app-id>
+```
+
+Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
+
+## Connect the sender
+
+Point the sending service at:
+
+```text
+https://<app-id>.apps.userland.fun/_userland/webhooks/automation
+```
+
+Userland checks every request before the app sees it, using the `generic_hmac` scheme:
+
+- `X-Userland-Timestamp`: the current Unix time in seconds. Requests more than 5 minutes off are rejected.
+- `X-Userland-Signature`: the hex HMAC-SHA256 of the timestamp followed directly by the raw request body, keyed with ``AUTOMATION_WEBHOOK_SECRET``. A `sha256=` prefix is optional.
+
+Missing or wrong headers are rejected with a 400 or 401 and never reach the app. Include an `external_id` in the JSON body so repeats are recognized.
+
+Send a signed test event from a terminal:
+
+```sh
+body='{"external_id":"test-1","type":"test"}'
+ts=$(date +%s)
+sig=$(printf '%s%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$AUTOMATION_WEBHOOK_SECRET" | sed 's/^.* //')
+curl -X POST https://<app-id>.apps.userland.fun/_userland/webhooks/automation \
+  -H 'content-type: application/json' \
+  -H "X-Userland-Timestamp: $ts" \
+  -H "X-Userland-Signature: sha256=$sig" \
+  --data "$body"
+```
+
+## Try it
+
+```sh
+curl https://<app-id>.apps.userland.fun/api/events
+```
+
+## Troubleshoot or undo
+
+```sh
+userland apps events <app-id> --severity error --limit 25
+userland apps releases <app-id>
+userland apps rollback <app-id> <release-id>
+```
 
 ## Userland docs
 
@@ -31,8 +83,10 @@ Configure the external provider to sign payloads with `AUTOMATION_WEBHOOK_SECRET
 - CLI: https://docs.userland.fun/reference/cli
 - Agent skills: https://docs.userland.fun/reference/agent-skills
 - Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Plan limits: https://docs.userland.fun/reference/limits
 
 Capability docs:
 
+- Secrets: https://docs.userland.fun/guides/secrets
 - Jobs: https://docs.userland.fun/guides/jobs
 - Webhooks: https://docs.userland.fun/guides/webhooks

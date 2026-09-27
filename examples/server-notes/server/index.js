@@ -9,22 +9,37 @@ function json(data, init = {}) {
 }
 
 async function listNotes(ctx) {
+  // `where` fields must be indexed (see the by_status index). Without an
+  // `order_by`, rows come back most recently updated first.
   const notes = await ctx.data.collection("notes").list({
     where: { status: "open" },
-    order_by: [{ field: "created_at", direction: "desc" }]
+    limit: 50
   });
-  return json({ notes: notes.rows });
+  return json({
+    notes: notes.rows.map((note) => ({
+      id: note.id,
+      title: note.title,
+      body: note.body,
+      status: note.status,
+      created_at: note.created_at
+    }))
+  });
 }
 
 async function createNote(request, ctx) {
   const input = await request.json();
+  const title = String(input.title ?? "").trim();
+  if (!title) {
+    return json({ error: "title_required" }, { status: 400 });
+  }
   const note = await ctx.data.collection("notes").create({
-    title: String(input.title ?? "Untitled note"),
-    body: String(input.body ?? ""),
+    title: title.slice(0, 200),
+    body: String(input.body ?? "").slice(0, 10000),
     status: "open"
   });
+  // Log identifiers only, never note content.
   await ctx.log.info("note created", { note_id: note.id });
-  return json({ note }, { status: 201 });
+  return json({ note: { id: note.id, title: note.title, body: note.body, status: note.status, created_at: note.created_at } }, { status: 201 });
 }
 
 export default {
@@ -39,4 +54,3 @@ export default {
     return new Response("Not found", { status: 404 });
   }
 };
-

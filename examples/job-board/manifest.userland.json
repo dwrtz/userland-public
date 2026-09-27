@@ -1,0 +1,91 @@
+{
+  "app": {
+    "name": "Loamwork Job Board",
+    "summary": "Niche job board with public listings, category filters, employer submissions, and an owner review queue.",
+    "visibility": "public",
+    "tags": ["jobs", "directory", "marketplace"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["owner"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "listings": {
+          "fields": {
+            "title": "string",
+            "employer": "string",
+            "location": "string",
+            "category": "string",
+            "job_type": "string",
+            "pay": "string",
+            "summary": "string",
+            "description": "string",
+            "apply_link": "string",
+            "contact_name": "string",
+            "contact_email": "string",
+            "status": {
+              "type": "enum",
+              "values": ["pending", "approved", "rejected", "closed"]
+            },
+            "featured": "boolean",
+            "owner_note": "string",
+            "history": "json",
+            "submitted_at": "datetime",
+            "published_at": "datetime"
+          },
+          "indexes": [
+            { "name": "by_status", "fields": ["status", "published_at"] },
+            { "name": "by_submitted", "fields": ["submitted_at"] }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        },
+        "demo-listings": {
+          "fields": {
+            "visitor": "string",
+            "source_id": "string",
+            "title": "string",
+            "employer": "string",
+            "location": "string",
+            "category": "string",
+            "job_type": "string",
+            "pay": "string",
+            "summary": "string",
+            "description": "string",
+            "apply_link": "string",
+            "contact_name": "string",
+            "contact_email": "string",
+            "status": {
+              "type": "enum",
+              "values": ["pending", "approved", "rejected", "closed"]
+            },
+            "featured": "boolean",
+            "owner_note": "string",
+            "history": "json",
+            "submitted_at": "datetime",
+            "published_at": "datetime",
+            "expires_at": "datetime"
+          },
+          "indexes": [
+            { "name": "by_visitor", "fields": ["visitor", "submitted_at"] },
+            { "name": "by_expiry", "fields": ["expires_at"] }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    }
+  }
+}

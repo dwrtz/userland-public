@@ -3,8 +3,10 @@
   "title": "Webhook Automation",
   "summary": "Generic HMAC webhook that queues a manual job and records automation events.",
   "path": "examples/webhook-automation",
-  "capabilities": ["server", "data", "jobs", "webhooks"],
+  "capabilities": ["server", "data", "secrets", "jobs", "webhooks"],
   "difficulty": "intermediate",
-  "userland_api_version": "v0"
+  "userland_api_version": "v0",
+  "required_plan": "starter",
+  "paid_features": ["webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
+  "launch_role": "capability-fixture"
 }
-

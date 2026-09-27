@@ -1,0 +1,67 @@
+{
+  "app": {
+    "name": "Wrenhouse Music Studio",
+    "summary": "Lesson booking for a piano and voice studio: a public booking page and a private owner inbox.",
+    "visibility": "public",
+    "tags": ["booking", "lessons", "local-business"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["owner"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "services": {
+          "fields": {
+            "name": "string",
+            "summary": "string",
+            "duration_minutes": "integer",
+            "price_cents": "integer",
+            "sort_order": "integer",
+            "active": "boolean",
+            "demo_key": "string",
+            "demo_expires_at": "datetime",
+            "demo_copy_of": "string"
+          },
+          "indexes": [
+            { "name": "by_scope", "fields": ["demo_key", "sort_order", "demo_expires_at"] }
+          ],
+          "access": { "read": "server_only", "write": "server_only" }
+        },
+        "bookings": {
+          "fields": {
+            "ref": "string",
+            "service_id": "string",
+            "service_name": "string",
+            "duration_minutes": "integer",
+            "price_cents": "integer",
+            "starts_at": "datetime",
+            "ends_at": "datetime",
+            "customer_name": "string",
+            "customer_email": "string",
+            "customer_phone": "string",
+            "student_details": "string",
+            "message": "string",
+            "status": { "type": "enum", "values": ["new", "confirmed", "declined", "cancelled"] },
+            "history": "json",
+            "demo_key": "string",
+            "demo_expires_at": "datetime",
+            "demo_copy_of": "string"
+          },
+          "indexes": [
+            { "name": "by_scope_status", "fields": ["demo_key", "status", "starts_at", "demo_expires_at"] },
+            { "name": "by_ref", "fields": ["ref"], "unique": true }
+          ],
+          "access": { "read": "server_only", "write": "server_only" }
+        }
+      }
+    }
+  }
+}

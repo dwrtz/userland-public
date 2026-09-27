@@ -3,13 +3,100 @@
   "userland_api_version": "v0",
   "examples": [
     {
+      "slug": "booking-app",
+      "title": "Booking App",
+      "summary": "Lesson booking for a piano and voice studio: public booking page, confirmation, and a signed-in owner inbox for requests and lessons.",
+      "path": "examples/booking-app",
+      "capabilities": ["server", "auth", "data", "transactions", "rollback"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://booking-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/booking-app/"
+    },
+    {
+      "slug": "waitlist-app",
+      "title": "Waitlist App",
+      "summary": "Pre-launch waitlist with referral positions, optional questions, and an owner view with filters and CSV export.",
+      "path": "examples/waitlist-app",
+      "capabilities": ["static", "server", "auth", "data"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://waitlist-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/waitlist-app/"
+    },
+    {
+      "slug": "mini-crm",
+      "title": "Mini CRM",
+      "summary": "Lead inbox with a public request form and an owner-only board for stages, notes, follow-ups, and recent activity.",
+      "path": "examples/mini-crm",
+      "capabilities": ["server", "auth", "data", "transactions", "rollback"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://mini-crm-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/mini-crm/"
+    },
+    {
+      "slug": "invoice-generator",
+      "title": "Invoice Generator",
+      "summary": "Quote and invoice app: clients request a quote, the owner prices and sends it, and accepted quotes become printable invoices.",
+      "path": "examples/invoice-generator",
+      "capabilities": ["static", "server", "auth", "data", "jobs", "transactions"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://invoice-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/invoice-generator/"
+    },
+    {
+      "slug": "link-in-bio-app",
+      "title": "Link-in-Bio App",
+      "summary": "Creator link page with featured products, an email list, a contact form, and an owner view for links and messages.",
+      "path": "examples/link-in-bio-app",
+      "capabilities": ["static", "server", "auth", "data"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://link-in-bio-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/link-in-bio-app/"
+    },
+    {
+      "slug": "job-board",
+      "title": "Job Board",
+      "summary": "Niche job board with category filters, employer submissions, and an owner review queue.",
+      "path": "examples/job-board",
+      "capabilities": ["server", "auth", "data"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://job-board-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/job-board/"
+    },
+    {
       "slug": "hello-static",
       "title": "Hello Static",
       "summary": "Small static app with no server runtime or managed resources.",
       "path": "examples/hello-static",
       "capabilities": ["static"],
       "difficulty": "beginner",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "blog-cms",
@@ -18,7 +105,10 @@
       "path": "examples/blog-cms",
       "capabilities": ["server", "auth", "data", "files", "rollback"],
       "difficulty": "intermediate",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "server-notes",
@@ -27,7 +117,10 @@
       "path": "examples/server-notes",
       "capabilities": ["server", "data"],
       "difficulty": "beginner",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "tiny-store",
@@ -36,16 +129,22 @@
       "path": "examples/tiny-store",
       "capabilities": ["server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback"],
       "difficulty": "advanced",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "business",
+      "paid_features": ["auth.public_signup", "data.indexes_per_collection.max", "files.max_upload_size_bytes.max", "secrets.required.max", "jobs.scheduled", "jobs.schedule.allowed", "jobs.declared.max", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "webhook-automation",
       "title": "Webhook Automation",
       "summary": "Generic HMAC webhook that queues a manual job and records automation events.",
       "path": "examples/webhook-automation",
-      "capabilities": ["server", "data", "jobs", "webhooks"],
+      "capabilities": ["server", "data", "secrets", "jobs", "webhooks"],
       "difficulty": "intermediate",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "starter",
+      "paid_features": ["webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "ai-secret-tool",
@@ -54,7 +153,10 @@
       "path": "examples/ai-secret-tool",
       "capabilities": ["server", "secrets"],
       "difficulty": "intermediate",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "capability-fixture"
     },
     {
       "slug": "booking-lite",
@@ -63,7 +165,10 @@
       "path": "examples/booking-lite",
       "capabilities": ["server", "data", "transactions"],
       "difficulty": "intermediate",
-      "userland_api_version": "v0"
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "capability-fixture"
     }
   ]
 }

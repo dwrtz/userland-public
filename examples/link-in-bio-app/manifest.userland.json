@@ -1,0 +1,76 @@
+{
+  "app": {
+    "name": "Kiln & Crumb Links",
+    "summary": "Link-in-bio page with featured products, an email list, a contact form, and an owner inbox.",
+    "visibility": "public",
+    "tags": ["link-in-bio", "creator"]
+  },
+  "runtime": {
+    "static_root": "public",
+    "server_entry": "server/index.js",
+    "fallback": "server"
+  },
+  "resources": {
+    "auth": {
+      "mode": "app_users",
+      "roles": ["owner"],
+      "public_signup": false
+    },
+    "data": {
+      "collections": {
+        "links": {
+          "fields": {
+            "title": "string",
+            "url": "string",
+            "note": "string",
+            "price": "string",
+            "picture": "string",
+            "featured": "boolean",
+            "visible": "boolean",
+            "position": "integer",
+            "clicks": "integer",
+            "demo_key": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_scope",
+              "fields": ["demo_key"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        },
+        "inbox": {
+          "fields": {
+            "kind": {
+              "type": "enum",
+              "values": ["signup", "message"]
+            },
+            "name": "string",
+            "email": "string",
+            "topic": "string",
+            "message": "string",
+            "status": {
+              "type": "enum",
+              "values": ["new", "replied", "archived"]
+            },
+            "received_at": "datetime",
+            "demo_key": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_scope_kind",
+              "fields": ["demo_key", "kind"]
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
+        }
+      }
+    }
+  }
+}

@@ -57,7 +57,6 @@
         "job": "process-automation-event"
       }
     }
-  },
-  "message": "Initial webhook automation example"
+  }
 }
 

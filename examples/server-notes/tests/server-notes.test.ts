@@ -1,44 +1,32 @@
+import path from "node:path";
+import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
-function makeCtx() {
-  const rows: Array<Record<string, unknown>> = [];
-  return {
-    data: {
-      collection(name: string) {
-        expect(name).toBe("notes");
-        return {
-          async create(input: Record<string, unknown>) {
-            const row = { id: `note_${rows.length + 1}`, created_at: new Date(0).toISOString(), ...input };
-            rows.push(row);
-            return row;
-          },
-          async list() {
-            return { rows: rows.filter((row) => row.status === "open") };
-          }
-        };
-      }
-    },
-    log: {
-      info: vi.fn()
-    }
-  };
+const manifest = readExampleManifest(path.resolve(import.meta.dirname, ".."));
+
+function createNote(body: unknown) {
+  return new Request("https://example.test/api/notes", { method: "POST", body: JSON.stringify(body) });
 }
 
 it("creates and lists notes", async () => {
-  const ctx = makeCtx();
-  const create = await app.fetch(
-    new Request("https://example.test/api/notes", {
-      method: "POST",
-      body: JSON.stringify({ title: "First", body: "Hello" })
-    }),
-    ctx
-  );
+  const runtime = createFakeRuntime(manifest);
+  const create = await app.fetch(createNote({ title: "First", body: "Hello" }), runtime.ctx);
   expect(create.status).toBe(201);
-  expect(ctx.log.info).toHaveBeenCalledWith("note created", { note_id: "note_1" });
+  const { note } = await create.json();
+  expect(runtime.state.logs).toContainEqual({ level: "info", message: "note created", metadata: { note_id: note.id } });
 
-  const list = await app.fetch(new Request("https://example.test/api/notes"), ctx);
-  expect(await list.json()).toEqual({
-    notes: [{ id: "note_1", created_at: "1970-01-01T00:00:00.000Z", title: "First", body: "Hello", status: "open" }]
-  });
+  await app.fetch(createNote({ title: "Second", body: "World" }), runtime.ctx);
+
+  const list = await app.fetch(new Request("https://example.test/api/notes"), runtime.ctx);
+  expect(list.status).toBe(200);
+  const body = await list.json();
+  expect(body.notes.map((row: { title: string }) => row.title)).toEqual(["Second", "First"]);
+  expect(body.notes[1]).toMatchObject({ id: note.id, title: "First", body: "Hello", status: "open" });
+});
+
+it("rejects notes without a title", async () => {
+  const runtime = createFakeRuntime(manifest);
+  const create = await app.fetch(createNote({ body: "No title" }), runtime.ctx);
+  expect(create.status).toBe(400);
 });

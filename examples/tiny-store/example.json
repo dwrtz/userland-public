@@ -5,6 +5,8 @@
   "path": "examples/tiny-store",
   "capabilities": ["server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback"],
   "difficulty": "advanced",
-  "userland_api_version": "v0"
+  "userland_api_version": "v0",
+  "required_plan": "business",
+  "paid_features": ["auth.public_signup", "data.indexes_per_collection.max", "files.max_upload_size_bytes.max", "secrets.required.max", "jobs.scheduled", "jobs.schedule.allowed", "jobs.declared.max", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"],
+  "launch_role": "capability-fixture"
 }
-
