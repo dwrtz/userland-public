@@ -35,8 +35,12 @@ userland accounts status --account <account-id>
 userland accounts limits --account <account-id>
 userland accounts downgrade preview --to free --account <account-id>
 userland support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
+userland validate examples/<example-slug>
+userland validate examples/<example-slug> --plan free
+userland validate examples/<example-slug> --json
 userland apps publish examples/<example-slug>
 userland apps publish examples/<example-slug> --account <account-id>
+userland apps publish examples/<example-slug> --plan starter
 userland apps list
 USERLAND_ACCOUNT_ID=<account-id> userland apps list
 userland apps status <app-id>
@@ -45,6 +49,9 @@ userland versions <app-id>
 userland apps rollback <app-id> <release-id>
 userland apps secrets set <app-id> <NAME> --value <value>
 userland apps events <app-id>
+userland apps analytics <app-id>
+userland apps analytics <app-id> --range 7d --json
+userland analytics <app-id>
 userland apps routes list <app-id>
 userland apps slugs add <app-id> <slug>
 userland apps domains add <app-id> <hostname>
@@ -72,6 +79,8 @@ npm run userland -- accounts status --account <account-id>
 npm run userland -- accounts limits --account <account-id>
 npm run userland -- accounts downgrade preview --to free --account <account-id>
 npm run userland -- support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
+npm run userland -- validate examples/<example-slug>
+npm run userland -- validate examples/<example-slug> --plan free --json
 npm run userland -- apps publish examples/<example-slug>
 npm run userland -- apps publish examples/<example-slug> --account <account-id>
 npm run userland -- apps list
@@ -82,6 +91,7 @@ npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
 npm run userland -- apps secrets set <app-id> <NAME> --value <value>
 npm run userland -- apps events <app-id>
+npm run userland -- apps analytics <app-id> --range 30d
 npm run userland -- apps routes list <app-id>
 npm run userland -- apps slugs add <app-id> <slug>
 npm run userland -- apps domains add <app-id> <hostname>
@@ -104,6 +114,132 @@ userland auth api-keys revoke key_... --yes
 `auth api-keys list` prints metadata only. `auth api-keys create` prints the raw key exactly once and does not write it to `~/.userland/credentials.json`. `auth api-keys revoke` prompts in interactive terminals unless `--yes` is passed.
 
 Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team, client, and agency workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
+
+## Validate before publishing
+
+`userland validate <dir>` checks an app directory offline, without an API key:
+
+```sh
+userland validate <dir>
+userland validate <dir> --json
+userland validate <dir> --plan free
+userland validate <dir> --plan starter
+userland validate <dir> --plan business --json
+```
+
+It checks:
+
+- `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist).
+- Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps.
+- Plan limits from `schemas/plans-v0.json`: private apps, app-user auth, public signup, data collection and index counts, file stores and upload sizes, required secrets, scheduled jobs and schedules, webhooks and providers, and release file count and size.
+
+`--plan` accepts `free`, `starter`, `business`, `business_plus`, and `agency` (`pro` and `team` are accepted as older names for Starter and Business). Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them.
+
+Human output lists one block per problem:
+
+```text
+Validation failed.
+manifest=examples/tiny-store/manifest.userland.json
+plan=free
+plan_source=flag
+required_plan=business
+release_files=7
+release_bytes=9755
+
+manifest_path=resources.jobs.expire-abandoned-orders.schedule
+limit=jobs.schedule.allowed
+value=hourly
+allowed=none
+requires=business
+
+manifest_path=resources.auth.public_signup
+feature=auth.public_signup
+value=true
+allowed=false
+requires=business
+```
+
+`--json` prints a stable object for scripts and coding agents:
+
+```json
+{
+  "ok": false,
+  "plan": "free",
+  "plan_source": "flag",
+  "required_plan_key": "business",
+  "violations": [
+    {
+      "kind": "manifest_feature",
+      "manifest_path": "resources.auth.public_signup",
+      "feature_key": "auth.public_signup",
+      "value": true,
+      "allowed": false,
+      "plan_key": "free",
+      "required_plan_key": "business",
+      "message": "Public app-user signup: requires Business or higher."
+    }
+  ],
+  "plan_gated": [],
+  "errors": [],
+  "warnings": [],
+  "manifest_file": "manifest.userland.json",
+  "release": { "file_count": 7, "bundle_bytes": 9755 }
+}
+```
+
+`violations` are checked against the selected plan. `plan_gated` lists everything the Free plan does not include, whether or not `--plan` is passed. `errors` hold schema, path, and file problems with `code`, `manifest_path`, optional `file`, and `message`. Limit violations use `limit_key` instead of `feature_key`, and `allowed` is the plan's limit (a number, a list of allowed schedules, or `null` for unlimited). `required_plan_key` is `null` when no public plan allows a value.
+
+Exit codes: `0` valid, `1` manifest, file, or usage errors, `2` plan limits exceeded.
+
+`userland apps publish` runs the same validation before uploading anything. It checks plan limits against `--plan` when given, otherwise against the account's own plan and entitlements from `GET /v0/accounts/:account_id/limits` (for `--app` updates, the account that owns the app). Validation errors and plan violations stop the publish with the same output and nothing is uploaded. If the account plan cannot be read, the CLI prints a warning and lets the API decide. `--skip-local-validation` sends the directory to the API without local checks.
+
+The Userland API remains authoritative. Local validation mirrors the API's manifest and plan rules for fast feedback; the API can still reject a publish because of billing state, account flags, deployment limits, usage quotas, or newer rules, and returns structured `402` details when it does.
+
+## App Analytics
+
+`userland apps analytics` reads owner-visible aggregate analytics from `GET /v0/apps/:app_id/analytics`:
+
+```sh
+userland apps analytics <app-id>
+userland apps analytics <app-id> --range 7d
+userland apps analytics <app-id> --range 30d
+userland apps analytics <app-id> --range 90d
+userland apps analytics <app-id> --account <account-id>
+userland apps analytics <app-id> --json
+userland analytics <app-id>
+```
+
+Default output is compact:
+
+```text
+app_id=app_...
+range=30d
+retention_days=30
+total_requests=1234
+successful_requests=1200
+error_requests=34
+error_rate=0.0276
+
+status:
+2xx  1200
+4xx  20
+5xx  14
+
+top_paths:
+/         500
+/pricing  210
+
+top_referrers:
+(direct)    700
+google.com  250
+
+recent_errors:
+2026-06-03T10:00:00.000Z error runtime.exception TypeError: boom
+```
+
+API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API default (30 days) applies. The API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus and Agency 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
+
+App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
 
 Status and limits:
 
@@ -160,6 +296,8 @@ npm run cli:build
 npm run cli:pack
 ```
 
+`schemas/plans-v0.json` is generated from the Userland API's plan configuration; do not edit it by hand. `cli/tests/fixtures/plan-parity.json` holds expected plan results computed by the API's own rules, and `cli/tests/validation.test.ts` checks the CLI against them. `npm run cli:build` copies both schema files into `cli/dist/schemas` so the published package validates offline.
+
 Run command-level CLI tests against a mocked API:
 
 ```sh
@@ -177,7 +315,7 @@ npm test
 
 For launch, this `cli/` directory is the public CLI source of truth for agents and publishes as `@userland.fun/cli`. When changing the CLI:
 
-1. Update `cli/src/index.ts`, this README, and `https://docs.userland.fun/reference/cli` together.
+1. Update `cli/src/index.ts` (and `cli/src/validation.ts` for local validation), this README, and `https://docs.userland.fun/reference/cli` together.
 2. Add or update mocked command tests in `cli/tests`.
 3. Run `npm run typecheck`, `npm run cli:test`, and `npm test`.
 4. Update the public repo changelog and the docs changelog.

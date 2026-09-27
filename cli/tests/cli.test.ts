@@ -18,6 +18,9 @@ const servers: Array<{ close: () => Promise<void> }> = [];
 const tempDirs: string[] = [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPackageJsonPath = path.join(repoRoot, "cli", "package.json");
+const plansArtifact = JSON.parse(await fs.readFile(path.join(repoRoot, "schemas", "plans-v0.json"), "utf8")) as {
+  plans: Record<string, { features: Record<string, boolean>; manifest_limits: Record<string, unknown>; release_limits: Record<string, number | null> }>;
+};
 
 describe("public CLI", () => {
   afterEach(async () => {
@@ -33,6 +36,10 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("userland --version");
     expect(result.stdout).toContain("userland apps publish");
     expect(result.stdout).toContain("userland support open");
+    expect(result.stdout).toContain("userland validate <dir> [--plan <plan>] [--json]");
+    expect(result.stdout).toContain("--skip-local-validation");
+    expect(result.stdout).toContain("userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]");
+    expect(result.stdout).toContain("userland analytics <app-id>");
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
   });
@@ -58,6 +65,8 @@ describe("public CLI", () => {
   test("publishes hello-static to the configured API", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
       "PUT /v0/apps": {
         status: "created",
         app_id: "app_hello",
@@ -78,13 +87,17 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("Published https://app_hello.apps.userland.fun/");
     expect(result.stdout).toContain("app_id=app_hello");
     expect(result.stdout).toContain("release_id=rel_hello");
-    expect(requests).toHaveLength(1);
-    expect(requests[0].method).toBe("PUT");
-    expect(requests[0].url).toBe("/v0/apps");
-    expect(requests[0].authorization).toBe("Bearer test_api_key");
-    expect(requests[0].accountId).toBeUndefined();
+    expect(result.stdout).toContain("local_validation=passed\nlocal_validation_plan=free\nlocal_validation_plan_source=account");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET /v0/accounts",
+      "GET /v0/accounts/acct_owner/limits",
+      "PUT /v0/apps"
+    ]);
+    const publish = requests[2];
+    expect(publish.authorization).toBe("Bearer test_api_key");
+    expect(publish.accountId).toBeUndefined();
 
-    const body = requests[0].body as { files?: Array<{ path: string; content_base64: string }>; message?: string };
+    const body = publish.body as { files?: Array<{ path: string; content_base64: string }>; message?: string };
     expect(body.message).toBe("test release");
     expect(body.files?.map((file) => file.path).sort()).toEqual([
       "AGENT.md",
@@ -95,6 +108,7 @@ describe("public CLI", () => {
     ]);
     expect(body.files?.map((file) => file.path)).not.toContain("manifest.userland.json");
     const index = body.files?.find((file) => file.path === "public/index.html");
+    expect(index).toBeDefined();
     expect(Buffer.from(index?.content_base64 ?? "", "base64").toString("utf8")).toContain("Hello from Userland");
   });
 
@@ -733,7 +747,461 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("violation=/resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/errors");
   });
+
+  test("validates an app directory offline", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {});
+
+    const result = await runCli(["validate", "examples/hello-static"], api.baseUrl, { apiKey: null });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Validation passed.\nmanifest=examples/hello-static/manifest.userland.json\nplan=none\nrequired_plan=free\n");
+    expect(result.stderr).toBe("");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("reports plan-gated features without --plan and does not fail on them", async () => {
+    const result = await runCli(["validate", "examples/tiny-store"], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Validation passed.");
+    expect(result.stdout).toContain("required_plan=business");
+    expect(result.stdout).toContain("Plan-gated features");
+    expect(result.stdout).toContain(["manifest_path=resources.jobs.expire-abandoned-orders.schedule", "limit=jobs.schedule.allowed", "value=hourly", "requires=business"].join("\n"));
+    expect(result.stdout).toContain(["manifest_path=resources.auth.public_signup", "feature=auth.public_signup", "value=true", "requires=business"].join("\n"));
+  });
+
+  test("fails --plan validation with manifest paths, keys, values, allowed values, and required plans", async () => {
+    const result = await runCli(["validate", "examples/tiny-store", "--plan", "free"], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(2);
+    expect(result.stdout.startsWith("Validation failed.\n")).toBe(true);
+    expect(result.stdout).toContain("plan=free\nplan_source=flag\nrequired_plan=business");
+    expect(result.stdout).toContain(["manifest_path=resources.jobs.expire-abandoned-orders.schedule", "limit=jobs.schedule.allowed", "value=hourly", "allowed=none", "requires=business"].join("\n"));
+    expect(result.stdout).toContain(["manifest_path=resources.auth.public_signup", "feature=auth.public_signup", "value=true", "allowed=false", "requires=business"].join("\n"));
+    expect(result.stdout).toContain(["manifest_path=resources.secrets.required", "limit=secrets.required.max", "value=2", "allowed=1", "requires=starter"].join("\n"));
+    expect(result.stdout).toContain("userland validate examples/tiny-store --plan business");
+
+    const starter = await runCli(["validate", "examples/webhook-automation", "--plan", "starter"], "http://127.0.0.1:1", { apiKey: null });
+    expect(starter.code).toBe(0);
+    expect(starter.stdout).toContain("Validation passed.");
+
+    const alias = await runCli(["validate", "examples/tiny-store", "--plan", "team"], "http://127.0.0.1:1", { apiKey: null });
+    expect(alias.code).toBe(0);
+    expect(alias.stdout).toContain("plan=business");
+
+    for (const plan of ["business_plus", "agency"]) {
+      const paid = await runCli(["validate", "examples/tiny-store", "--plan", plan], "http://127.0.0.1:1", { apiKey: null });
+      expect(paid.code).toBe(0);
+    }
+  });
+
+  test("prints stable validation JSON", async () => {
+    const result = await runCli(["validate", "examples/tiny-store", "--plan", "starter", "--json"], "http://127.0.0.1:1", { apiKey: null });
+
+    expect(result.code).toBe(2);
+    const output = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(Object.keys(output)).toEqual(["ok", "plan", "plan_source", "required_plan_key", "violations", "plan_gated", "errors", "warnings", "manifest_file", "release"]);
+    expect(output).toMatchObject({ ok: false, plan: "starter", plan_source: "flag", required_plan_key: "business", errors: [], manifest_file: "manifest.userland.json" });
+    expect(output.violations).toEqual([
+      {
+        kind: "manifest_feature",
+        manifest_path: "resources.auth.public_signup",
+        feature_key: "auth.public_signup",
+        value: true,
+        allowed: false,
+        plan_key: "starter",
+        required_plan_key: "business",
+        message: "Public app-user signup: requires Business or higher."
+      },
+      {
+        kind: "manifest_limit",
+        manifest_path: "resources.jobs.expire-abandoned-orders.schedule",
+        limit_key: "jobs.schedule.allowed",
+        value: "hourly",
+        allowed: ["daily"],
+        plan_key: "starter",
+        required_plan_key: "business",
+        message: "Job schedule: hourly is not allowed on Starter (allowed: daily). Requires Business or higher."
+      }
+    ]);
+
+    const passing = await runCli(["validate", "examples/hello-static", "--json"], "http://127.0.0.1:1", { apiKey: null });
+    expect(passing.code).toBe(0);
+    expect(JSON.parse(passing.stdout)).toMatchObject({ ok: true, plan: null, plan_source: null, required_plan_key: "free", violations: [], plan_gated: [], errors: [] });
+  });
+
+  test("fails validation on manifest shape and unsafe paths", async () => {
+    const dir = await temporaryAppDir({
+      app: { name: "Broken", visibility: "secret" },
+      runtime: { static_root: "../public" },
+      resources: { jobs: { nightly: { trigger: "schedule", schedule: "weekly" } } }
+    });
+
+    const human = await runCli(["validate", dir], "http://127.0.0.1:1", { apiKey: null });
+    expect(human.code).toBe(1);
+    expect(human.stdout).toContain("Validation failed.");
+    expect(human.stdout).toContain("error=schema\nmanifest_path=app.visibility\nmessage=must be one of: public, private");
+    expect(human.stdout).toContain("manifest_path=resources.jobs.nightly.schedule\nmessage=must be one of: every_15_minutes, hourly, daily");
+    expect(human.stdout).toContain("manifest_path=runtime.static_root");
+
+    const json = await runCli(["validate", dir, "--json", "--plan", "free"], "http://127.0.0.1:1", { apiKey: null });
+    expect(json.code).toBe(1);
+    const output = JSON.parse(json.stdout) as { ok: boolean; errors: Array<{ code: string; manifest_path: string }> };
+    expect(output.ok).toBe(false);
+    expect(output.errors.map((error) => error.manifest_path)).toEqual(["app.visibility", "runtime.static_root", "resources.jobs.nightly.schedule"]);
+  });
+
+  test("rejects unknown plans and missing directories", async () => {
+    const plan = await runCli(["validate", "examples/hello-static", "--plan", "gold"], "http://127.0.0.1:1", { apiKey: null });
+    expect(plan.code).toBe(1);
+    expect(plan.stderr).toContain("Unknown plan: gold. Use one of: free, starter, business, business_plus, agency.");
+
+    const missing = await runCli(["validate", "examples/does-not-exist", "--json"], "http://127.0.0.1:1", { apiKey: null });
+    expect(missing.code).toBe(1);
+    expect(JSON.parse(missing.stdout).errors[0]).toMatchObject({ code: "directory_not_found" });
+
+    const noDir = await runCli(["validate"], "http://127.0.0.1:1", { apiKey: null });
+    expect(noDir.code).toBe(1);
+    expect(noDir.stderr).toContain("Usage:");
+  });
+
+  test("blocks publish before upload when the account plan does not allow the manifest", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free")
+    });
+
+    const result = await runCli(["apps", "publish", "examples/tiny-store"], api.baseUrl);
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("Local validation blocked this publish; nothing was uploaded.");
+    expect(result.stderr).toContain("plan=free\nplan_source=account\nrequired_plan=business");
+    expect(result.stderr).toContain(["manifest_path=resources.auth.public_signup", "feature=auth.public_signup", "value=true", "allowed=false", "requires=business"].join("\n"));
+    expect(result.stderr).toContain("userland apps publish examples/tiny-store --skip-local-validation");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts", "GET /v0/accounts/acct_owner/limits"]);
+    expect(requests[1].accountId).toBe("acct_owner");
+  });
+
+  test("uses the account's effective entitlements, including overrides", async () => {
+    const requests: RequestRecord[] = [];
+    const comped = limitsResponse("acct_comped", "starter");
+    comped.features = { ...comped.features, "auth.public_signup": true };
+    comped.manifest_limits = { ...comped.manifest_limits, "jobs.schedule.allowed": ["daily", "hourly"] };
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts/acct_comped/limits": comped,
+      "PUT /v0/apps": publishResponse("app_store")
+    });
+
+    const result = await runCli(["apps", "publish", "examples/tiny-store", "--account", "acct_comped"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("local_validation=passed\nlocal_validation_plan=starter\nlocal_validation_plan_source=account");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts/acct_comped/limits", "PUT /v0/apps"]);
+    expect(requests.every((request) => request.accountId === "acct_comped")).toBe(true);
+  });
+
+  test("checks updates against the plan of the account that owns the app", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_client": { app_id: "app_client", account_id: "acct_client", name: "Client", origin: "https://app_client.apps.userland.fun/" },
+      "GET /v0/accounts/acct_client/limits": limitsResponse("acct_client", "business"),
+      "PUT /v0/apps/app_client": publishResponse("app_client")
+    });
+
+    const result = await runCli(["apps", "publish", "examples/tiny-store", "--app", "app_client"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("local_validation_plan=business");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET /v0/apps/app_client",
+      "GET /v0/accounts/acct_client/limits",
+      "PUT /v0/apps/app_client"
+    ]);
+  });
+
+  test("blocks publish with --plan and manifest errors without any network request", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {});
+
+    const plan = await runCli(["apps", "publish", "examples/webhook-automation", "--plan", "free"], api.baseUrl);
+    expect(plan.code).toBe(2);
+    expect(plan.stderr).toContain("feature=webhooks.enabled");
+    expect(plan.stderr).toContain("plan=free\nplan_source=flag");
+
+    const dir = await temporaryAppDir({ app: { name: "Broken" }, runtime: { static_root: "public", server_entry: "server/missing.js" } });
+    const broken = await runCli(["publish", dir], api.baseUrl);
+    expect(broken.code).toBe(1);
+    expect(broken.stderr).toContain("error=missing_server_entry\nmanifest_path=runtime.server_entry");
+
+    expect(requests).toHaveLength(0);
+  });
+
+  test("skips local validation only when asked", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps": publishResponse("app_store")
+    });
+
+    const result = await runCli(["apps", "publish", "examples/tiny-store", "--skip-local-validation"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("local_validation=skipped");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["PUT /v0/apps"]);
+
+    const conflicting = await runCli(["apps", "publish", "examples/tiny-store", "--skip-local-validation", "--plan", "free"], api.baseUrl);
+    expect(conflicting.code).toBe(1);
+    expect(conflicting.stderr).toContain("--plan cannot be combined with --skip-local-validation.");
+  });
+
+  test("continues to the API when the account plan cannot be read", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": { __status: 503, error: { code: "unavailable", message: "Try again." } },
+      "PUT /v0/apps": publishResponse("app_store")
+    });
+
+    const result = await runCli(["apps", "publish", "examples/tiny-store"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("warning=plan_lookup_failed API 503: Try again.");
+    expect(result.stderr).toContain("warning=plan_check_skipped This app needs the Business plan or higher; the API will check your account plan.");
+    expect(result.stdout).toContain("local_validation=passed_without_plan");
+    expect(requests.at(-1)?.url).toBe("/v0/apps");
+  });
+
+  test("prints compact app analytics", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops/analytics?range=30d": analyticsResponse(),
+      "GET /v0/apps/app_ops/analytics": analyticsResponse()
+    });
+
+    const result = await runCli(["apps", "analytics", "app_ops", "--range", "30d", "--account", "acct_ops"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe(`app_id=app_ops
+range=30d
+retention_days=30
+total_requests=1234
+successful_requests=1200
+error_requests=34
+error_rate=0.0276
+
+status:
+2xx  1200
+4xx  20
+5xx  14
+
+top_paths:
+/         500
+/pricing  210
+/book     180
+
+top_referrers:
+(direct)    700
+google.com  250
+
+jobs:
+succeeded  12
+failed     1
+
+recent_errors:
+2026-06-03T10:00:00.000Z error runtime.exception TypeError: boom
+`);
+    expect(requests[0]).toMatchObject({ method: "GET", url: "/v0/apps/app_ops/analytics?range=30d", accountId: "acct_ops", authorization: "Bearer test_api_key" });
+
+    const alias = await runCli(["analytics", "app_ops"], api.baseUrl, { accountId: "acct_env" });
+    expect(alias.code).toBe(0);
+    expect(alias.stdout).toContain("total_requests=1234");
+    expect(requests.at(-1)).toMatchObject({ url: "/v0/apps/app_ops/analytics", accountId: "acct_env" });
+  });
+
+  test("prints app analytics JSON unchanged", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops/analytics?range=7d": analyticsResponse()
+    });
+
+    const result = await runCli(["apps", "analytics", "app_ops", "--range", "7d", "--json"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(analyticsResponse());
+  });
+
+  test("explains empty analytics and clamped ranges", async () => {
+    const empty = analyticsResponse();
+    empty.range.days = 7;
+    empty.entitlement.retention_days = 7;
+    empty.traffic = { total_requests: 0, successful_requests: 0, error_requests: 0, error_rate: 0, total_response_bytes: 0, status_buckets: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 } };
+    empty.top_paths = [];
+    empty.top_referrers = [];
+    empty.jobs = { queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0 };
+    empty.recent_errors = [];
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "GET /v0/apps/app_ops/analytics?range=90d": empty });
+
+    const result = await runCli(["apps", "analytics", "app_ops", "--range", "90d"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("range=7d\nretention_days=7\ntotal_requests=0");
+    expect(result.stdout).toContain("note=range clamped from 90d to 7d by the plan retention window");
+    expect(result.stdout).toContain("No traffic recorded in this range yet. Analytics appear after the app serves eligible app-owned requests");
+    expect(result.stdout).not.toContain("top_paths:");
+    expect(result.stdout).not.toContain("recent_errors:");
+  });
+
+  test("shows an upgrade state when analytics is not in the plan", async () => {
+    const requests: RequestRecord[] = [];
+    const entitlementError = {
+      __status: 402,
+      error: {
+        code: "entitlement_required",
+        message: "app_analytics requires Starter.",
+        details: {
+          plan_key: "free",
+          source: "default",
+          required_plan_key: "starter",
+          violations: [{ kind: "feature", feature_key: "app_analytics", required_plan_key: "starter" }]
+        }
+      }
+    };
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_free/analytics": [entitlementError, entitlementError]
+    });
+
+    const result = await runCli(["apps", "analytics", "app_free"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("App Analytics is not included in this account's plan.");
+    expect(result.stderr).toContain("error=entitlement_required\nfeature=app_analytics\nplan_key=free\nrequired_plan_key=starter");
+    expect(result.stderr).toContain("Upgrade to Starter or higher");
+    expect(result.stderr).toContain("Docs: https://docs.userland.fun/guides/app-analytics");
+
+    const json = await runCli(["apps", "analytics", "app_free", "--json"], api.baseUrl);
+    expect(json.code).toBe(1);
+    expect(JSON.parse(json.stdout)).toEqual({
+      app_id: "app_free",
+      entitlement: { enabled: false, plan_key: "free", required_plan_key: "starter" },
+      error: entitlementError.error,
+      docs: "https://docs.userland.fun/guides/app-analytics"
+    });
+  });
+
+  test("keeps access and not-found errors and rejects invalid ranges locally", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_hidden/analytics": { __status: 404, error: { code: "not_found", message: "App not found." } },
+      "GET /v0/apps/app_viewer/analytics": { __status: 403, error: { code: "forbidden", message: "Your account role cannot perform this operation." } }
+    });
+
+    const hidden = await runCli(["apps", "analytics", "app_hidden"], api.baseUrl);
+    expect(hidden.code).toBe(1);
+    expect(hidden.stderr).toContain("API 404: App not found.\nerror=not_found");
+
+    const forbidden = await runCli(["apps", "analytics", "app_viewer"], api.baseUrl);
+    expect(forbidden.code).toBe(1);
+    expect(forbidden.stderr).toContain("API 403: Your account role cannot perform this operation.");
+
+    const requestCount = requests.length;
+    const invalid = await runCli(["apps", "analytics", "app_ops", "--range", "14d"], api.baseUrl);
+    expect(invalid.code).toBe(1);
+    expect(invalid.stderr).toContain("Invalid --range value: 14d. Use 7d, 30d, or 90d.");
+    expect(invalid.stderr).toContain("Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]");
+
+    const missing = await runCli(["apps", "analytics"], api.baseUrl);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain("Usage: userland apps analytics <app-id>");
+    expect(requests).toHaveLength(requestCount);
+  });
 });
+
+function accountsResponse(): Record<string, unknown> {
+  return {
+    accounts: [{ id: "acct_owner", account_id: "acct_owner", role: "owner", name: "Alice", owner_user_id: "usr_alice" }],
+    default_account_id: "acct_owner"
+  };
+}
+
+function limitsResponse(accountId: string, planKey: string): { features: Record<string, boolean>; manifest_limits: Record<string, unknown>; [key: string]: unknown } {
+  const plan = plansArtifact.plans[planKey];
+  return {
+    account_id: accountId,
+    plan_key: planKey,
+    features: { ...plan.features },
+    manifest_limits: { ...plan.manifest_limits },
+    deployment_limits: {},
+    runtime_limits: {},
+    release_limits: { ...plan.release_limits },
+    usage_limits: {},
+    usage: {}
+  };
+}
+
+function publishResponse(appId: string): Record<string, unknown> {
+  return {
+    status: "created",
+    app_id: appId,
+    release_id: "rel_new",
+    origin: `https://${appId}.apps.userland.fun/`,
+    previous_release_id: null,
+    activation: { status: "pending_secrets", reasons: [], previous_release_id: null }
+  };
+}
+
+function analyticsResponse() {
+  const dimension = (key: string, label: string, requestCount: number) => ({ key, label, dimensions: {}, request_count: requestCount, error_count: 0, total_response_bytes: 0 });
+  return {
+    app_id: "app_ops",
+    account_id: "acct_ops",
+    range: { from: "2026-05-05T00:00:00.000Z", to: "2026-06-04T00:00:00.000Z", days: 30 },
+    entitlement: { enabled: true, plan_key: "business", retention_days: 30 },
+    traffic: {
+      total_requests: 1234,
+      successful_requests: 1200,
+      error_requests: 34,
+      error_rate: 34 / 1234,
+      total_response_bytes: 98765,
+      status_buckets: { "2xx": 1200, "3xx": 0, "4xx": 20, "5xx": 14 }
+    },
+    series: [{ day: "2026-06-03", requests: 1234, errors: 34 }],
+    status_buckets: [dimension("status:2xx", "2xx", 1200)],
+    top_paths: [dimension("path:/", "/", 500), dimension("path:/pricing", "/pricing", 210), dimension("path:/book", "/book", 180)],
+    top_referrers: [dimension("__direct__", "__direct__", 700), dimension("referrer:google.com", "google.com", 250)],
+    routes: [],
+    runtime_targets: [],
+    auth: { enabled: false, signups: 0, sessions_created: 0 },
+    jobs: { queued: 0, running: 0, succeeded: 12, failed: 1, dead: 0 },
+    webhooks: { received: 0, verified: 0, rejected: 0, queued: 0, delivered: 0, failed: 0 },
+    recent_errors: [
+      {
+        app_event_id: "evt_1",
+        release_id: "rel_live",
+        type: "runtime.exception",
+        event_type: "runtime.exception",
+        severity: "error",
+        level: "error",
+        message: "TypeError: boom",
+        request_id: "req_1",
+        created_at: "2026-06-03T10:00:00.000Z"
+      }
+    ]
+  };
+}
+
+async function temporaryAppDir(manifest: unknown, files: Record<string, string> = { "public/index.html": "<h1>hi</h1>" }): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "userland-app-"));
+  tempDirs.push(dir);
+  await fs.writeFile(path.join(dir, "manifest.userland.json"), JSON.stringify(manifest));
+  for (const [filePath, contents] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, filePath)), { recursive: true });
+    await fs.writeFile(path.join(dir, filePath), contents);
+  }
+  return dir;
+}
 
 async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: string): Promise<void> {
   const result = await runCli(args, baseUrl);

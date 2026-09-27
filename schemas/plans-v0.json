@@ -1,0 +1,236 @@
+{
+  "$comment": "Generated from dwrtz/userland packages/shared/src/entitlements.ts (PLAN_ORDER, PLAN_CONFIG). Do not edit by hand; the API remains authoritative.",
+  "version": 0,
+  "plan_order": [
+    "free",
+    "starter",
+    "business",
+    "business_plus",
+    "agency"
+  ],
+  "plan_aliases": {
+    "pro": "starter",
+    "team": "business"
+  },
+  "bundle_limits": {
+    "files.max": 5000,
+    "file_bytes.max": 20971520,
+    "bundle_bytes.max": 524288000
+  },
+  "plans": {
+    "free": {
+      "display_name": "Free",
+      "features": {
+        "runtime.static": true,
+        "runtime.server": true,
+        "private_apps": false,
+        "auth.app_users": true,
+        "auth.public_signup": false,
+        "auth.email_verification": false,
+        "data.enabled": true,
+        "files.enabled": true,
+        "files.private_stores": false,
+        "secrets.enabled": true,
+        "jobs.manual": true,
+        "jobs.scheduled": false,
+        "webhooks.enabled": false,
+        "webhooks.provider.generic_hmac": false,
+        "webhooks.provider.github": false,
+        "app_slugs": false,
+        "custom_domains": false,
+        "app_analytics": false,
+        "backups_export": false,
+        "priority_support": false
+      },
+      "manifest_limits": {
+        "auth.roles.max": 2,
+        "data.collections.max": 2,
+        "data.indexes_per_collection.max": 2,
+        "files.stores.max": 1,
+        "files.max_upload_size_bytes.max": 5242880,
+        "secrets.required.max": 1,
+        "jobs.declared.max": 1,
+        "jobs.schedule.allowed": [],
+        "webhooks.declared.max": 0
+      },
+      "release_limits": {
+        "release.bundle_bytes.max": 26214400,
+        "release.file_count.max": 250
+      }
+    },
+    "starter": {
+      "display_name": "Starter",
+      "features": {
+        "runtime.static": true,
+        "runtime.server": true,
+        "private_apps": false,
+        "auth.app_users": true,
+        "auth.public_signup": false,
+        "auth.email_verification": false,
+        "data.enabled": true,
+        "files.enabled": true,
+        "files.private_stores": false,
+        "secrets.enabled": true,
+        "jobs.manual": true,
+        "jobs.scheduled": true,
+        "webhooks.enabled": true,
+        "webhooks.provider.generic_hmac": true,
+        "webhooks.provider.github": false,
+        "app_slugs": true,
+        "custom_domains": true,
+        "app_analytics": true,
+        "backups_export": false,
+        "priority_support": false
+      },
+      "manifest_limits": {
+        "auth.roles.max": 5,
+        "data.collections.max": 10,
+        "data.indexes_per_collection.max": 5,
+        "files.stores.max": 3,
+        "files.max_upload_size_bytes.max": 26214400,
+        "secrets.required.max": 10,
+        "jobs.declared.max": 5,
+        "jobs.schedule.allowed": [
+          "daily"
+        ],
+        "webhooks.declared.max": 3
+      },
+      "release_limits": {
+        "release.bundle_bytes.max": 104857600,
+        "release.file_count.max": 1000
+      }
+    },
+    "business": {
+      "display_name": "Business",
+      "features": {
+        "runtime.static": true,
+        "runtime.server": true,
+        "private_apps": true,
+        "auth.app_users": true,
+        "auth.public_signup": true,
+        "auth.email_verification": false,
+        "data.enabled": true,
+        "files.enabled": true,
+        "files.private_stores": true,
+        "secrets.enabled": true,
+        "jobs.manual": true,
+        "jobs.scheduled": true,
+        "webhooks.enabled": true,
+        "webhooks.provider.generic_hmac": true,
+        "webhooks.provider.github": true,
+        "app_slugs": true,
+        "custom_domains": true,
+        "app_analytics": true,
+        "backups_export": true,
+        "priority_support": true
+      },
+      "manifest_limits": {
+        "auth.roles.max": 20,
+        "data.collections.max": 25,
+        "data.indexes_per_collection.max": 10,
+        "files.stores.max": 10,
+        "files.max_upload_size_bytes.max": 104857600,
+        "secrets.required.max": 25,
+        "jobs.declared.max": 20,
+        "jobs.schedule.allowed": [
+          "daily",
+          "hourly",
+          "every_15_minutes"
+        ],
+        "webhooks.declared.max": 20
+      },
+      "release_limits": {
+        "release.bundle_bytes.max": 262144000,
+        "release.file_count.max": 2500
+      }
+    },
+    "business_plus": {
+      "display_name": "Business Plus",
+      "features": {
+        "runtime.static": true,
+        "runtime.server": true,
+        "private_apps": true,
+        "auth.app_users": true,
+        "auth.public_signup": true,
+        "auth.email_verification": false,
+        "data.enabled": true,
+        "files.enabled": true,
+        "files.private_stores": true,
+        "secrets.enabled": true,
+        "jobs.manual": true,
+        "jobs.scheduled": true,
+        "webhooks.enabled": true,
+        "webhooks.provider.generic_hmac": true,
+        "webhooks.provider.github": true,
+        "app_slugs": true,
+        "custom_domains": true,
+        "app_analytics": true,
+        "backups_export": true,
+        "priority_support": true
+      },
+      "manifest_limits": {
+        "auth.roles.max": 50,
+        "data.collections.max": 100,
+        "data.indexes_per_collection.max": 25,
+        "files.stores.max": 50,
+        "files.max_upload_size_bytes.max": 262144000,
+        "secrets.required.max": 100,
+        "jobs.declared.max": 100,
+        "jobs.schedule.allowed": [
+          "daily",
+          "hourly",
+          "every_15_minutes"
+        ],
+        "webhooks.declared.max": 100
+      },
+      "release_limits": {
+        "release.bundle_bytes.max": 524288000,
+        "release.file_count.max": 5000
+      }
+    },
+    "agency": {
+      "display_name": "Agency",
+      "features": {
+        "runtime.static": true,
+        "runtime.server": true,
+        "private_apps": true,
+        "auth.app_users": true,
+        "auth.public_signup": true,
+        "auth.email_verification": false,
+        "data.enabled": true,
+        "files.enabled": true,
+        "files.private_stores": true,
+        "secrets.enabled": true,
+        "jobs.manual": true,
+        "jobs.scheduled": true,
+        "webhooks.enabled": true,
+        "webhooks.provider.generic_hmac": true,
+        "webhooks.provider.github": true,
+        "app_slugs": true,
+        "custom_domains": true,
+        "app_analytics": true,
+        "backups_export": true,
+        "priority_support": true
+      },
+      "manifest_limits": {
+        "auth.roles.max": 50,
+        "data.collections.max": 100,
+        "data.indexes_per_collection.max": 25,
+        "files.stores.max": 50,
+        "files.max_upload_size_bytes.max": 262144000,
+        "secrets.required.max": 100,
+        "jobs.declared.max": 100,
+        "jobs.schedule.allowed": [
+          "daily",
+          "hourly",
+          "every_15_minutes"
+        ],
+        "webhooks.declared.max": 100
+      },
+      "release_limits": {
+        "release.bundle_bytes.max": 524288000,
+        "release.file_count.max": 5000
+      }
+    }
+  }
+}

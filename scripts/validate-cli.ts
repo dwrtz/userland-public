@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 
 const cliSource = await fs.readFile("cli/src/index.ts", "utf8");
 const cliReadme = await fs.readFile("cli/README.md", "utf8");
+const rootPackage = JSON.parse(await fs.readFile("package.json", "utf8")) as { scripts?: Record<string, string> };
 const cliPackage = JSON.parse(await fs.readFile("cli/package.json", "utf8")) as {
   bin?: Record<string, string>;
   files?: string[];
@@ -31,7 +32,11 @@ const requiredSourcePatterns = [
   'command === "login"',
   'command === "publish"',
   'command === "--version"',
-  'command === "releases" || command === "versions"'
+  'command === "releases" || command === "versions"',
+  'command === "validate"',
+  'command === "analytics"',
+  'subcommand === "analytics"',
+  '"--skip-local-validation"'
 ];
 
 const requiredReadmeSnippets = [
@@ -50,6 +55,12 @@ const requiredReadmeSnippets = [
   "userland apps rollback",
   "userland apps secrets set",
   "userland apps events",
+  "userland validate",
+  "userland validate <dir> --plan",
+  "userland validate <dir> --json",
+  "--skip-local-validation",
+  "userland apps analytics",
+  "userland analytics",
   "USERLAND_ACCOUNT_ID",
   "--account",
   "npm run userland -- --version",
@@ -67,6 +78,8 @@ const requiredReadmeSnippets = [
   "npm run userland -- apps rollback",
   "npm run userland -- apps secrets set",
   "npm run userland -- apps events",
+  "npm run userland -- validate",
+  "npm run userland -- apps analytics",
   "browser device-authorization flow",
   "does not store platform passwords",
   "npm install -g @userland.fun/cli",
@@ -128,6 +141,9 @@ function validatePackage(): string[] {
   }
   if (!cliPackage.scripts?.prepack?.includes("build")) {
     errors.push("cli/package.json must build before packing");
+  }
+  if (!rootPackage.scripts?.["cli:build"]?.includes("schemas/resource-manifest-v0.schema.json") || !rootPackage.scripts["cli:build"].includes("schemas/plans-v0.json")) {
+    errors.push("package.json cli:build must copy the manifest schema and plan artifact into cli/dist/schemas");
   }
   return errors;
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add `userland validate <dir> [--plan <plan>] [--json]` for offline checks against the published manifest schema, release file and path safety rules, and plan limits. Human output lists `manifest_path`, feature or limit key, value, allowed value, and required plan; `--json` returns a stable object. Exit codes: `0` valid, `1` errors, `2` plan limits exceeded.
+- Add `schemas/plans-v0.json`, the public plan artifact (plan order, features, manifest limits, release limits) generated from the Userland API plan configuration, and ship both schema files in the CLI package.
+- Run local validation before `apps publish` by default, checking plan limits against `--plan` or the account's own entitlements; add `--skip-local-validation`. Blocked publishes upload nothing. The API remains authoritative.
+- Add `userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]` and the `userland analytics` alias, with an upgrade message for accounts without App Analytics and an empty-state message.
+- Fix the `ai-secret-tool` example tag `secrets`, which is a reserved name the API rejects.
+
 ## 0.6.0 - 2026-06-02
 
 - Add `userland support open` for authenticated support requests with optional app and account context.

@@ -4,6 +4,20 @@ import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
+import {
+  formatValidationReport,
+  isManifestFile,
+  normalizePlanKey,
+  planDisplayName,
+  publicPlanKeys,
+  validateAppDirectory,
+  validationExitCode,
+  validationJson,
+  walk,
+  type EntitlementConfig,
+  type ManifestLimitValue,
+  type ValidationReport
+} from "./validation.js";
 
 const DEFAULT_API_BASE_URL = "https://api.userland.fun";
 const DEFAULT_CONSOLE_BASE_URL = "https://console.userland.fun";
@@ -25,6 +39,19 @@ interface CliOptions {
   account?: string;
   app?: string;
   message?: string;
+  plan?: string;
+  skipLocalValidation?: boolean;
+}
+
+interface ValidateOptions {
+  json?: boolean;
+  plan?: string;
+}
+
+interface AnalyticsOptions {
+  account?: string;
+  json?: boolean;
+  range?: string;
 }
 
 interface SupportOptions {
@@ -287,6 +314,70 @@ interface RouteResponse {
   route: RouteRecord;
 }
 
+interface AnalyticsDimension {
+  key: string;
+  label: string;
+  dimensions?: Record<string, unknown>;
+  request_count: number;
+  error_count: number;
+  total_response_bytes?: number;
+}
+
+interface AppAnalyticsResponse {
+  app_id: string;
+  account_id?: string;
+  range: { from: string; to: string; days: number };
+  entitlement?: { enabled: boolean; plan_key?: string; retention_days?: number };
+  traffic: {
+    total_requests: number;
+    successful_requests: number;
+    error_requests: number;
+    error_rate: number;
+    total_response_bytes?: number;
+    status_buckets?: Record<string, number>;
+  };
+  series?: Array<{ day: string; requests: number; errors: number }>;
+  status_buckets?: AnalyticsDimension[];
+  top_paths?: AnalyticsDimension[];
+  top_referrers?: AnalyticsDimension[];
+  routes?: AnalyticsDimension[];
+  runtime_targets?: AnalyticsDimension[];
+  auth?: { enabled: boolean; signups: number; sessions_created: number };
+  jobs?: Record<string, number>;
+  webhooks?: Record<string, number>;
+  recent_errors?: Array<{
+    app_event_id?: string;
+    release_id?: string | null;
+    type?: string;
+    event_type?: string;
+    severity?: string;
+    level?: string;
+    message: string;
+    request_id?: string | null;
+    created_at: string;
+  }>;
+}
+
+class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  readonly details: unknown;
+  readonly body: unknown;
+
+  constructor(message: string, status: number, code: string | undefined, details: unknown, body: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+    this.body = body;
+  }
+}
+
+const ANALYTICS_RANGES = ["7d", "30d", "90d"];
+const ANALYTICS_USAGE = "Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]";
+const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics";
+
 interface SupportRequestResponse {
   status: "sent";
   correlation_id: string;
@@ -345,6 +436,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "validate") {
+    await validateCommand(args);
+    return;
+  }
+
+  if (command === "analytics") {
+    await analyticsCommand(args);
+    return;
+  }
+
   if (command === "releases" || command === "versions") {
     await releasesCommand(args);
     return;
@@ -381,6 +482,10 @@ async function appsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "status") {
     await appStatusCommand(rest);
+    return;
+  }
+  if (subcommand === "analytics") {
+    await analyticsCommand(rest);
     return;
   }
   if (subcommand === "routes" && rest[0] === "list") {
@@ -822,11 +927,42 @@ async function supportOpenCommand(args: string[]): Promise<void> {
   console.log(`reply_to_email=${response.reply_to_email}`);
 }
 
+async function validateCommand(args: string[]): Promise<void> {
+  const dir = args[0];
+  if (!dir || dir.startsWith("--")) {
+    usage(1);
+  }
+  const options = parseValidateOptions(args.slice(1));
+  const planKey = options.plan === undefined ? undefined : requirePlanKey(options.plan);
+  const report = await validateAppDirectory(dir, { planKey, planSource: "flag" });
+
+  if (options.json) {
+    console.log(JSON.stringify(validationJson(report), null, 2));
+  } else {
+    process.stdout.write(formatValidationReport(report, { dir }));
+  }
+  process.exitCode = validationExitCode(report);
+}
+
+function requirePlanKey(value: string): string {
+  const planKey = normalizePlanKey(value);
+  if (!planKey) {
+    throw new Error(`Unknown plan: ${value}. Use one of: ${publicPlanKeys().join(", ")}.`);
+  }
+  return planKey;
+}
+
 async function publishCommand(args: string[]): Promise<void> {
   const dir = args[0];
   const options = parseOptions(args.slice(1));
   if (!dir) {
     usage(1);
+  }
+
+  if (options.skipLocalValidation) {
+    console.log("local_validation=skipped");
+  } else if (!(await publishPreflight(dir, options))) {
+    return;
   }
 
   const body = await readPublishDirectory(dir, options);
@@ -842,6 +978,215 @@ async function publishCommand(args: string[]): Promise<void> {
   console.log(`activation_status=${response.activation.status}`);
   if (response.activation.reasons.length > 0) {
     console.log(`activation_reasons=${response.activation.reasons.join("; ")}`);
+  }
+}
+
+/**
+ * Runs local validation before uploading. Manifest and file errors block without any
+ * network call. Plan checks use --plan, otherwise the account's effective entitlements
+ * from GET /v0/accounts/:account_id/limits; when that lookup fails the API decides.
+ * Returns false when the publish is blocked.
+ */
+async function publishPreflight(dir: string, options: CliOptions): Promise<boolean> {
+  const structural = await validateAppDirectory(dir);
+  if (structural.errors.length > 0) {
+    printPublishBlocked(structural, dir);
+    return false;
+  }
+
+  let planKey: string | undefined;
+  let planSource: "flag" | "account" | undefined;
+  let entitlements: EntitlementConfig | undefined;
+  if (options.plan !== undefined) {
+    planKey = requirePlanKey(options.plan);
+    planSource = "flag";
+  } else {
+    const account = await fetchAccountEntitlements(options).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("USERLAND_API_KEY")) {
+        throw error;
+      }
+      console.error(`warning=plan_lookup_failed ${message.split("\n")[0]}`);
+      return undefined;
+    });
+    if (account) {
+      planKey = account.planKey;
+      planSource = "account";
+      entitlements = account.config;
+    }
+  }
+
+  if (!planKey) {
+    for (const warning of structural.warnings) {
+      console.error(`warning=${warning.code} ${warning.message}`);
+    }
+    if (structural.required_plan_key !== "free") {
+      console.error(`warning=plan_check_skipped This app needs the ${planDisplayName(structural.required_plan_key)} plan or higher; the API will check your account plan.`);
+    }
+    console.log("local_validation=passed_without_plan");
+    return true;
+  }
+
+  const report = await validateAppDirectory(dir, { planKey, planSource, entitlements });
+  if (!report.ok) {
+    printPublishBlocked(report, dir);
+    return false;
+  }
+  for (const warning of report.warnings) {
+    console.error(`warning=${warning.code} ${warning.message}`);
+  }
+  console.log("local_validation=passed");
+  console.log(`local_validation_plan=${planKey}`);
+  console.log(`local_validation_plan_source=${planSource}`);
+  return true;
+}
+
+async function fetchAccountEntitlements(options: CliOptions): Promise<{ planKey: string; config: EntitlementConfig }> {
+  let accountId: string | undefined;
+  if (options.app) {
+    const app = await apiFetch<AppStatusResponse>(`/v0/apps/${encodeURIComponent(options.app)}`, {
+      method: "GET"
+    }, { accountId: options.account, accountScoped: true });
+    accountId = app.account_id ?? undefined;
+  }
+  accountId ??= await resolveAccountId(options.account);
+  const limits = await apiFetch<AccountLimitsResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/limits`, {
+    method: "GET"
+  }, { accountId, accountScoped: true });
+  if (typeof limits.plan_key !== "string" || !isPlainObject(limits.features) || !isPlainObject(limits.manifest_limits)) {
+    throw new Error("Account limits response is missing plan features.");
+  }
+  return {
+    planKey: limits.plan_key,
+    config: {
+      features: limits.features,
+      manifest_limits: limits.manifest_limits as Record<string, ManifestLimitValue>,
+      release_limits: limits.release_limits
+    }
+  };
+}
+
+function printPublishBlocked(report: ValidationReport, dir: string): void {
+  console.error("Local validation blocked this publish; nothing was uploaded.");
+  process.stderr.write(formatValidationReport(report, { dir }));
+  console.error(`To send it to the API anyway (the API still enforces these rules): userland apps publish ${dir} --skip-local-validation`);
+  process.exitCode = validationExitCode(report) || 1;
+}
+
+async function analyticsCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (!appId || appId.startsWith("--")) {
+    console.error(ANALYTICS_USAGE);
+    process.exit(1);
+  }
+  const options = parseAnalyticsOptions(args.slice(1));
+  if (options.range !== undefined && !ANALYTICS_RANGES.includes(options.range)) {
+    console.error(`Invalid --range value: ${options.range || "(missing)"}. Use 7d, 30d, or 90d.`);
+    console.error(ANALYTICS_USAGE);
+    process.exit(1);
+  }
+
+  const suffix = options.range ? `?${new URLSearchParams({ range: options.range }).toString()}` : "";
+  let response: AppAnalyticsResponse;
+  try {
+    response = await apiFetch<AppAnalyticsResponse>(`/v0/apps/${encodeURIComponent(appId)}/analytics${suffix}`, {
+      method: "GET"
+    }, { accountId: options.account, accountScoped: true });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 402 && error.code === "entitlement_required") {
+      printAnalyticsUpgradeState(appId, error, options.json === true);
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+  printAnalytics(response, options.range);
+}
+
+function printAnalyticsUpgradeState(appId: string, error: ApiError, json: boolean): void {
+  const details = isPlainObject(error.details) ? error.details : {};
+  const planKey = stringValue(details.plan_key);
+  const requiredPlanKey = stringValue(details.required_plan_key);
+  if (json) {
+    console.log(JSON.stringify({
+      app_id: appId,
+      entitlement: {
+        enabled: false,
+        plan_key: planKey ?? null,
+        required_plan_key: requiredPlanKey ?? null
+      },
+      error: isPlainObject(error.body) ? error.body.error : { code: error.code },
+      docs: APP_ANALYTICS_DOCS_URL
+    }, null, 2));
+  }
+  console.error("App Analytics is not included in this account's plan.");
+  console.error(`error=${error.code}`);
+  console.error("feature=app_analytics");
+  if (planKey) console.error(`plan_key=${planKey}`);
+  if (requiredPlanKey) console.error(`required_plan_key=${requiredPlanKey}`);
+  console.error(`Upgrade to ${requiredPlanKey ? planDisplayName(requiredPlanKey) : "a paid plan"} or higher to read traffic and error summaries for this app. Publishing and other app commands keep working.`);
+  console.error(`Docs: ${APP_ANALYTICS_DOCS_URL}`);
+}
+
+function printAnalytics(response: AppAnalyticsResponse, requestedRange: string | undefined): void {
+  const traffic = response.traffic;
+  console.log(`app_id=${response.app_id}`);
+  console.log(`range=${response.range.days}d`);
+  if (response.entitlement?.retention_days !== undefined) console.log(`retention_days=${response.entitlement.retention_days}`);
+  console.log(`total_requests=${traffic.total_requests}`);
+  console.log(`successful_requests=${traffic.successful_requests}`);
+  console.log(`error_requests=${traffic.error_requests}`);
+  console.log(`error_rate=${Number(traffic.error_rate.toFixed(4))}`);
+  if (requestedRange && Number.parseInt(requestedRange, 10) > response.range.days) {
+    console.log(`note=range clamped from ${requestedRange} to ${response.range.days}d by the plan retention window`);
+  }
+
+  if (traffic.total_requests === 0) {
+    console.log("");
+    console.log("No traffic recorded in this range yet. Analytics appear after the app serves eligible app-owned requests; health checks, /_userland/* routes, and unresolved hosts are not counted.");
+  }
+
+  const statusRows = Object.entries(traffic.status_buckets ?? {})
+    .filter(([, count]) => count > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  printAnalyticsTable("status", statusRows);
+  printAnalyticsTable("top_paths", (response.top_paths ?? []).map((row) => [analyticsLabel(row.label), row.request_count]));
+  printAnalyticsTable("top_referrers", (response.top_referrers ?? []).map((row) => [analyticsLabel(row.label), row.request_count]));
+  if (response.auth?.enabled) {
+    printAnalyticsTable("auth", [["signups", response.auth.signups], ["sessions_created", response.auth.sessions_created]]);
+  }
+  printAnalyticsTable("jobs", Object.entries(response.jobs ?? {}).filter(([, count]) => count > 0));
+  printAnalyticsTable("webhooks", Object.entries(response.webhooks ?? {}).filter(([, count]) => count > 0));
+
+  const errors = response.recent_errors ?? [];
+  if (errors.length > 0) {
+    console.log("");
+    console.log("recent_errors:");
+    for (const event of errors) {
+      console.log([event.created_at, event.severity ?? event.level ?? "error", event.type ?? event.event_type ?? "", event.message].join(" "));
+    }
+  }
+}
+
+/** Shows API buckets such as __direct__ or __long__ as (direct) or (long). */
+function analyticsLabel(label: string): string {
+  return label.replace(/^__([a-z_]+)__$/u, "($1)");
+}
+
+function printAnalyticsTable(label: string, rows: Array<[string, number]>): void {
+  if (rows.length === 0) {
+    return;
+  }
+  const width = Math.max(...rows.map(([name]) => name.length)) + 2;
+  console.log("");
+  console.log(`${label}:`);
+  for (const [name, count] of rows) {
+    console.log(`${name.padEnd(width)}${count}`);
   }
 }
 
@@ -1215,28 +1560,6 @@ async function readManifest(rootDir: string): Promise<Record<string, unknown>> {
   return parsed as Record<string, unknown>;
 }
 
-function isManifestFile(filePath: string): boolean {
-  const basename = path.basename(filePath);
-  return basename === "manifest.userland.json" || basename === "manifest.json";
-}
-
-async function walk(dir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        return await walk(entryPath);
-      }
-      if (entry.isFile()) {
-        return [entryPath];
-      }
-      return [];
-    })
-  );
-  return files.flat();
-}
-
 async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accountId?: string; accountScoped?: boolean } = {}): Promise<T> {
   const credentials = await readCredentials();
   const apiKey = process.env.USERLAND_API_KEY ?? credentials?.api_key;
@@ -1328,7 +1651,8 @@ async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestIni
   const body = text ? (JSON.parse(text) as unknown) : undefined;
   if (!response.ok) {
     const message = errorMessage(body) ?? response.statusText;
-    throw new Error(`API ${response.status}: ${message}`);
+    const parsed = isPlainObject(body) ? parseApiError(body) : {};
+    throw new ApiError(`API ${response.status}: ${message}`, response.status, parsed.code, parsed.details, body);
   }
 
   return body as T;
@@ -1437,11 +1761,57 @@ function parseOptions(args: string[]): CliOptions {
       options.message = args[++index];
     } else if (arg === "--account") {
       options.account = args[++index];
+    } else if (arg === "--plan") {
+      options.plan = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--skip-local-validation") {
+      options.skipLocalValidation = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  if (options.plan !== undefined && options.skipLocalValidation) {
+    throw new Error("--plan cannot be combined with --skip-local-validation.");
+  }
+  return options;
+}
+
+function parseValidateOptions(args: string[]): ValidateOptions {
+  const options: ValidateOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") {
+      options.json = true;
+    } else if (arg === "--plan") {
+      options.plan = requireOptionValue(arg, args[++index]);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
   }
   return options;
+}
+
+function parseAnalyticsOptions(args: string[]): AnalyticsOptions {
+  const options: AnalyticsOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--range") {
+      options.range = args[++index] ?? "";
+    } else if (arg === "--account") {
+      options.account = args[++index];
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function requireOptionValue(flag: string, value: string | undefined): string {
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value.`);
+  }
+  return value;
 }
 
 function parseSupportOptions(args: string[]): SupportOptions {
@@ -1738,6 +2108,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function docsUrlForError(message: string): string {
+  if (message.startsWith("Unknown plan:")) {
+    return "https://docs.userland.fun/reference/limits";
+  }
   if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded") || message.includes("quota_exceeded") || message.includes("downgrade_incompatible")) {
     return "https://docs.userland.fun/reference/errors";
   }
@@ -1780,13 +2153,15 @@ function usage(exitCode: number): never {
   userland accounts limits [--account <account-id>]
   userland accounts downgrade preview --to <plan> [--account <account-id>]
   userland support open --subject <subject> [--message <message>] [--app <app-id>] [--account <account-id>] [--json]
-  userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
+  userland validate <dir> [--plan <plan>] [--json]
+  userland apps publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>] [--plan <plan>] [--skip-local-validation]
   userland apps list [--account <account-id>]
   userland apps status <app-id> [--account <account-id>]
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
   userland apps secrets set <app-id> <NAME> [--value <value>] [--account <account-id>]
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
+  userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
   userland apps routes list <app-id> [--account <account-id>]
   userland apps slugs list <app-id> [--account <account-id>]
   userland apps slugs add <app-id> <slug> [--account <account-id>]
@@ -1800,9 +2175,16 @@ Aliases:
   userland auth signup [--no-browser] [--email <email>] [--no-save]
   userland auth login [--no-browser] [--email <email>] [--no-save]
   userland api-keys list|create|rename|revoke ...
-  userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>]
+  userland publish <dir> [--app <app-id>] [--message <message>] [--account <account-id>] [--plan <plan>] [--skip-local-validation]
+  userland analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
   userland releases <app-id> [--account <account-id>]
   userland versions <app-id> [--account <account-id>]
+
+Validation:
+  validate checks manifest.userland.json against the public schema, file paths, and plan limits offline.
+  Plans: free, starter, business, business_plus, agency. Without --plan it reports the minimum plan.
+  Exit codes: 0 valid, 1 manifest or file errors, 2 plan limits exceeded.
+  apps publish runs the same checks first, using --plan or the account's plan; the API stays authoritative.
 
 Credentials:
   Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.

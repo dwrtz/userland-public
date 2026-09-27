@@ -3,7 +3,7 @@
     "name": "AI Secret Tool",
     "summary": "Server-only model-provider secret pattern for Userland apps.",
     "visibility": "public",
-    "tags": ["ai", "secrets"]
+    "tags": ["ai", "server-secrets"]
   },
   "runtime": {
     "static_root": "public",
