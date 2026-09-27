@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createFakeRuntime, readExampleManifest, webhookJobEvent } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest, webhookJobEvent } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
@@ -45,4 +45,10 @@ it("lists event summaries without exposing stored payloads", async () => {
   const body = await response.json();
   expect(body.events).toEqual([expect.objectContaining({ external_id: "provider_1", status: "processed" })]);
   expect(JSON.stringify(body)).not.toContain("private@example.test");
+});
+
+it("answers HEAD on the event list like GET, without a body", async () => {
+  const runtime = createFakeRuntime(manifest);
+  await app.job(deliver({ external_id: "provider_1" }), runtime.ctx);
+  expect((await expectHeadLikeGet(app, runtime.ctx, "https://example.test/api/events")).status).toBe(200);
 });

@@ -343,7 +343,7 @@ async function openDemoDesk(request, ctx, rc) { // demo
 
 async function route(request, ctx) {
   const rc = requestContext(request);
-  const method = request.method === "HEAD" ? "GET" : request.method;
+  const method = request.method;
   const path = rc.url.pathname.replace(/\/+$/, "") || "/";
   const parts = path.split("/").filter(Boolean);
 
@@ -390,8 +390,18 @@ async function route(request, ctx) {
   return notFound(rc);
 }
 
-export default {
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
+const app = {
   async fetch(request, ctx) {
+    if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
     try {
       return await route(request, ctx);
     } catch (error) {
@@ -406,3 +416,5 @@ export default {
     if (event.name === "clear-demo") await demo.clearDemo(event, ctx); // demo
   }
 };
+
+export default app;

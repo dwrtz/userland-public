@@ -37,30 +37,45 @@ const MAX_BODY_BYTES = 16 * 1024;
 // owner's "Reply" email link, so they are rejected here.
 const EMAIL_PATTERN = /^[A-Za-z0-9._+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 export default {
   async fetch(request, ctx) {
-    const url = new URL(request.url);
-    let demo = null; // The public demo's visitor state. Always null in your own app.
-    demo = demoMode(request); // demo
-    const nav = demo ? demoNav(demo, "noindex,follow") : PLAIN_NAV;
-    const path = url.pathname.replace(/\/+$/, "") || "/";
-    const method = request.method.toUpperCase();
-
-    try {
-      if (path === "/" && method === "GET") return await showHome(ctx, nav, demo);
-      if (path === "/subscribe" && method === "POST") return await subscribe(request, ctx, nav, demo);
-      if (path === "/contact" && method === "GET") return html(contactPage({ nav, values: { topic: contact.topics[0] } }));
-      if (path === "/contact" && method === "POST") return await sendMessage(request, ctx, nav, demo);
-      if (path === "/thanks" && method === "GET") return html(thanksPage({ nav, kind: url.searchParams.get("kind") }));
-      if (path.startsWith("/go/") && method === "GET") return await followLink(ctx, nav, demo, path.slice(4));
-      if (path === "/admin" || path.startsWith("/admin/")) return await ownerRoutes(request, ctx, url, path, method, demo);
-      return notFound(nav);
-    } catch (error) {
-      await ctx.log.error("request failed", { path, message: error instanceof Error ? error.message : String(error) });
-      return html(messagePage({ nav, title: "Something went wrong", heading: "Something went wrong", body: "Please try again in a moment.", action: { href: nav.href("/"), label: "Back to the page" } }), 500);
-    }
+    // A link checker's HEAD on /go/:id isn't a visitor, so it doesn't count as a click.
+    if (request.method === "HEAD") return await answerHead(request, ctx, (get) => route(get, ctx, { countClick: false }));
+    return await route(request, ctx);
   }
 };
+
+async function route(request, ctx, { countClick = true } = {}) {
+  const url = new URL(request.url);
+  let demo = null; // The public demo's visitor state. Always null in your own app.
+  demo = demoMode(request); // demo
+  const nav = demo ? demoNav(demo, "noindex,follow") : PLAIN_NAV;
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  const method = request.method.toUpperCase();
+
+  try {
+    if (path === "/" && method === "GET") return await showHome(ctx, nav, demo);
+    if (path === "/subscribe" && method === "POST") return await subscribe(request, ctx, nav, demo);
+    if (path === "/contact" && method === "GET") return html(contactPage({ nav, values: { topic: contact.topics[0] } }));
+    if (path === "/contact" && method === "POST") return await sendMessage(request, ctx, nav, demo);
+    if (path === "/thanks" && method === "GET") return html(thanksPage({ nav, kind: url.searchParams.get("kind") }));
+    if (path.startsWith("/go/") && method === "GET") return await followLink(ctx, nav, demo, path.slice(4), { countClick });
+    if (path === "/admin" || path.startsWith("/admin/")) return await ownerRoutes(request, ctx, url, path, method, demo);
+    return notFound(nav);
+  } catch (error) {
+    await ctx.log.error("request failed", { path, message: error instanceof Error ? error.message : String(error) });
+    return html(messagePage({ nav, title: "Something went wrong", heading: "Something went wrong", body: "Please try again in a moment.", action: { href: nav.href("/"), label: "Back to the page" } }), 500);
+  }
+}
 
 // ---------------------------------------------------------------- public
 
@@ -122,7 +137,7 @@ async function sendMessage(request, ctx, nav, demo) {
 }
 
 // Link buttons point here so the owner can see tap counts.
-async function followLink(ctx, nav, demo, rawId) {
+async function followLink(ctx, nav, demo, rawId, { countClick = true } = {}) {
   const id = decodePart(rawId);
   if (id === null) return notFound(nav);
   const back = nav.href("/");
@@ -132,7 +147,7 @@ async function followLink(ctx, nav, demo, rawId) {
   }
   const link = await getLink(ctx, demo?.scope ?? "", id);
   if (!link || link.visible === false) return notFound(nav);
-  await recordClick(ctx, link);
+  if (countClick) await recordClick(ctx, link);
   if (demo) return html(demo.interstitial(link.url, back));
   return new Response(null, { status: 302, headers: { location: link.url, "cache-control": "no-store" } });
 }

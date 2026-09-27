@@ -78,7 +78,7 @@ function makeSite(demoUi, visitor) {
 async function ownerAccess(request, ctx, url, site) {
   const user = await ctx.auth.currentUser(request);
   if (!user) {
-    if (request.method === "GET" || request.method === "HEAD") {
+    if (request.method === "GET") {
       return { response: redirect(`/_userland/auth/login?return_to=${encodeURIComponent(url.pathname + url.search)}`) };
     }
     return {
@@ -217,16 +217,26 @@ async function saveEdits(request, ctx, store, site, id, notice) {
 // App
 // ---------------------------------------------------------------------------
 
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /**
  * createApp() returns the Userland server module. Pass `{ demo: demoMode }`
  * to allow the public demo on its demo hostname; without it, every owner page
  * requires an owner sign-in.
  */
 export function createApp({ demo = null } = {}) {
-  return {
+  const app = {
     async fetch(request, ctx) {
+      if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
       const url = new URL(request.url);
-      const method = request.method === "HEAD" ? "GET" : request.method;
+      const method = request.method;
       const parts = url.pathname.split("/").filter(Boolean);
 
       if (method === "POST" && !isSameOrigin(request, url)) {
@@ -301,6 +311,7 @@ export function createApp({ demo = null } = {}) {
       return messagePage(site, { title: "Page not found", message: "We couldn't find that page.", status: 404 });
     }
   };
+  return app;
 }
 
 export default createApp({ demo: demoMode }); // DEMO: change to `export default createApp();` when you delete demo.js.

@@ -44,13 +44,23 @@ const EMAIL_PATTERN = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u;
 const LESSON_LENGTHS = [20, 30, 45, 60, 90];
 const HOLDS_TIME = new Set(["new", "confirmed"]);
 
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /**
  * `demoMode` is "auto" in production: demo mode turns on only at the demo
  * address (see DEMO_HOSTS in demo.js). Tests pass true or false.
  */
 export function createApp({ demoMode = "auto", now = () => new Date() } = {}) {
-  return {
+  const app = {
     async fetch(request, ctx) {
+      if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
       const url = new URL(request.url);
       let isDemo = false;
       isDemo = demoMode === "auto" ? demo.isDemoHost(url) : demoMode; // demo
@@ -63,6 +73,7 @@ export function createApp({ demoMode = "auto", now = () => new Date() } = {}) {
       }
     }
   };
+  return app;
 }
 
 export default createApp();
@@ -73,7 +84,7 @@ export default createApp();
 async function route(rc) {
   const { request, url } = rc;
   const path = url.pathname.replace(/\/+$/u, "") || "/";
-  const method = request.method === "HEAD" ? "GET" : request.method;
+  const method = request.method;
 
   if (method === "POST" && !sameOrigin(request, url)) {
     return html(rc, views.messagePage({ title: "Request blocked", text: "This form must be sent from the studio's own pages.", chrome: rc.chrome }), { status: 403 });

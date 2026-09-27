@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createFakeRuntime, readExampleManifest, webhookJobEvent } from "../../../scripts/runtime-harness.js";
+import { createFakeRuntime, expectHeadLikeGet, readExampleManifest, webhookJobEvent } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 
@@ -112,4 +112,13 @@ it("answers 503 instead of 500 when the checkout key is not set", async () => {
   const response = await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx);
   expect(response.status).toBe(503);
   expect(await response.json()).toEqual({ error: "checkout_unavailable" });
+});
+
+it("answers HEAD on product and order pages like GET, without a body", async () => {
+  const runtime = await storeWithProduct();
+  const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+  expect((await expectHeadLikeGet(app, runtime.ctx, "https://example.test/api/products")).status).toBe(200);
+  expect((await expectHeadLikeGet(app, runtime.ctx, `https://example.test/orders/${order.id}`)).status).toBe(200);
+  runtime.setUser(other);
+  expect((await expectHeadLikeGet(app, runtime.ctx, `https://example.test/orders/${order.id}`)).status).toBe(404);
 });

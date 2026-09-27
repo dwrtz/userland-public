@@ -4,6 +4,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { rankWaitlist, toCsv, REFERRAL_BOOST } from "../server/waitlist.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+// @ts-expect-error Example server files are plain JavaScript app bundles.
+import app from "../server/index.js";
 import { APP, DEMO, call, collections, join, makeCtx, owner, post, type Server } from "./helpers.js";
 
 describe("public visitor", () => {
@@ -237,5 +240,27 @@ describe("removing demo mode", () => {
     expect((await post(ctx, `${APP}/admin/signups/${id}/status`, { status: "invited" }, owner, server)).status).toBe(303);
     expect(ctx.tables.signups[0]).toMatchObject({ status: "invited" });
     expect(await (await call(ctx, `${APP}/admin/export.csv`, { headers: owner }, server)).text()).toContain("ada@example.com");
+  });
+});
+
+describe("HEAD requests", () => {
+  it("answer every page like GET, without a body", async () => {
+    const ctx = makeCtx();
+    const statusPath = await join(ctx, APP, { email: "ada@example.com", name: "Ada" });
+    const code = String(ctx.tables.signups[0].referral_code);
+    const pages: Array<[string, number, Record<string, string>?]> = [
+      [`${APP}/`, 200],
+      [`${APP}/r/${code}`, 303],
+      [`${APP}${statusPath}`, 200],
+      [`${APP}/thanks`, 200],
+      [`${APP}/admin`, 303],
+      [`${APP}/admin`, 200, owner],
+      [`${APP}/admin/export.csv`, 200, owner],
+      [`${APP}/missing`, 404],
+      [`${DEMO}/`, 200]
+    ];
+    for (const [url, status, headers] of pages) {
+      expect((await expectHeadLikeGet(app, ctx, url, { headers })).status).toBe(status);
+    }
   });
 });

@@ -232,8 +232,18 @@ async function expireAbandonedOrders(ctx) {
   await ctx.log.info("abandoned orders expired", { checked, expired: batch.length, remaining: stale.length - batch.length });
 }
 
-export default {
+// HEAD asks for a page's status and headers without the page itself (link
+// checkers and uptime monitors send it). Answer it exactly as GET would, then
+// drop the body.
+async function answerHead(request, ctx, fetchGet) {
+  const response = await fetchGet(new Request(request, { method: "GET" }), ctx);
+  await response.body?.cancel();
+  return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
+const app = {
   async fetch(request, ctx) {
+    if (request.method === "HEAD") return await answerHead(request, ctx, app.fetch);
     const url = new URL(request.url);
 
     if (url.pathname === "/api/products" && request.method === "GET") {
@@ -264,3 +274,5 @@ export default {
     }
   }
 };
+
+export default app;
