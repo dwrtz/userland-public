@@ -14,7 +14,7 @@ The sample business is **Kiln & Crumb**, a made-up potter who sells pie dishes a
 - `/` shows the profile, social buttons, featured products with prices, the list of links, an email-list signup, and a contact card.
 - `/contact` is a contact form with a topic picker.
 - `/thanks` confirms a signup or message.
-- `/go/:id` counts a tap, then sends the visitor to the link. Search engines, link previews, and browser prefetches don't count, and `public/robots.txt` asks crawlers to stay out of `/go/` and `/admin`, so tap counts are a good guide rather than an exact tally.
+- `/go/:id` counts a tap, then sends the visitor to the link. Search engines, link previews, and browser prefetches don't count, and `public/robots.txt` asks crawlers to stay out of `/go/` and `/admin`, so tap counts are a good guide rather than an exact tally. (If many taps on one link land at the very same moment, a few may go uncounted; the visitors still reach the link.)
 
 ## What the owner sees
 
@@ -32,7 +32,7 @@ The forms are open to anyone, so a script could try to fill your inbox or use up
 | Unread messages before the contact form pauses | 100 | "Wren's inbox is full right now" (your first name); archive or delete messages to reopen it |
 | New email-list signups per 24 hours | 200 | "The list is extra busy today" |
 
-An email address can be on the list only once, even if it is sent twice at the same moment. The hidden "leave this empty" field still turns away simple bots quietly.
+The limits hold even when a script sends many requests at the same moment: each request checks again after saving and takes its item back out if the limit was passed, so during such a burst everyone in it may see the limit page. An email address can be on the list only once, even if the form is sent twice at the same moment. The hidden "leave this empty" field still turns away simple bots quietly.
 
 The owner view is for app users with the `owner` role. Signed-out visitors are sent to the Userland sign-in page; signed-in users without the role get a "for the page owner" message.
 
@@ -111,7 +111,8 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 - opens the owner view without sign-in,
 - gives each visitor a private key in the page address (`?visit=...`) and their own copy of made-up messages, signups, and links, because Userland passes only its own sign-in cookie to app code,
 - only opens copies it handed out itself, and only when the visitor arrives from the demo's own pages or types the address; a link to someone's copy posted on another site opens a fresh copy instead,
-- hands out up to 50 new copies an hour, then shows a "demo is busy" page, and caps how much one visitor can add,
+- marks every page of a copy as "a visitor's practice copy", because an address to a copy can still be passed around by text message or QR code,
+- hands out up to 50 new copies an hour, then shows a "demo is busy" page, and caps how much one visitor can add; link checkers and scripts get no copy (one that pretends to be a browser can still use up an hour's copies),
 - stores everything a visitor sends or changes under that key, so visitors never see each other's data,
 - stores typed email addresses partly hidden (`a•••@r•••.com`; `@example.com` addresses are kept), because anyone handed a visitor's exact address can open that visitor's copy, and says so in the owner view along with the plain demo address to share,
 - asks visitors to use made-up details on the public forms,
@@ -124,7 +125,7 @@ To remove it:
 1. Delete `server/demo.js` and `tests/demo.test.ts`.
 2. In `server/index.js`, delete every line that ends with `// demo` (the `demoMode` import and the line that turns demo mode on).
 
-After that, `demo` is always `null`, so the `if (demo)` branches and `demo?.` calls in `server/index.js` and the `nav.demo` checks in `server/views.js` do nothing; delete them whenever you like. Keep the `demo_key` and `slot` fields and the indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it and uses `slot` to stop duplicate signups, starter links, and tap counts. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
+After that, `demo` is always `null`, so the `if (demo)` branches and `demo?.` calls in `server/index.js` and the `nav.demo` checks in `server/views.js` do nothing; delete them whenever you like. Keep the `demo_key`, `slot`, and `claim` fields and the indexes in the manifest: every row your app saves has `demo_key: ""`, and `server/store.js` filters on it and uses `slot` and `claim` to stop duplicate signups, starter links, and tap counts. The "removing demo mode" test in `tests/link-in-bio-app.test.ts` runs exactly these steps on a copy of `server/` and checks that the page, the forms, and the owner view still work.
 
 ## Userland docs
 

@@ -6,7 +6,7 @@ import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { toCsv } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { EXPORT_PAGES, MAX_NEW_MESSAGES, MESSAGES_PER_PAGE, NOTES_PER_ADDRESS_PER_DAY, SIGNUPS_PER_DAY } from "../server/store.js";
+import { EXPORT_PAGES, MAX_NEW_MESSAGES, MESSAGES_PER_PAGE, NOTES_PER_ADDRESS_PER_DAY, SIGNUPS_PER_DAY, claimSlot, recordTap } from "../server/store.js";
 import { APP, BROWSER, Ctx, DEMO, FAN_COOKIE, OWNER_COOKIE, Row, addStarterLinks, get, makeCtx, post, type Server } from "./helpers.js";
 
 const owner = { cookie: OWNER_COOKIE };
@@ -31,6 +31,45 @@ async function addRows(ctx: Ctx, name: string, rows: Row[]) {
 function inboxRow(overrides: Row): Row {
   return { kind: "message", name: "Ada", email: "ada@example.com", topic: "Wholesale", message: "Hi", status: "new", received_at: new Date().toISOString(), demo_key: "", ...overrides };
 }
+
+describe("saving rows with a unique slot", () => {
+  // The test ctx works like Userland: two creates with the same unique value
+  // that arrive together can both pass the check, and the loser fails with a
+  // plain error and leaves its row behind.
+  it("the test ctx reproduces Userland's clash between simultaneous creates", async () => {
+    const ctx = makeCtx();
+    const inbox = ctx.data.collection("inbox");
+    const results = await Promise.allSettled([1, 2].map(() => inbox.create({ demo_key: "", slot: "race" })));
+    const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+    expect(failed.reason.code).toBeUndefined();
+    expect(String(failed.reason.message)).toContain("UNIQUE constraint failed");
+    expect(ctx.state.visitors).toHaveLength(2);
+    // Once the first one is saved, a later create is refused cleanly.
+    await expect(inbox.create({ demo_key: "", slot: "race" })).rejects.toMatchObject({ code: "unique_conflict" });
+  });
+
+  it("claimSlot gives the slot to exactly one of many simultaneous saves and cleans up the rest", async () => {
+    const ctx = makeCtx();
+    const results = await Promise.all(Array.from({ length: 8 }, () => claimSlot(ctx, "inbox", { demo_key: "", slot: "race" })));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(ctx.state.visitors).toHaveLength(1);
+    expect(await claimSlot(ctx, "inbox", { demo_key: "", slot: "race" })).toBeNull();
+  });
+
+  it("claimSlot passes on errors that aren't about the slot", async () => {
+    const ctx = makeCtx({ maxRows: 0 });
+    await expect(claimSlot(ctx, "inbox", { demo_key: "", slot: "full" })).rejects.toMatchObject({ code: "quota_exceeded" });
+  });
+
+  it("recordTap counts simultaneous taps without errors or leftover rows", async () => {
+    const ctx = makeCtx();
+    await addStarterLinks(ctx);
+    const link = ctx.state.links[0];
+    const counts = await Promise.all(Array.from({ length: 5 }, () => recordTap(ctx, link)));
+    expect([...counts].sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(ctx.state.tallies).toHaveLength(1);
+  });
+});
 
 describe("public page", () => {
   it("shows the profile, featured products, and visible links in order", async () => {
@@ -91,6 +130,7 @@ describe("public page", () => {
     expect(responses.map((res) => res.status)).toEqual(Array(6).fill(302));
     expect(await tapsShown(ctx, link.title)).toBe(6);
     expect(ctx.state.tallies.filter((row) => row.slot.includes(link.id))).toHaveLength(1);
+    expect(ctx.log.error).not.toHaveBeenCalled();
   });
 
   it("never lets a tap undo a change the owner is saving", async () => {
@@ -231,6 +271,29 @@ describe("email list", () => {
     expect(ctx.state.inbox.some((row) => row.email === "one-too-many@example.com")).toBe(false);
   });
 
+  it("counts the daily signup limit exactly, with no older signups to stop at", async () => {
+    const ctx = makeCtx();
+    const now = Date.now();
+    await addRows(ctx, "inbox", Array.from({ length: SIGNUPS_PER_DAY - 1 }, (_, i) => inboxRow({ kind: "signup", email: `fan${i}@example.com`, received_at: new Date(now - i * 60_000).toISOString() })));
+    expect((await post(ctx, `${APP}/subscribe`, { email: "last@example.com" })).status).toBe(303);
+    expect((await post(ctx, `${APP}/subscribe`, { email: "one-too-many@example.com" })).status).toBe(429);
+    expect(ctx.state.inbox).toHaveLength(SIGNUPS_PER_DAY);
+  });
+
+  it("holds the daily signup limit when a burst arrives all at once", async () => {
+    const ctx = makeCtx();
+    const now = Date.now();
+    await addRows(ctx, "inbox", Array.from({ length: SIGNUPS_PER_DAY - 10 }, (_, i) => inboxRow({ kind: "signup", email: `fan${i}@example.com`, received_at: new Date(now - i * 60_000).toISOString() })));
+    const responses = await Promise.all(Array.from({ length: 40 }, (_, i) => post(ctx, `${APP}/subscribe`, { email: `burst${i}@example.com` })));
+    expect(responses.every((res) => [303, 429].includes(res.status))).toBe(true);
+    const kept = ctx.state.inbox.filter((row) => row.email.startsWith("burst"));
+    expect(kept.length).toBeLessThanOrEqual(10);
+    expect(responses.filter((res) => res.status === 303)).toHaveLength(kept.length);
+    expect(ctx.state.inbox.length).toBeLessThanOrEqual(SIGNUPS_PER_DAY);
+    // Once the burst is over, the form works again for the room that's left.
+    if (kept.length < 10) expect((await post(ctx, `${APP}/subscribe`, { email: "after@example.com" })).status).toBe(303);
+  });
+
   it("rejects a bad email and keeps what the visitor typed", async () => {
     const ctx = makeCtx();
     const res = await post(ctx, `${APP}/subscribe`, { name: "Ada", email: "not-an-email" });
@@ -298,6 +361,16 @@ describe("contact form", () => {
     // Archiving a batch opens it up again.
     await post(ctx, `${APP}/admin/inbox`, { action: "archive-new", confirm: "yes" }, owner);
     expect((await post(ctx, `${APP}/contact`, { name: "Ada", email: "ada@example.com", topic: "Collab", message: "Hi" })).status).toBe(303);
+  });
+
+  it("holds the unread-message limit when a burst arrives all at once", async () => {
+    const ctx = makeCtx();
+    await addRows(ctx, "inbox", Array.from({ length: MAX_NEW_MESSAGES - 5 }, (_, i) => inboxRow({ email: `sender${i}@example.com` })));
+    const responses = await Promise.all(Array.from({ length: 30 }, (_, i) => post(ctx, `${APP}/contact`, { name: "Bot", email: `bot${i}@example.com`, topic: "Collab", message: "Hello there" })));
+    expect(responses.every((res) => [303, 429].includes(res.status))).toBe(true);
+    const unread = ctx.state.inbox.filter((row) => row.kind === "message" && row.status === "new");
+    expect(unread.length).toBeLessThanOrEqual(MAX_NEW_MESSAGES);
+    expect(responses.filter((res) => res.status === 303)).toHaveLength(unread.length - (MAX_NEW_MESSAGES - 5));
   });
 
   it("shows a clear page instead of an error when the plan's space is full", async () => {

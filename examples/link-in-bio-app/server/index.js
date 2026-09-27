@@ -133,17 +133,20 @@ async function subscribe(request, ctx, nav, demo) {
   }
 
   if (demo) {
+    // A script or link checker without a copy gets the thank-you page, but
+    // nothing is saved and no copy is made for it.
+    if (!demo.key && isAutomated(request)) return redirect(nav.href("/thanks?kind=signup"));
     if ((await demo.ensureVisitor(ctx)) === "busy") return demoBusy(nav);
     if (await demo.isFull(ctx, "inbox")) return demoFull(nav);
   }
   const scope = demo?.scope ?? "";
-  if (await signupsBusy(ctx, scope)) {
-    return html(messagePage({ nav, title: "Busy day", heading: "The list is extra busy today", body: "Lots of people signed up in the last day. Please try again tomorrow.", action: { href: nav.href("/"), label: "Back to the page" } }), 429);
-  }
+  const listBusy = () => html(messagePage({ nav, title: "Busy day", heading: "The list is extra busy today", body: "Lots of people signed up in the last day. Please try again tomorrow.", action: { href: nav.href("/"), label: "Back to the page" } }), 429);
+  if (await signupsBusy(ctx, scope)) return listBusy();
   // A repeat signup (or an address the owner removed) gets the same thank-you
   // page, so the page never reveals who is on the list.
-  await addSignup(ctx, scope, demo ? demo.privateDetails(values) : values);
-  await ctx.log.info("email signup", {});
+  const result = await addSignup(ctx, scope, demo ? demo.privateDetails(values) : values);
+  if (result === "busy") return listBusy();
+  if (result === "added") await ctx.log.info("email signup", {});
   return redirect(nav.href("/thanks?kind=signup"));
 }
 
@@ -168,16 +171,17 @@ async function sendMessage(request, ctx, nav, demo) {
   if (Object.keys(errors).length) return html(contactPage({ nav, values, errors }), 422);
 
   if (demo) {
+    if (!demo.key && isAutomated(request)) return redirect(nav.href("/thanks?kind=message"));
     if ((await demo.ensureVisitor(ctx)) === "busy") return demoBusy(nav);
     if (await demo.isFull(ctx, "inbox")) return demoFull(nav);
   }
   const scope = demo?.scope ?? "";
   const firstName = profile.person.split(" ")[0];
-  if (await inboxFull(ctx, scope)) {
-    return html(messagePage({ nav, title: "Inbox full", heading: `${firstName}'s inbox is full right now`, body: "Please try again in a few days.", action: { href: nav.href("/"), label: "Back to the page" } }), 429);
-  }
+  const inboxClosed = () => html(messagePage({ nav, title: "Inbox full", heading: `${firstName}'s inbox is full right now`, body: "Please try again in a few days.", action: { href: nav.href("/"), label: "Back to the page" } }), 429);
+  if (await inboxFull(ctx, scope)) return inboxClosed();
   const saved = await addMessage(ctx, scope, demo ? demo.privateDetails(values) : values);
-  if (!saved) {
+  if (saved === "inbox-full") return inboxClosed();
+  if (saved === "address-limit") {
     return html(messagePage({ nav, title: "That's plenty for today", heading: "You've sent a few notes today", body: `Your notes reached ${firstName}. Please wait until tomorrow to send another.`, action: { href: nav.href("/"), label: "Back to the page" } }), 429);
   }
   await ctx.log.info("contact message", { topic: values.topic });
@@ -217,8 +221,9 @@ async function ownerRoutes(request, ctx, url, path, method, demo, { head = false
     // sample data instead (see server/demo.js).
     const form = method === "POST" ? await readForm(request.clone()) : null;
     await demo.useKey(ctx, form?.get("visit"));
-    // A HEAD gets the same redirect to a new key, but no copy of the sample data.
-    const visitor = await demo.ensureVisitor(ctx, { seed: !head });
+    // A HEAD, a link checker, or a script gets the same redirect to a new key,
+    // but no copy of the sample data.
+    const visitor = await demo.ensureVisitor(ctx, { seed: !head && !isAutomated(request) });
     if (visitor === "busy") return demoBusy(demoNav(demo, "noindex,follow"));
     if (visitor === "new") return redirect(demo.href(url.pathname + url.search));
     nav = demoNav(demo, "noindex,follow", { owner: true });

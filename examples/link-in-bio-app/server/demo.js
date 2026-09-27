@@ -20,21 +20,25 @@
 //   never sees another visitor's messages, signups, or link edits.
 // - Keys are handed out by the demo, never made up: each one has a small
 //   "visitor" row in the inbox collection (slot visitors/<hour>/<number>), and
-//   a key without one is ignored. That row also numbers the visitors in each
-//   hour, so the demo can say "busy" instead of filling up.
+//   a key without one is ignored. Each hour has VISITORS_PER_HOUR numbers, so
+//   the demo says "busy" instead of filling up. Link checkers, scripts, and
+//   other requests that don't look like a person's browser don't get a copy.
+//   (A script can pretend to be a browser, so it can still use up an hour's
+//   copies; new visitors then see the "busy" page until the next hour.)
 // - Because the key is in the address, anyone who is handed that exact address
 //   can open the same copy. So a key only counts when the visitor got there
 //   from the demo itself (a link to someone's copy posted on another site opens
 //   a fresh copy instead), the demo says so on screen, points people at the
-//   plain demo address for sharing, never stores a typed email address in full
-//   (see privateEmail), and keeps each copy for a few hours only.
+//   plain demo address for sharing, labels every page of a copy as a
+//   visitor's practice copy, never stores a typed email address in full (see
+//   privateEmail), and keeps each copy for a few hours only.
 // - A new key starts with its own copy of made-up inbox items and the starter
 //   links, so the owner view has something to show. Expired copies are deleted
 //   when new visitors arrive.
 // - With no key, the public page shows the shared starter links.
 
 import { starterLinks, socials } from "./content.js";
-import { addStarterLinks, createInboxItem, createLink, isUniqueConflict, listLinks, MAX_ROWS, signupSlot, starterSlot } from "./store.js";
+import { addStarterLinks, claimSlot, createInboxItem, createLink, listLinks, MAX_ROWS, pause, signupSlot, starterSlot } from "./store.js";
 import { escapeHtml, layout } from "./views.js";
 
 // The public demo's named address and the demo app's own address. Both belong
@@ -45,9 +49,9 @@ export const EXAMPLE_PAGE_URL = "https://userland.fun/examples/link-in-bio-app/"
 export const DEMO_HOME_URL = "https://link-in-bio-demo.apps.userland.fun/";
 
 // A key is the UTC hour it was made (YYYYMMDDHH), the visitor's number in that
-// hour, and 24 random hex digits. Keys sort oldest first, which the cleanup
-// below relies on. (Keys from older versions have no number; the cleanup still
-// recognizes them, but they no longer open a copy.)
+// hour, and 24 random hex digits. Keys sort oldest hour first, which the
+// cleanup below relies on. (Keys from older versions have no number; the
+// cleanup still recognizes them, but they no longer open a copy.)
 const KEY_PATTERN = /^(\d{10})-(?:(\d{4})-)?[a-f0-9]{24}$/;
 const KEY_LIFETIME_HOURS = 6;
 const VISITORS_PER_HOUR = 50; // new copies per hour before the demo says it's busy
@@ -120,9 +124,9 @@ class Demo {
   // Makes sure the visitor has a key and their own copy of the sample data.
   // Returns "existing" when they already had one, "new" when a key was just
   // handed out (the caller then redirects so the key shows up in the address),
-  // or "busy" when the demo has handed out VISITORS_PER_HOUR keys this hour.
-  // With seed: false (a HEAD request, which shows nothing) it writes nothing
-  // and the address it redirects to won't open a copy.
+  // or "busy" when (nearly) all of this hour's VISITORS_PER_HOUR keys are out.
+  // With seed: false (a HEAD request, or a link checker or script) it writes
+  // nothing and the address it redirects to won't open a copy.
   async ensureVisitor(ctx, { seed = true } = {}) {
     if (this.key) return "existing";
     if (!seed) {
@@ -148,8 +152,11 @@ class Demo {
   // turns crawlers away from /admin) so search engines don't open copies.
   ribbon({ owner = false } = {}) {
     const next = owner ? ["/", "View the public page"] : ["/admin", "Open the owner view"];
+    // A visitor's copy says so on every page, so a copy someone dressed up and
+    // sent around doesn't pass for the real demo.
+    const copy = this.key ? " This is a visitor's practice copy." : "";
     return `<div class="demo-ribbon" role="note">
-  <p><span class="demo-dot" aria-hidden="true"></span>Demo app. Built with Userland. <a href="${EXAMPLE_PAGE_URL}">See how it's made</a></p>
+  <p><span class="demo-dot" aria-hidden="true"></span>Demo app. Built with Userland.${copy} <a href="${EXAMPLE_PAGE_URL}">See how it's made</a></p>
   <p><a class="demo-owner-link" href="${escapeHtml(this.href(next[0]))}" rel="nofollow">${next[1]} <span aria-hidden="true">&rarr;</span></a></p>
 </div>`;
   }
@@ -168,7 +175,7 @@ class Demo {
 
   // Shown above the public forms.
   formHint() {
-    const shared = this.key ? " What you send goes to your own practice copy, which anyone with this page's exact address can open." : "";
+    const shared = this.key ? " What you send goes to a practice copy that anyone with this page's exact address can open, including whoever gave you the address." : "";
     return `<p class="demo-hint">This is a demo. Made-up details work fine, like you@example.com.${shared}</p>`;
   }
 
@@ -239,27 +246,19 @@ async function isIssued(ctx, key) {
   return page.rows[0]?.demo_key === key;
 }
 
-// Hands out the next visitor number for this hour by creating its visitor row.
-// The slot is unique, so two visitors arriving together can't get the same
-// number; the second tries the next one. Returns null once VISITORS_PER_HOUR
-// numbers are taken.
+// Hands out a visitor number for this hour by claiming its visitor row. It
+// picks a random number from 1 to VISITORS_PER_HOUR and, if that one is
+// taken, tries another, so visitors arriving together rarely collide. Returns
+// null (busy) when ISSUE_TRIES numbers in a row are taken, which only happens
+// when nearly all of this hour's numbers are.
 async function issueKey(ctx) {
-  const inbox = ctx.data.collection("inbox");
   const hour = currentHour();
-  const newest = await inbox.list({ order_by: [{ field: "demo_key", direction: "desc" }], limit: 1 });
-  const match = KEY_PATTERN.exec(String(newest.rows[0]?.demo_key ?? ""));
-  let number = match && match[1] === hour && match[2] ? Number(match[2]) : 0;
   for (let attempt = 0; attempt < ISSUE_TRIES; attempt += 1) {
-    number += 1;
-    if (number > VISITORS_PER_HOUR) return null;
-    const padded = String(number).padStart(4, "0");
-    const key = `${hour}-${padded}-${randomHex()}`;
-    try {
-      await inbox.create({ demo_key: key, slot: visitorSlot(hour, padded), received_at: new Date().toISOString() });
-      return key;
-    } catch (error) {
-      if (!isUniqueConflict(error)) throw error;
-    }
+    if (attempt > 0) await pause(attempt);
+    const number = String(1 + Math.floor(Math.random() * VISITORS_PER_HOUR)).padStart(4, "0");
+    const key = `${hour}-${number}-${randomHex()}`;
+    const saved = await claimSlot(ctx, "inbox", { demo_key: key, slot: visitorSlot(hour, number), received_at: new Date().toISOString() });
+    if (saved) return key;
   }
   return null;
 }

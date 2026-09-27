@@ -151,6 +151,38 @@ describe("public demo", () => {
     expect(ctx.state.total).toBe(before);
   });
 
+  it("doesn't use up the hour's copies on scripts and link checkers", async () => {
+    const ctx = makeCtx();
+    for (const agent of ["curl/8.4.0", "python-requests/2.31", "Mozilla/5.0 (compatible; Googlebot/2.1)"]) {
+      const res = await get(ctx, `${DEMO}/admin`, { "user-agent": agent });
+      expect(res.status).toBe(303);
+      expect((await post(ctx, `${DEMO}/contact`, { name: "Bot", email: "bot@example.com", topic: "Collab", message: "Hi there" }, { "user-agent": agent })).status).toBe(303);
+      expect((await post(ctx, `${DEMO}/subscribe`, { email: "bot@example.com" }, { "user-agent": agent })).status).toBe(303);
+    }
+    expect(ctx.state.total).toBe(0);
+    // A person's browser still gets a copy.
+    expect(await newVisitor(ctx)).toBeTruthy();
+    expect(ctx.state.visitors).toHaveLength(1);
+  });
+
+  it("gives many visitors who arrive together their own copies instead of saying it's busy", async () => {
+    const ctx = makeCtx();
+    const responses = await Promise.all(Array.from({ length: 20 }, () => get(ctx, `${DEMO}/admin`)));
+    expect(responses.map((res) => res.status)).toEqual(Array(20).fill(303));
+    expect(new Set(responses.map(keyFrom)).size).toBe(20);
+    expect(new Set(ctx.state.visitors.map((row) => row.slot)).size).toBe(20);
+    expect(ctx.state.visitors).toHaveLength(20);
+  });
+
+  it("marks a visitor's copy as a practice copy on every page", async () => {
+    const ctx = makeCtx();
+    const key = await newVisitor(ctx);
+    for (const path of [`/?visit=${key}`, `/contact?visit=${key}`, `/admin?visit=${key}`]) {
+      expect(await (await get(ctx, `${DEMO}${path}`)).text()).toContain("This is a visitor's practice copy.");
+    }
+    expect(await (await get(ctx, `${DEMO}/`)).text()).not.toContain("practice copy.");
+  });
+
   it("gives visitors who arrive together their own copies", async () => {
     const ctx = makeCtx();
     const keys = await Promise.all(Array.from({ length: 5 }, () => newVisitor(ctx)));

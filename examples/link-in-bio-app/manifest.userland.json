@@ -30,7 +30,8 @@
             "position": "integer",
             "clicks": "integer",
             "demo_key": "string",
-            "slot": "string"
+            "slot": "string",
+            "claim": "string"
           },
           "indexes": [
             {
@@ -64,7 +65,8 @@
             },
             "received_at": "datetime",
             "demo_key": "string",
-            "slot": "string"
+            "slot": "string",
+            "claim": "string"
           },
           "indexes": [
             {

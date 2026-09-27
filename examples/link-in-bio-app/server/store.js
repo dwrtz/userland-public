@@ -17,11 +17,12 @@
 //   inbox.by_slot          slot (unique)                        one signup per address,
 //                                                               a daily limit per sender
 //
-// A unique `slot` is how this file stops duplicates even when two requests
-// arrive at the same moment: the second create with the same slot fails with
-// `unique_conflict`, which is caught here. Slots start with the scope, so demo
-// copies never collide with each other or with real rows. Rows that don't
-// need a slot leave it out.
+// A unique `slot` is how this file stops duplicates (one signup per address,
+// starter links added once, tap counts, the daily note limit). Rows that don't
+// need a slot leave it out. Slots start with the scope, so demo copies never
+// collide with each other or with real rows. Always save a slotted row with
+// claimSlot, never a plain create: see the note there about two saves that
+// arrive at the same moment.
 
 import { starterLinks } from "./content.js";
 
@@ -42,10 +43,52 @@ export const NOTES_PER_ADDRESS_PER_DAY = 3; // contact messages from one email a
 export const MAX_NEW_MESSAGES = 100; // unread messages before the contact form pauses
 export const SIGNUPS_PER_DAY = 200; // new email-list signups per day (a multiple of 100)
 
-const TAP_TRIES = 6;
+const TAP_TRIES = 5;
 
 export function isUniqueConflict(error) {
   return error?.code === "unique_conflict";
+}
+
+// Saves a row that has a unique `slot` and returns it, or returns null when
+// another row already holds that slot.
+//
+// Userland checks unique values before it saves, so a slot that's already
+// taken fails with `unique_conflict` and nothing is written. But two saves
+// with the same slot that arrive at the same moment can both pass that check.
+// Then one of them fails at the end with a different error, and the row it
+// was saving can be left behind. So each save carries a random `claim` tag;
+// when a save fails, this reads the rows holding that slot, deletes its own
+// leftover row (the one with its tag), and reports the slot as taken if
+// another row holds it. Any other failure is passed on.
+export async function claimSlot(ctx, name, row) {
+  const collection = ctx.data.collection(name);
+  const claim = randomTag();
+  try {
+    return await collection.create({ ...row, claim });
+  } catch (error) {
+    if (isUniqueConflict(error)) return null;
+    let holders;
+    try {
+      holders = (await collection.list({ where: { slot: row.slot }, limit: 10 })).rows;
+    } catch {
+      throw error;
+    }
+    const mine = holders.filter((held) => held.claim === claim);
+    await Promise.all(mine.map((held) => collection.delete(held.id)));
+    if (holders.length > mine.length) return null;
+    throw error;
+  }
+}
+
+export function randomTag() {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// A short random wait before trying again, so requests that collided don't
+// collide again on the next try.
+export function pause(attempt) {
+  return new Promise((resolve) => setTimeout(resolve, Math.random() * 15 * (attempt + 1)));
 }
 
 // Reads every matching row, following the cursor past the 100-row page size.
@@ -103,8 +146,9 @@ export async function getLink(ctx, scope, id) {
   return row && (row.demo_key ?? "") === scope && !isTally(row) ? row : null;
 }
 
+// With a slot, returns null when that slot is already taken.
 export async function createLink(ctx, scope, input, position, slot) {
-  return await ctx.data.collection("links").create({
+  const row = {
     title: input.title,
     url: input.url,
     note: input.note ?? "",
@@ -116,7 +160,8 @@ export async function createLink(ctx, scope, input, position, slot) {
     clicks: input.clicks ?? 0,
     demo_key: scope,
     ...(slot ? { slot } : {})
-  });
+  };
+  return slot ? await claimSlot(ctx, "links", row) : await ctx.data.collection("links").create(row);
 }
 
 // Only the fields the owner edits. Tap counts never go through here.
@@ -139,12 +184,9 @@ export async function addStarterLinks(ctx, scope) {
   const existing = await listLinks(ctx, scope);
   const start = nextPosition(existing);
   const results = await Promise.allSettled(starterLinks.map((link, index) => createLink(ctx, scope, link, start + index, starterSlot(scope, index + 1))));
-  let added = 0;
-  for (const result of results) {
-    if (result.status === "fulfilled") added += 1;
-    else if (!isUniqueConflict(result.reason)) throw result.reason;
-  }
-  return added;
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+  return results.filter((result) => result.value).length;
 }
 
 export function nextPosition(links) {
@@ -168,22 +210,21 @@ export async function moveLink(ctx, scope, id, direction) {
 //
 // Taps live in their own small "tally" rows, not on the link, so a tap never
 // writes over a change the owner is saving. Each link has one current tally
-// whose slot ends in its count (<scope>/taps/<link id>/<count>). A tap creates
-// the row for count + 1. The slot is unique, so when two taps arrive together
-// only one can create it; the other reads again and creates count + 2. Older
-// tally rows are then deleted.
+// whose slot ends in its count (<scope>/taps/<link id>/<count>). A tap claims
+// the slot for count + 1. When two taps arrive together only one can claim
+// it; the other waits a moment, reads again, and claims count + 2. Older tally
+// rows are then deleted. If many taps arrive at the very same moment, a tap
+// that loses TAP_TRIES times in a row isn't counted (the visitor still goes
+// to the link).
 export async function recordTap(ctx, link) {
   const links = ctx.data.collection("links");
   const prefix = tallyPrefix(link);
   for (let attempt = 0; attempt < TAP_TRIES; attempt += 1) {
+    if (attempt > 0) await pause(attempt);
     const tallies = (await scopeRows(ctx, link.demo_key ?? "")).filter((row) => String(row.slot ?? "").startsWith(prefix));
     const count = tallies.reduce((max, row) => Math.max(max, row.clicks ?? 0), link.clicks ?? 0);
-    try {
-      await links.create({ demo_key: link.demo_key ?? "", slot: `${prefix}${count + 1}`, clicks: count + 1 });
-    } catch (error) {
-      if (isUniqueConflict(error)) continue;
-      throw error;
-    }
+    const saved = await claimSlot(ctx, "links", { demo_key: link.demo_key ?? "", slot: `${prefix}${count + 1}`, clicks: count + 1 });
+    if (!saved) continue;
     await Promise.all(tallies.map((row) => links.delete(row.id)));
     return count + 1;
   }
@@ -251,8 +292,9 @@ export async function getInboxItem(ctx, scope, id) {
   return row && (row.demo_key ?? "") === scope && row.kind ? row : null;
 }
 
+// With a slot, returns null when that slot is already taken.
 export async function createInboxItem(ctx, scope, input) {
-  return await ctx.data.collection("inbox").create({
+  const row = {
     kind: input.kind,
     name: input.name ?? "",
     email: input.email,
@@ -262,7 +304,8 @@ export async function createInboxItem(ctx, scope, input) {
     received_at: input.received_at ?? new Date().toISOString(),
     demo_key: scope,
     ...(input.slot ? { slot: input.slot } : {})
-  });
+  };
+  return row.slot ? await claimSlot(ctx, "inbox", row) : await ctx.data.collection("inbox").create(row);
 }
 
 export async function setInboxStatus(ctx, id, status) {
@@ -288,53 +331,87 @@ export async function deleteArchived(ctx, scope, limit) {
   return { count: page.rows.length, more: Boolean(page.cursor) };
 }
 
-// Email-list signups are unique per address: the slot is the address, so even
-// two signups at the same moment make one row. A repeat signup is a success
-// for the visitor but changes nothing, and an address the owner removed stays
-// removed. (Partly hidden demo addresses, see server/demo.js, can't be told
-// apart, so they get no slot and are never merged.) Returns true when added.
-export async function addSignup(ctx, scope, { name, email }) {
-  const slot = email.includes("•") ? null : slotFor(scope, "signup", email.toLowerCase());
-  try {
-    await createInboxItem(ctx, scope, { kind: "signup", name, email, slot });
-    return true;
-  } catch (error) {
-    if (slot && isUniqueConflict(error)) return false;
-    throw error;
+// Counts rows matching `where`, newest first, that arrived at or after
+// `since` (any time when since is null). Stops once it reaches `upTo`, so it
+// reads at most a few pages.
+async function countRecent(ctx, where, upTo, since = null) {
+  let count = 0;
+  let cursor;
+  while (count < upTo) {
+    const page = await ctx.data.collection("inbox").list({ where, order_by: NEWEST_FIRST, limit: Math.min(MAX_ROWS, upTo - count), ...(cursor ? { cursor } : {}) });
+    for (const row of page.rows) {
+      if (since !== null && Date.parse(row.received_at) < since) return count;
+      count += 1;
+    }
+    cursor = page.cursor;
+    if (!cursor) break;
   }
+  return count;
+}
+
+// The form limits below are checked twice: before saving, so a request that's
+// clearly over the limit writes nothing, and again after saving. The second
+// check is what makes the limit hold when many requests arrive at once: each
+// one counts after its own row is saved, and removes its row again if the
+// count is over the limit.
+
+const signupWhere = (scope) => ({ demo_key: scope, kind: "signup" });
+const daySince = (now) => now - 24 * 3_600_000;
+
+// Signups in the last 24 hours, counting up to `upTo`.
+async function recentSignups(ctx, scope, upTo, now = Date.now()) {
+  return await countRecent(ctx, signupWhere(scope), upTo, daySince(now));
 }
 
 // True when SIGNUPS_PER_DAY or more people joined in the last 24 hours.
 export async function signupsBusy(ctx, scope, now = Date.now()) {
-  const since = now - 24 * 3_600_000;
-  let cursor;
-  for (let page = 0; page < Math.ceil(SIGNUPS_PER_DAY / MAX_ROWS); page += 1) {
-    const result = await ctx.data.collection("inbox").list({ where: { demo_key: scope, kind: "signup" }, order_by: NEWEST_FIRST, limit: MAX_ROWS, ...(cursor ? { cursor } : {}) });
-    if (result.rows.some((row) => Date.parse(row.received_at) < since) || !result.cursor) return false;
-    cursor = result.cursor;
-  }
-  return true;
+  return (await recentSignups(ctx, scope, SIGNUPS_PER_DAY, now)) >= SIGNUPS_PER_DAY;
 }
+
+// Email-list signups are unique per address: the slot is the address, so an
+// address is saved once. A repeat signup is a success for the visitor but
+// changes nothing, and an address the owner removed stays removed. (Partly
+// hidden demo addresses, see server/demo.js, can't be told apart, so they get
+// no slot and are never merged.)
+//
+// Returns "added", "repeat" (already on the list), or "busy" (the daily limit
+// was reached while this signup was being saved; nothing is kept).
+export async function addSignup(ctx, scope, { name, email }, now = Date.now()) {
+  const slot = email.includes("\u2022") ? null : signupSlot(scope, email);
+  const row = await createInboxItem(ctx, scope, { kind: "signup", name, email, slot, received_at: new Date(now).toISOString() });
+  if (!row) return "repeat";
+  if ((await recentSignups(ctx, scope, SIGNUPS_PER_DAY + 1, now)) > SIGNUPS_PER_DAY) {
+    await deleteInboxItem(ctx, row.id);
+    return "busy";
+  }
+  return "added";
+}
+
+const unreadWhere = (scope) => ({ demo_key: scope, ...INBOX_TABS.messages });
 
 // True when MAX_NEW_MESSAGES unread messages are waiting.
 export async function inboxFull(ctx, scope) {
-  const page = await listInboxPage(ctx, scope, "messages", { limit: Math.min(MAX_NEW_MESSAGES, MAX_ROWS) });
-  return page.rows.length >= MAX_NEW_MESSAGES;
+  return (await countRecent(ctx, unreadWhere(scope), MAX_NEW_MESSAGES)) >= MAX_NEW_MESSAGES;
 }
 
 // Saves a contact message. Each email address gets NOTES_PER_ADDRESS_PER_DAY
-// numbered slots per day (…/note/<address>/<day>/1, /2, /3), so the limit
-// holds even for messages sent at the same moment. Returns null when the
-// address has used them all today.
+// numbered slots per day (.../note/<address>/<day>/1, /2, /3), so the limit
+// holds even for messages sent at the same moment.
+//
+// Returns "saved", "address-limit" (this address has used today's notes), or
+// "inbox-full" (MAX_NEW_MESSAGES unread messages were reached while this one
+// was being saved; nothing is kept).
 export async function addMessage(ctx, scope, input, now = new Date()) {
   const day = now.toISOString().slice(0, 10);
   const address = String(input.email).toLowerCase();
   for (let n = 1; n <= NOTES_PER_ADDRESS_PER_DAY; n += 1) {
-    try {
-      return await createInboxItem(ctx, scope, { ...input, kind: "message", slot: slotFor(scope, "note", address, day, String(n)) });
-    } catch (error) {
-      if (!isUniqueConflict(error)) throw error;
+    const row = await createInboxItem(ctx, scope, { ...input, kind: "message", received_at: now.toISOString(), slot: slotFor(scope, "note", address, day, String(n)) });
+    if (!row) continue;
+    if ((await countRecent(ctx, unreadWhere(scope), MAX_NEW_MESSAGES + 1)) > MAX_NEW_MESSAGES) {
+      await deleteInboxItem(ctx, row.id);
+      return "inbox-full";
     }
+    return "saved";
   }
-  return null;
+  return "address-limit";
 }

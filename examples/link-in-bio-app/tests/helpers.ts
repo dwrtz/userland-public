@@ -14,19 +14,48 @@ export type Row = Record<string, any>;
 
 const manifest = readExampleManifest(path.resolve(import.meta.dirname, ".."));
 
+type IndexSpec = { name: string; fields: string[]; unique?: boolean };
+const collectionSpecs = (manifest as any).resources.data.collections as Record<string, { indexes?: IndexSpec[] }>;
+const uniqueIndexes = (name: string) => (collectionSpecs[name]?.indexes ?? []).filter((index) => index.unique);
+
+// The shared harness checks unique indexes in one step. Userland doesn't, so
+// unique indexes are handled here instead, in the same order as Userland's
+// create: check the unique value, then (after a few other steps) save the row,
+// then record the unique value. Two creates with the same value that arrive
+// together can both pass the check; the later one then fails with a plain
+// database error (no `unique_conflict` code) and its row stays saved.
+const plainManifest = structuredClone(manifest) as any;
+for (const spec of Object.values(plainManifest.resources.data.collections) as Array<{ indexes?: IndexSpec[] }>) {
+  spec.indexes = (spec.indexes ?? []).map(({ unique, ...index }) => index);
+}
+
+// Lets other requests run, like a network round trip on Userland.
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
 // A Userland runtime ctx built by the shared harness from this example's
-// manifest, so undeclared fields, unindexed queries, and unique indexes fail
-// here the way they do on Userland. On top of it:
+// manifest, so undeclared fields and unindexed queries fail here the way they
+// do on Userland. On top of it:
 //
 // - app-user auth keyed by the session cookie. Like the Userland runtime,
 //   requireUser/requireRole throw errors with a code and a 401/403 status.
-// - a unique index clash throws `unique_conflict`, the code Userland uses.
+// - unique indexes work like Userland's (see above): a value that is already
+//   taken throws `unique_conflict`; a clash between two creates that arrive
+//   together can leave the losing row behind with a plain error.
+// - every data call waits a moment, so requests started with Promise.all
+//   interleave the way they can on Userland.
 // - `maxRows` makes creates fail with `quota_exceeded` past that many rows,
 //   like a plan's saved-item limit.
 // - `state.links`, `state.tallies`, `state.inbox`, and `state.visitors` show
 //   the stored rows (link rows, tap tallies, inbox items, demo visitor rows).
 export function makeCtx({ maxRows }: { maxRows?: number } = {}) {
-  const rt = createFakeRuntime(manifest);
+  const rt = createFakeRuntime(plainManifest);
+  // Unique values recorded so far: "<collection> <index> <values>" -> row id.
+  const taken = new Map<string, string>();
+  const uniqueKeys = (name: string, row: Row) =>
+    uniqueIndexes(name)
+      .filter((index) => index.fields.every((field) => row[field] !== undefined && row[field] !== null))
+      .map((index) => `${name} ${index.name} ${JSON.stringify(index.fields.map((field) => row[field]))}`);
+  const conflict = (key: string) => new FakeRuntimeError("unique_conflict", `Unique index already contains this value (${key}).`, 409);
   const users: Record<string, { id: string; app_user_id: string; email: string; roles: string[] }> = {
     "owner-session": { id: "u_owner", app_user_id: "u_owner", email: "wren@example.com", roles: ["owner"] },
     "fan-session": { id: "u_fan", app_user_id: "u_fan", email: "fan@example.com", roles: [] }
@@ -36,23 +65,51 @@ export function makeCtx({ maxRows }: { maxRows?: number } = {}) {
     return match ? (users[match[1]] ?? null) : null;
   };
   const allRows = () => [...rt.state.rows.values()].reduce((sum, rows) => sum + rows.length, 0);
-  const rethrow = (error: any): never => {
-    if (error?.code === "unique_violation") throw new FakeRuntimeError("unique_conflict", error.message, 409);
-    throw error;
-  };
-
   const data = {
     app_id: rt.ctx.data.app_id,
     collection(name: string) {
       const inner = rt.ctx.data.collection(name);
       return {
-        ...inner,
         async create(input: Row) {
+          await tick();
+          const keys = uniqueKeys(name, input);
+          for (const key of keys) if (taken.has(key)) throw conflict(key);
+          await tick(); // plan usage checks
           if (maxRows !== undefined && allRows() >= maxRows) throw new FakeRuntimeError("quota_exceeded", "Data row limit reached.", 402);
-          return await inner.create(input).catch(rethrow);
+          const row = await inner.create(input);
+          await tick();
+          for (const key of keys) {
+            if (taken.has(key)) throw new Error("D1_ERROR: UNIQUE constraint failed: app_data_unique_indexes.app_id, app_data_unique_indexes.collection_name, app_data_unique_indexes.index_name, app_data_unique_indexes.index_value: SQLITE_CONSTRAINT");
+            taken.set(key, row.id);
+          }
+          return row;
+        },
+        async get(id: string) {
+          await tick();
+          return await inner.get(id);
         },
         async update(id: string, patch: Row) {
-          return await inner.update(id, patch).catch(rethrow);
+          await tick();
+          const current = await inner.get(id);
+          const keys = current ? uniqueKeys(name, { ...current.data, ...patch }) : [];
+          for (const key of keys) if (taken.has(key) && taken.get(key) !== id) throw conflict(key);
+          const row = await inner.update(id, patch);
+          for (const [key, owner] of taken) if (owner === id) taken.delete(key);
+          for (const key of keys) taken.set(key, id);
+          return row;
+        },
+        async delete(id: string) {
+          await tick();
+          await inner.delete(id);
+          for (const [key, owner] of taken) if (owner === id) taken.delete(key);
+        },
+        async list(input?: Parameters<typeof inner.list>[0]) {
+          await tick();
+          return await inner.list(input);
+        },
+        async query(input?: Parameters<typeof inner.list>[0]) {
+          await tick();
+          return await inner.query(input);
         }
       };
     }
