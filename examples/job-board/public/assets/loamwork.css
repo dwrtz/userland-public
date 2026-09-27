@@ -1114,6 +1114,45 @@ legend + * {
   margin-left: 6px;
   font-weight: 700;
 }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+.pager-status {
+  color: var(--ink-muted);
+  font-size: 1rem;
+}
+.owner-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.owner-tools .fine {
+  margin: 0;
+  flex: 1 1 260px;
+}
+.button-danger {
+  background: var(--clay);
+  border-color: var(--clay);
+}
+.button-danger:hover {
+  background: #86391f;
+  border-color: #86391f;
+}
+.confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin: 8px 0 18px;
+}
 .tabs {
   display: flex;
   gap: 6px;

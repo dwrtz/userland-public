@@ -10,22 +10,23 @@ A niche job board with public listings, search and category filters, an employer
 
 Visitors can:
 
-- browse open jobs, newest and featured first;
+- browse open jobs, newest and featured first, 25 to a page;
 - filter by kind of work and schedule, and search by job, farm, or town;
 - open a job page with pay, location, the full description, and how to apply;
 - post a job through a form that goes to the owner for review.
 
 The owner can:
 
-- sign in and see every listing, grouped by status (to review, live, declined, closed);
+- sign in and see every listing, grouped by status (to review, live, declined, closed), 50 to a page with a "Show more" link;
 - approve or decline new listings, and mark live ones as filled;
+- delete a listing, or clear out declined listings (spam) in batches of 15;
 - edit any listing, feature it at the top of the board, and keep a private note;
 - see recent activity in the app, and the activity log and errors in the Userland console (visits, top pages, and referrers need Starter).
 
 ## Capabilities
 
 - Server routes that render every page as plain HTML (no client-side JavaScript).
-- Managed data: a `listings` collection with `status`, `published_at`, and `submitted_at` indexes.
+- Managed data: a `listings` collection with two indexes, `status` + `published_at` (the public board) and `status` + `submitted_at` (the owner's lists). Lists are read page by page, so nothing drops off after the first 100 rows.
 - App-user auth with a single `owner` role and public signup turned off.
 - App events: each submission, review decision, and edit is written with `ctx.log`.
 - A JobPosting structured-data block on each job page.
@@ -40,7 +41,8 @@ server/views.js          Page templates and the escaping helper
 server/demo.js           Demo mode for the public demo (delete it for your own board)
 public/assets/           Stylesheet and self-hosted fonts (Alegreya Sans, Fraunces; SIL OFL)
 public/favicon.svg       Logo mark
-tests/job-board.test.ts  Route, privacy, owner-gate, and demo-removal tests
+tests/job-board.test.ts  Route, privacy, owner-gate, paging, spam-limit, and demo-removal tests
+tests/helpers.ts         Test helpers built on the shared runtime harness
 tests/demo.test.ts       Demo mode tests (delete with server/demo.js)
 ```
 
@@ -48,15 +50,19 @@ tests/demo.test.ts       Demo mode tests (delete with server/demo.js)
 
 | Route | Who | What |
 | --- | --- | --- |
-| `GET /` | Everyone | Job board. Query: `q`, `category`, `type` |
+| `GET /` | Everyone | Job board. Query: `q`, `category`, `type`, `page` |
 | `GET /jobs/:id` | Everyone | Job page (live listings only) |
 | `GET /post` | Everyone | Post a job form |
 | `POST /post` | Everyone | Saves the listing as waiting for review |
 | `GET /post/thanks` | Everyone | Confirmation |
-| `GET /owner` | Owner | Listings by status. Query: `tab` |
+| `GET /owner` | Owner | Listings by status. Query: `tab`, `after` (next page) |
 | `GET /owner/jobs/:id` | Owner | Edit a listing |
 | `POST /owner/jobs/:id` | Owner | Save edits |
 | `POST /owner/jobs/:id/status` | Owner | Approve, decline, mark as filled, or put back live |
+| `GET /owner/jobs/:id/delete` | Owner | "Delete this listing?" page |
+| `POST /owner/jobs/:id/delete` | Owner | Delete a listing for good |
+| `GET /owner/declined/delete` | Owner | "Delete declined listings?" page |
+| `POST /owner/declined/delete` | Owner | Delete up to 15 declined listings per press |
 
 Sign-in pages are provided by Userland at `/_userland/auth/login` and `/_userland/auth/logout`.
 
@@ -74,6 +80,8 @@ Sign-in pages are provided by Userland at `/_userland/auth/login` and `/_userlan
 | `featured`, `owner_note` | Owner only |
 | `history` | Recent submitted/approved/edited entries for the activity panel |
 | `submitted_at`, `published_at` | Dates used for sorting |
+
+Tab counts on the owner page are exact up to 100 and show "100+" past that; the lists themselves page through every listing. The public board reads every live job (up to 1,000, which is all the rows Free allows) so search, filters, and counts cover the whole board.
 
 Categories and job types are plain strings validated in code, so you can change them without a data migration.
 
@@ -107,11 +115,13 @@ Publish updates with `userland apps publish examples/job-board --app "$APP_ID" -
 
 ## Demo mode
 
-The public demo lets anyone try the owner side without signing in. That code lives in `server/demo.js` and only switches on for the hostname `job-board-demo.apps.userland.fun`, so a copy published anywhere else always requires the owner sign-in.
+The public demo lets anyone try the owner side without signing in. That code lives in `server/demo.js` and only switches on for the demo's two addresses, `job-board-demo.apps.userland.fun` and `4fz14jppml2y13cxqx1.apps.userland.fun` (`DEMO_HOSTS` in `demo.js`), so a copy published anywhere else always requires the owner sign-in.
 
-How the demo keeps visitors apart: sample listings live in `demo.js`, not in your data. The first time a visitor posts a job or makes an owner change, they get a random key that stays in their page links (`?demo=...`). Userland only passes its own sign-in cookie through to server code, so a link key is used instead of a cookie. The visitor's listings, and their changes to sample listings, are saved in the `demo-listings` collection under that key and deleted after a day. Nobody without the key sees them. Anyone the visitor shares a link with gets the same key, so the banner says so.
+How the demo keeps visitors apart: sample listings live in `demo.js`, not in your data. The first time a visitor posts a job or makes an owner change, they get a random key that stays in their page links (`?demo=...`). Userland only passes its own sign-in cookie through to server code, so a link key is used instead of a cookie. The visitor's listings, and their changes to sample listings, are saved in the `demo-listings` collection under that key. They stop showing after a day and are deleted the next time anyone uses the demo, a few at a time on each page view or change, which keeps each request well under Free's per-request limits. Nobody without the key sees them. Anyone the visitor shares a link with gets the same key, so the banner says so.
 
-Demo mode is meant only for the hosted demo. Old demo rows are cleaned up a few at a time when visitors make changes, which keeps each request well under Free's per-request limits, but a real board has no reason to keep it.
+Each key can save up to 30 changes, and the whole demo keeps at most 300 unexpired rows, so a script that posts without a key can't fill the demo's storage. Past either limit, or if the demo app runs out of rows, visitors see a friendly "come back later" page.
+
+Demo mode is meant only for the hosted demo; a real board has no reason to keep it.
 
 To remove the demo:
 
@@ -120,7 +130,7 @@ To remove the demo:
 3. Delete the `demo-listings` collection from `manifest.userland.json`.
 4. Delete `tests/demo.test.ts` (the demo tests).
 
-The "removing the demo" test in `tests/job-board.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that posting, review, and the public board still work.
+The "removing the demo" test in `tests/job-board.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that posting, review, and the public board still work. The rest of `tests/job-board.test.ts` and `tests/helpers.ts` never touch demo mode, so `npx vitest run examples/job-board` passes after all four steps.
 
 ## Plan notes
 
@@ -128,15 +138,19 @@ The manifest fits the Free plan: server routes, app-user auth with one role, and
 
 - Your own domain, or a named address like `yourboard.apps.userland.fun`: Starter.
 - App Analytics (visits, top pages, referrers) in the console: Starter.
-- Free includes 1,000 saved rows per app (demo rows count too if you keep demo mode) and 10,000 requests a month across your whole account. A busy board will want Starter.
+- Free includes 1,000 saved rows per app (demo rows count too if you keep demo mode) and 10,000 requests a month across your whole account. Listings stay saved after they're declined or filled, so delete old ones from the owner page now and then. If the board does fill up, posting shows a "new listings are paused" page and the owner page says how to make room. A busy board will want Starter.
 
 ## Abuse protection
 
 - Every field has a length limit, and category, schedule, email, and apply link are checked on the server.
 - A hidden "website" field catches form-filling bots; those submissions are dropped quietly.
+- At most 100 listings can wait for review at once (`MAX_PENDING` in `server/listings.js`). Past that, the form shows "New listings are paused for now" until the owner works through the queue. The limit is checked before saving and again right after, so a burst of posts at the same moment can't push past it.
+- One contact email can have at most 3 listings waiting for review (`MAX_PENDING_PER_EMAIL`).
+- The owner can delete any listing, and clear out declined ones 15 at a time, so a wave of spam can be removed from the owner page.
+- Email addresses may only use letters, digits, and `. _ + ' -` before the `@`, so an apply address can't slip extra recipients (like `?bcc=`) into the "Email the employer" link.
 - All visitor text is escaped before it goes on a page, and pages send a strict Content Security Policy.
 - New listings stay off the board until the owner approves them.
-- Every form post must come from the board's own pages (the `Origin` header has to match), so a page on another site can't submit owner actions while you're signed in.
+- Every form post must come from the board's own pages (the `Origin` header has to match), so a page on another site, including other `*.apps.userland.fun` apps, can't approve, edit, or delete listings while you're signed in.
 
 ## Test
 

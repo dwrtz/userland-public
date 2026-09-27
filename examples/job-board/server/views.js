@@ -4,14 +4,14 @@
 // that came from a visitor or the database goes through the `html` tag below,
 // which escapes it, so a listing titled "<script>" shows up as text.
 
-import { CATEGORIES, JOB_TYPES, STATUS_LABELS, FIELD_LIMITS, applyHref, categoryLabel, jobTypeLabel } from "./listings.js";
+import { BULK_DELETE_MAX, CATEGORIES, JOB_TYPES, MAX_LIVE_ROWS, STATUS_LABELS, FIELD_LIMITS, applyHref, categoryLabel, isEmail, jobTypeLabel } from "./listings.js";
 
 export const BRAND = {
   name: "Loamwork",
   tagline: "Farm & food jobs in the Pacific Northwest"
 };
 
-const ASSET_VERSION = "1";
+const ASSET_VERSION = "2";
 
 // ---------------------------------------------------------------------------
 // Escaping helpers
@@ -201,16 +201,30 @@ function jobCard(site, job, now) {
 </li>`;
 }
 
-function filterLink(site, filters, change, label, count, current) {
-  const next = { ...filters, ...change };
+function filterParams(filters) {
   const params = {};
-  if (next.q) params.q = next.q;
-  if (next.category) params.category = next.category;
-  if (next.type) params.type = next.type;
-  return html`<li><a class="filter-link" href="${site.link("/", params)}"${current ? raw(' aria-current="true"') : ""}><span>${label}</span><span class="count">${count}</span></a></li>`;
+  if (filters.q) params.q = filters.q;
+  if (filters.category) params.category = filters.category;
+  if (filters.type) params.type = filters.type;
+  return params;
 }
 
-export function boardPage(site, { jobs, allLive, filters, now = Date.now() }) {
+function filterLink(site, filters, change, label, count, current) {
+  return html`<li><a class="filter-link" href="${site.link("/", filterParams({ ...filters, ...change }))}"${current ? raw(' aria-current="true"') : ""}><span>${label}</span><span class="count">${count}</span></a></li>`;
+}
+
+// "Newer jobs / Page 2 of 4 / Older jobs" links under the job list.
+function boardPager(site, filters, pageNumber, pageCount) {
+  if (pageCount <= 1) return "";
+  const pageLink = (number) => site.link("/", { ...filterParams(filters), page: number > 1 ? String(number) : undefined });
+  return html`<nav class="pager" aria-label="More jobs">
+    ${pageNumber > 1 ? html`<a class="button button-small button-quiet" href="${pageLink(pageNumber - 1)}" rel="prev">Newer jobs</a>` : html`<span></span>`}
+    <span class="pager-status">Page ${pageNumber} of ${pageCount}</span>
+    ${pageNumber < pageCount ? html`<a class="button button-small button-quiet" href="${pageLink(pageNumber + 1)}" rel="next">Older jobs</a>` : html`<span></span>`}
+  </nav>`;
+}
+
+export function boardPage(site, { jobs, matchCount = jobs.length, allLive, complete = true, filters, pageNumber = 1, pageCount = 1, now = Date.now() }) {
   const categoryCounts = Object.fromEntries(CATEGORIES.map((category) => [category.id, allLive.filter((job) => job.category === category.id).length]));
   const typeCounts = Object.fromEntries(JOB_TYPES.map((type) => [type.id, allLive.filter((job) => job.job_type === type.id).length]));
   const employers = new Set(allLive.map((job) => job.employer)).size;
@@ -224,7 +238,7 @@ export function boardPage(site, { jobs, allLive, filters, now = Date.now() }) {
   const body = html`<section class="hero" aria-labelledby="hero-title">
   <div class="wrap hero-inner">
     <div class="hero-copy">
-      <p class="eyebrow">${allLive.length} open ${allLive.length === 1 ? "job" : "jobs"} from ${employers} ${employers === 1 ? "employer" : "employers"}</p>
+      <p class="eyebrow">${allLive.length}${complete ? "" : "+"} open ${allLive.length === 1 ? "job" : "jobs"} from ${employers} ${employers === 1 ? "employer" : "employers"}</p>
       <h1 id="hero-title">Work that grows things.</h1>
       <p class="lede">Jobs on small farms, orchards, ranches, and food projects across the Pacific Northwest. A real person reads every listing before it goes up.</p>
     </div>
@@ -265,12 +279,13 @@ export function boardPage(site, { jobs, allLive, filters, now = Date.now() }) {
   </aside>
   <section class="results" aria-labelledby="results-title">
     <div class="results-head">
-      <h2 id="results-title">${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}${anyFilter ? html` <span class="results-filter">${activeParts.join(" · ")}</span>` : ""}</h2>
+      <h2 id="results-title">${matchCount} ${matchCount === 1 ? "job" : "jobs"}${anyFilter ? html` <span class="results-filter">${activeParts.join(" · ")}</span>` : ""}</h2>
       ${anyFilter ? html`<a class="clear-link" href="${site.link("/")}">Clear filters</a>` : ""}
     </div>
+    ${complete ? "" : html`<p class="muted">Showing the newest ${MAX_LIVE_ROWS.toLocaleString("en-US")} open jobs.</p>`}
     ${
       jobs.length > 0
-        ? html`<ol class="job-list">${jobs.map((job) => jobCard(site, job, now))}</ol>`
+        ? html`<ol class="job-list">${jobs.map((job) => jobCard(site, job, now))}</ol>${boardPager(site, filters, pageNumber, pageCount)}`
         : html`<div class="empty">
       <h3>${allLive.length === 0 ? "No jobs posted yet" : "Nothing matches those filters"}</h3>
       <p>${allLive.length === 0 ? "New listings show up here as soon as they're approved." : "Try a different kind of work or schedule, or clear the filters to see every open job."}</p>
@@ -501,6 +516,26 @@ const DONE_MESSAGES = {
   saved: (title) => `Changes to “${title}” are saved.`
 };
 
+// The message shown after an owner action, or "" when there isn't one.
+function flashMessage({ done, doneJob, doneCount, doneMore }) {
+  if (done === "deleted") return "The listing is deleted.";
+  if (done === "cleared") {
+    const deleted = doneCount === 1 ? "Deleted 1 declined listing." : `Deleted ${doneCount} declined listings.`;
+    return doneMore ? `${deleted} There are more; delete again to clear the rest.` : deleted;
+  }
+  return doneJob && Object.hasOwn(DONE_MESSAGES, done) ? DONE_MESSAGES[done](doneJob.title) : "";
+}
+
+// A count for a tab: "100+" when there are more than one data page holds.
+function countLabel({ count, more }) {
+  return more ? `${count}+` : String(count);
+}
+
+// A contact email as a mailto link, or plain text if it isn't a clean address.
+function contactEmail(email) {
+  return isEmail(email) ? html`<a href="mailto:${email}">${email}</a>` : email;
+}
+
 function activityText(entry, job) {
   switch (entry.action) {
     case "submitted":
@@ -532,12 +567,24 @@ function statusButtons(site, job, tab) {
   return buttons;
 }
 
-export function ownerPage(site, { jobs, tab, done, doneId, user, now = Date.now(), notice = "" }) {
-  const counts = Object.fromEntries(OWNER_TABS.map((item) => [item.id, item.id === "all" ? jobs.length : jobs.filter((job) => job.status === item.id).length]));
-  const shown = tab === "all" ? jobs : jobs.filter((job) => job.status === tab);
-  const doneJob = jobs.find((job) => job.id === doneId);
-  const flash = done && doneJob && DONE_MESSAGES[done] ? DONE_MESSAGES[done](doneJob.title) : "";
-  const activity = jobs
+/**
+ * The owner's listings page. `jobs` is one page of the chosen tab; `counts`
+ * holds each status's count; `recent` is the recently changed listings used for
+ * the activity panel; `nextCursor` links to the next page.
+ */
+export function ownerPage(site, { jobs, counts, recent, tab, after = "", nextCursor = "", done = "", doneJob = null, doneCount = 0, doneMore = false, user, now = Date.now(), notice = "" }) {
+  const statusCounts = Object.values(counts);
+  const tabCounts = Object.fromEntries(
+    OWNER_TABS.map((item) => [
+      item.id,
+      item.id === "all"
+        ? countLabel({ count: statusCounts.reduce((sum, entry) => sum + entry.count, 0), more: statusCounts.some((entry) => entry.more) })
+        : countLabel(counts[item.id])
+    ])
+  );
+  const shown = jobs;
+  const flash = flashMessage({ done, doneJob, doneCount, doneMore });
+  const activity = recent
     .flatMap((job) => job.history.map((entry) => ({ entry, job })))
     .sort((left, right) => right.entry.at.localeCompare(left.entry.at))
     .slice(0, 7);
@@ -551,9 +598,9 @@ export function ownerPage(site, { jobs, tab, done, doneId, user, now = Date.now(
     </div>
     ${user ? html`<p class="owner-user">Signed in as ${user.email} <span aria-hidden="true">·</span> <a href="/_userland/auth/logout?return_to=/">Sign out</a></p>` : ""}
   </div>
-  ${flash ? html`<p class="flash" role="status">${flash}${done === "approved" ? html` <a href="${site.link(`/jobs/${doneJob.id}`)}">View listing</a>` : ""}</p>` : ""}
+  ${flash ? html`<p class="flash" role="status">${flash}${done === "approved" && doneJob ? html` <a href="${site.link(`/jobs/${doneJob.id}`)}">View listing</a>` : ""}</p>` : ""}
   <nav class="tabs" aria-label="Listings by status">
-    ${OWNER_TABS.map((item) => html`<a href="${site.link("/owner", { tab: item.id })}"${tab === item.id ? raw(' aria-current="page"') : ""}>${item.label} <span class="count">${counts[item.id]}</span></a>`)}
+    ${OWNER_TABS.map((item) => html`<a href="${site.link("/owner", { tab: item.id })}"${tab === item.id ? raw(' aria-current="page"') : ""}>${item.label} <span class="count">${tabCounts[item.id]}</span></a>`)}
   </nav>
   <div class="owner-grid">
     <section aria-label="${OWNER_TABS.find((item) => item.id === tab)?.label ?? "Listings"}">
@@ -566,7 +613,7 @@ export function ownerPage(site, { jobs, tab, done, doneId, user, now = Date.now(
           <h2 class="queue-title"><a href="${site.link(`/owner/jobs/${job.id}`)}">${job.title}</a></h2>
           <p class="queue-meta">${job.employer} <span aria-hidden="true">·</span> ${job.location} <span aria-hidden="true">·</span> ${categoryLabel(job.category)} <span aria-hidden="true">·</span> sent ${timeAgo(job.submitted_at, now)}</p>
           <p class="queue-summary">${job.summary}</p>
-          <p class="queue-contact">Contact: ${job.contact_name}, <a href="mailto:${job.contact_email}">${job.contact_email}</a></p>
+          <p class="queue-contact">Contact: ${job.contact_name}, ${contactEmail(job.contact_email)}</p>
           ${job.owner_note ? html`<p class="queue-note"><span>Note:</span> ${job.owner_note}</p>` : ""}
         </div>
         <div class="queue-actions">
@@ -574,8 +621,21 @@ export function ownerPage(site, { jobs, tab, done, doneId, user, now = Date.now(
           <a class="button button-small button-quiet" href="${site.link(`/owner/jobs/${job.id}`)}">Edit<span class="visually-hidden"> “${job.title}”</span></a>
         </div>
       </li>`
-            )}</ol>`
+            )}</ol>
+      ${
+        after || nextCursor
+          ? html`<nav class="pager" aria-label="More listings">
+        ${after ? html`<a class="button button-small button-quiet" href="${site.link("/owner", { tab })}">Back to the newest</a>` : html`<span></span>`}
+        ${nextCursor ? html`<a class="button button-small button-quiet" href="${site.link("/owner", { tab, after: nextCursor })}" rel="next">Show more</a>` : html`<span></span>`}
+      </nav>`
+          : ""
+      }`
           : html`<div class="empty"><h3>Nothing here right now</h3><p>${tab === "pending" ? "New listings land here for you to review." : "Listings with this status will show up here."}</p></div>`
+      }
+      ${
+        tab === "rejected" && counts.rejected.count > 0
+          ? html`<div class="owner-tools"><a class="button button-small button-quiet" href="${site.link("/owner/declined/delete")}">Delete declined listings</a><p class="fine">Clears out spam and listings you turned down. Deleted listings can't be brought back.</p></div>`
+          : ""
       }
     </section>
     <aside class="owner-side">
@@ -605,8 +665,12 @@ export function ownerEditPage(site, { job, values, errors = {}, status = 200, no
     <p class="crumb"><a href="${site.link("/owner")}"><span aria-hidden="true">←</span> All listings</a></p>
     <h1>Edit listing</h1>
     <p class="status status-${job.status}">${STATUS_LABELS[job.status]}</p>
-    <p class="muted">Sent ${timeAgo(job.submitted_at)} by ${job.contact_name} (<a href="mailto:${job.contact_email}">${job.contact_email}</a>).</p>
+    <p class="muted">Sent ${timeAgo(job.submitted_at)} by ${job.contact_name} (${contactEmail(job.contact_email)}).</p>
     ${job.status === "approved" ? html`<p><a href="${site.link(`/jobs/${job.id}`)}">See it on the board</a></p>` : ""}
+    <div class="owner-tools">
+      <a class="button button-small button-quiet" href="${site.link(`/owner/jobs/${job.id}/delete`)}">Delete this listing</a>
+      <p class="fine">For spam or listings you don't need to keep. To take a live job off the board but keep it, use “Mark as filled” instead.</p>
+    </div>
   </div>
   <form class="listing-form" method="post" action="${site.link(`/owner/jobs/${job.id}`)}" novalidate>
     ${errorSummary(errors)}
@@ -630,4 +694,36 @@ export function ownerEditPage(site, { job, values, errors = {}, status = 200, no
   </form>
 </div>`;
   return page(site, { title: `Edit: ${job.title}`, body, status, nav: "owner" });
+}
+
+/**
+ * "Are you sure?" page before deleting. Pass `job` to delete one listing, or
+ * `declined` (a count from store.summary()) to delete declined listings.
+ */
+export function confirmDeletePage(site, { job = null, declined = null, notice = "" }) {
+  const action = job ? site.link(`/owner/jobs/${job.id}/delete`) : site.link("/owner/declined/delete");
+  const back = job ? site.link(`/owner/jobs/${job.id}`) : site.link("/owner", { tab: "rejected" });
+  const count = declined?.count ?? 0;
+  const heading = job ? html`Delete “${job.title}”?` : "Delete declined listings?";
+  const detail = job
+    ? html`This removes the listing from ${job.employer} and its contact details for good. It can't be brought back.`
+    : count === 0
+      ? "There are no declined listings to delete."
+      : html`This deletes ${count > BULK_DELETE_MAX ? `the first ${BULK_DELETE_MAX} of ${countLabel(declined)}` : countLabel(declined)} declined ${count === 1 ? "listing" : "listings"} for good. They can't be brought back.`;
+  const body = html`<div class="wrap narrow">
+  ${notice}
+  <div class="confirm">
+    <h1>${heading}</h1>
+    <p class="lede">${detail}</p>
+    ${
+      job || count > 0
+        ? html`<form method="post" action="${action}" class="confirm-actions">
+      <button class="button button-danger" type="submit">${job ? "Delete listing" : "Delete declined listings"}</button>
+      <a class="button button-quiet" href="${back}">Cancel</a>
+    </form>`
+        : html`<p><a class="button button-quiet" href="${back}">Back to listings</a></p>`
+    }
+  </div>
+</div>`;
+  return page(site, { title: job ? `Delete: ${job.title}` : "Delete declined listings", body, nav: "owner" });
 }

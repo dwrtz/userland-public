@@ -8,25 +8,32 @@
 //   GET  /post/thanks          Confirmation
 //
 // Owner pages (app users with the "owner" role)
-//   GET  /owner                Review queue and all listings (?tab=pending|approved|rejected|closed|all)
+//   GET  /owner                Review queue and all listings (?tab=pending|approved|rejected|closed|all, ?after= for the next page)
 //   GET  /owner/jobs/:id       Edit a listing
 //   POST /owner/jobs/:id       Save edits
 //   POST /owner/jobs/:id/status  Approve, decline, mark as filled, or put back live
+//   GET  /owner/jobs/:id/delete  "Delete this listing?" page
+//   POST /owner/jobs/:id/delete  Delete a listing for good
+//   GET  /owner/declined/delete  "Delete declined listings?" page
+//   POST /owner/declined/delete  Delete declined listings, BULK_DELETE_MAX per press
 //
 // Sign-in pages come from Userland at /_userland/auth/login and /_userland/auth/logout.
 
-import { CATEGORIES, JOB_TYPES, STATUS_LABELS, listingStore, publicListing, statusPatch, validateListing, withHistory } from "./listings.js";
-import { html, messagePage, OWNER_TABS, ownerEditPage, ownerPage, jobPage, boardPage, postPage, thanksPage } from "./views.js";
+import { CATEGORIES, JOB_TYPES, MAX_PENDING_PER_EMAIL, STATUS_LABELS, listingStore, publicListing, statusPatch, validateListing, withHistory } from "./listings.js";
+import { html, messagePage, OWNER_TABS, confirmDeletePage, ownerEditPage, ownerPage, jobPage, boardPage, postPage, thanksPage } from "./views.js";
 import { demoMode } from "./demo.js"; // DEMO: delete this line to remove the public demo (see demo.js).
 
 const MAX_FORM_BYTES = 32 * 1024;
+const BOARD_PAGE_SIZE = 25;
+const OWNER_PAGE_SIZE = 50;
 
 /**
  * Forms must be posted from this app's own pages. Userland's sign-in cookie is
  * SameSite=Lax, and every app on apps.userland.fun counts as the same "site",
  * so without this check a page on another app could submit a hidden form that
- * approves or edits listings while the owner is signed in. Browsers always send
- * an Origin header on form posts; requests without one (curl, tests) pass.
+ * approves, edits, or deletes listings while the owner is signed in. Browsers
+ * always send an Origin header on form posts (sandboxed pages send "null", which
+ * is refused); requests without one (curl, tests) pass.
  */
 function isSameOrigin(request, url) {
   const origin = request.headers.get("origin");
@@ -103,6 +110,23 @@ async function ownerAccess(request, ctx, url, site) {
   return { user };
 }
 
+// The data service's page cursor, passed through the owner page's "Show more"
+// link. Anything that doesn't look like one is ignored (first page).
+function readCursor(url) {
+  const value = url.searchParams.get("after") ?? "";
+  return value.length <= 64 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/u.test(value) ? value : "";
+}
+
+function readPageNumber(url) {
+  const value = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+  return Number.isInteger(value) && value >= 1 && value <= 1000 ? value : 1;
+}
+
+// A data error with this code means the plan's saved-row allowance is used up.
+function isQuotaError(error) {
+  return error?.code === "quota_exceeded";
+}
+
 function readFilters(url) {
   const q = (url.searchParams.get("q") ?? "").trim().slice(0, 80);
   const category = url.searchParams.get("category") ?? "";
@@ -139,9 +163,13 @@ function byFeaturedThenNewest(a, b) {
 
 async function showBoard(store, site, url) {
   const filters = readFilters(url);
-  const allLive = (await store.listLive()).map(publicListing).sort(byFeaturedThenNewest);
-  const jobs = allLive.filter((job) => matchesFilters(job, filters));
-  return boardPage(site, { jobs, allLive, filters });
+  const { jobs: live, complete } = await store.listLive();
+  const allLive = live.map(publicListing).sort(byFeaturedThenNewest);
+  const matching = allLive.filter((job) => matchesFilters(job, filters));
+  const pageCount = Math.max(1, Math.ceil(matching.length / BOARD_PAGE_SIZE));
+  const pageNumber = Math.min(readPageNumber(url), pageCount);
+  const jobs = matching.slice((pageNumber - 1) * BOARD_PAGE_SIZE, pageNumber * BOARD_PAGE_SIZE);
+  return boardPage(site, { jobs, matchCount: matching.length, allLive, complete, filters, pageNumber, pageCount });
 }
 
 async function showJob(store, site, id) {
@@ -149,7 +177,8 @@ async function showJob(store, site, id) {
   if (!job || job.status !== "approved") {
     return messagePage(site, { title: "This job isn't available", message: "It may have been filled or taken down. Take a look at the other open jobs.", status: 404 });
   }
-  const related = (await store.listLive())
+  // Related jobs only need a few, so one page of live jobs is plenty.
+  const related = (await store.listLive({ maxRows: 100 })).jobs
     .filter((item) => item.id !== job.id && item.category === job.category)
     .slice(0, 3)
     .map(publicListing);
@@ -168,20 +197,51 @@ async function submitListing(request, ctx, store, site) {
   if (Object.keys(errors).length > 0) {
     return postPage(site, { values, errors, status: 422 });
   }
-  const listing = await store.create(values);
+  let listing;
+  try {
+    listing = await store.create(values);
+  } catch (error) {
+    if (error?.name === "SubmissionLimitError") {
+      await ctx.log.info("listing refused", { reason: error.reason, demo: Boolean(site.visitor) });
+      return error.reason === "email"
+        ? messagePage(site, {
+            title: "You already have listings waiting",
+            message: `We're still reviewing the ${MAX_PENDING_PER_EMAIL} listings sent from this email address. Once we've looked at them, you can send more.`,
+            status: 429
+          })
+        : messagePage(site, {
+            title: "New listings are paused for now",
+            message: "We have a lot of listings waiting for review. Please try again in a few days.",
+            status: 503
+          });
+    }
+    throw error;
+  }
   await ctx.log.info("listing submitted", { listing_id: listing.id, category: listing.category, demo: Boolean(site.visitor) });
   return redirect(site.link("/post/thanks"));
 }
 
 async function showOwner(store, site, url, user, notice) {
-  const jobs = await store.listAll();
+  const { counts, recent } = await store.summary();
   const requested = url.searchParams.get("tab") ?? "";
-  const tab = OWNER_TABS.some((item) => item.id === requested) ? requested : jobs.some((job) => job.status === "pending") ? "pending" : "all";
+  const tab = OWNER_TABS.some((item) => item.id === requested) ? requested : counts.pending.count > 0 ? "pending" : "all";
+  const after = readCursor(url);
+  const { jobs, cursor } = await store.listByStatus(tab === "all" ? null : tab, { cursor: after, limit: OWNER_PAGE_SIZE });
+  const done = url.searchParams.get("done") ?? "";
+  const doneId = url.searchParams.get("id") ?? "";
+  let doneJob = null;
+  if (doneId) doneJob = jobs.find((job) => job.id === doneId) ?? recent.find((job) => job.id === doneId) ?? (await store.get(doneId));
   return ownerPage(site, {
     jobs,
+    counts,
+    recent,
     tab,
-    done: url.searchParams.get("done") ?? "",
-    doneId: url.searchParams.get("id") ?? "",
+    after,
+    nextCursor: cursor,
+    done,
+    doneJob,
+    doneCount: Number.parseInt(url.searchParams.get("count") ?? "0", 10) || 0,
+    doneMore: url.searchParams.get("more") === "1",
     user,
     notice
   });
@@ -190,7 +250,7 @@ async function showOwner(store, site, url, user, notice) {
 async function changeStatus(request, ctx, store, site, url, id) {
   const form = await readForm(request);
   const status = form?.status ?? "";
-  if (!(status in STATUS_LABELS)) return messagePage(site, { title: "Unknown action", message: "Please go back and try again.", status: 400 });
+  if (!Object.hasOwn(STATUS_LABELS, status)) return messagePage(site, { title: "Unknown action", message: "Please go back and try again.", status: 400 });
   const job = await store.get(id);
   if (!job) return messagePage(site, { title: "Listing not found", message: "It may have been removed.", status: 404 });
   await store.update(id, statusPatch(job, status));
@@ -211,6 +271,20 @@ async function saveEdits(request, ctx, store, site, id, notice) {
   await store.update(id, { ...values, history: withHistory(job, "edited") });
   await ctx.log.info("listing edited", { listing_id: id, demo: Boolean(site.visitor) });
   return redirect(site.link("/owner", { tab: job.status, done: "saved", id }));
+}
+
+async function deleteListing(ctx, store, site, id) {
+  const job = await store.get(id);
+  if (!job) return messagePage(site, { title: "Listing not found", message: "It may have been removed already.", status: 404 });
+  await store.delete(id);
+  await ctx.log.info("listing deleted", { listing_id: id, status: job.status, demo: Boolean(site.visitor) });
+  return redirect(site.link("/owner", { tab: job.status, done: "deleted" }));
+}
+
+async function deleteDeclined(ctx, store, site) {
+  const { deleted, more } = await store.deleteDeclined();
+  await ctx.log.info("declined listings deleted", { count: deleted, more, demo: Boolean(site.visitor) });
+  return redirect(site.link("/owner", { tab: "rejected", done: "cleared", count: String(deleted), more: more ? "1" : undefined }));
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +357,21 @@ export function createApp({ demo = null } = {}) {
           if (parts[1] === "jobs" && parts[3] === "status" && parts.length === 4 && method === "POST") {
             return await changeStatus(request, ctx, store, site, url, parts[2]);
           }
+          if (parts[1] === "jobs" && parts[3] === "delete" && parts.length === 4) {
+            if (method === "GET") {
+              const job = await store.get(parts[2]);
+              if (!job) return messagePage(site, { title: "Listing not found", message: "It may have been removed already.", status: 404 });
+              return confirmDeletePage(site, { job, notice });
+            }
+            if (method === "POST") return await deleteListing(ctx, store, site, parts[2]);
+          }
+          if (parts[1] === "declined" && parts[2] === "delete" && parts.length === 3) {
+            if (method === "GET") {
+              const { counts } = await store.summary();
+              return confirmDeletePage(site, { declined: counts.rejected, notice });
+            }
+            if (method === "POST") return await deleteDeclined(ctx, store, site);
+          }
         }
         return null;
       };
@@ -301,8 +390,20 @@ export function createApp({ demo = null } = {}) {
         }
         if (response) return response;
       } catch (error) {
-        if (demo && error?.name === "DemoLimitError") {
-          return messagePage(site, { title: "That's a lot of changes", message: demo.ui.limitMessage, status: 429 });
+        if (demo && (error?.name === "DemoLimitError" || (demoOn && isQuotaError(error)))) {
+          return messagePage(site, { ...demo.ui.limitPage(error), status: 429 });
+        }
+        if (isQuotaError(error)) {
+          // The plan's saved-row allowance is used up. Posting and new changes
+          // fail until the owner deletes old listings or upgrades.
+          await ctx.log.error("data quota reached", { path: url.pathname });
+          return parts[0] === "owner"
+            ? messagePage(site, {
+                title: "The board is out of room",
+                message: "This board has saved as many listings as its plan allows. Delete declined or closed listings to make room, or move to a bigger plan.",
+                status: 503
+              })
+            : messagePage(site, { title: "New listings are paused for now", message: "The board can't take new listings at the moment. Please try again in a few days.", status: 503 });
         }
         await ctx.log.error("request failed", { path: url.pathname, message: error instanceof Error ? error.message : String(error) });
         return messagePage(site, { title: "Something went wrong", message: "Please try again in a moment.", status: 500 });

@@ -46,7 +46,35 @@ export const FIELD_LIMITS = {
 export const PRIVATE_FIELDS = ["contact_name", "contact_email", "owner_note", "history"];
 
 const HISTORY_LIMIT = 20;
-const EMAIL_PATTERN = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[a-z]{2,}$/iu;
+// Letters, digits, and . _ + ' - before the @; a plain domain after it. Characters
+// such as ? & = % # are refused so an address can't smuggle extra recipients
+// (like ?bcc=...) into the "Email the employer" link.
+const EMAIL_PATTERN = /^[a-z0-9._+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/iu;
+
+// Spam limits for the public "Post a job" form. The board never holds more than
+// MAX_PENDING listings waiting for review, and one contact email can have at most
+// MAX_PENDING_PER_EMAIL of them. Both are checked before saving and the queue
+// size again right after (see create() below). Raise them if your board is busy,
+// keeping MAX_PENDING at 100 or less so one data call can read the whole queue.
+export const MAX_PENDING = 100;
+export const MAX_PENDING_PER_EMAIL = 3;
+
+// Pages read at most this many rows of live jobs (100 per data call). 1,000 is
+// every row the Free plan allows, so the board sees every live job there.
+export const MAX_LIVE_ROWS = 1000;
+
+// "Delete all declined" removes this many listings per press, which keeps one
+// request well under the plan's limit on data calls per request (Free: 25).
+export const BULK_DELETE_MAX = 15;
+
+/** Thrown when the review queue is full or one email has sent too many listings. */
+export class SubmissionLimitError extends Error {
+  name = "SubmissionLimitError";
+  constructor(reason) {
+    super(reason === "email" ? "Too many listings waiting from this email." : "The review queue is full.");
+    this.reason = reason;
+  }
+}
 
 export function categoryLabel(id) {
   return CATEGORIES.find((category) => category.id === id)?.label ?? "Other";
@@ -173,29 +201,73 @@ export function publicListing(listing) {
  * The store the routes use. It wraps the `listings` collection with the few
  * operations a job board needs. server/demo.js provides the same shape for
  * the public demo.
+ *
+ * Reads use the two indexes in the manifest: by_status (status, published_at)
+ * for the public board and by_submitted (status, submitted_at) for the owner's
+ * lists. Lists are read page by page with the returned cursor, never cut off
+ * silently at the first page.
  */
 export function listingStore(ctx) {
   const listings = ctx.data.collection("listings");
   return {
-    async listLive() {
-      const page = await listings.list({
-        where: { status: "approved" },
-        order_by: [{ field: "published_at", direction: "desc" }],
-        limit: 100
-      });
-      return page.rows.map(toListing);
+    /**
+     * Every live job, newest first. Reads up to `maxRows` (default
+     * MAX_LIVE_ROWS); `complete` is false when more live jobs exist than that.
+     */
+    async listLive({ maxRows = MAX_LIVE_ROWS } = {}) {
+      const jobs = [];
+      let cursor;
+      do {
+        const page = await listings.list({
+          where: { status: "approved" },
+          order_by: [{ field: "published_at", direction: "desc" }],
+          limit: Math.min(100, maxRows - jobs.length),
+          ...(cursor ? { cursor } : {})
+        });
+        jobs.push(...page.rows.map(toListing));
+        cursor = page.cursor;
+      } while (cursor && jobs.length < maxRows);
+      return { jobs, complete: !cursor };
     },
-    async listAll() {
+    /**
+     * One page of listings with a status (or every status when `status` is
+     * null), newest submission first. Pass the returned `cursor` back for the
+     * next page; no cursor means this was the last page.
+     */
+    async listByStatus(status, { cursor = "", limit = 50 } = {}) {
       const page = await listings.list({
+        ...(status ? { where: { status } } : {}),
         order_by: [{ field: "submitted_at", direction: "desc" }],
-        limit: 100
+        limit,
+        ...(cursor ? { cursor } : {})
       });
-      return page.rows.map(toListing);
+      return { jobs: page.rows.map(toListing), cursor: page.cursor ?? "" };
+    },
+    /**
+     * How many listings have each status (counted up to 100; `more` is true
+     * past that), plus the most recently changed listings for the activity panel.
+     */
+    async summary() {
+      const statuses = Object.keys(STATUS_LABELS);
+      const pages = await Promise.all(statuses.map((status) => listings.list({ where: { status }, limit: 100 })));
+      const counts = {};
+      const recent = [];
+      statuses.forEach((status, index) => {
+        counts[status] = { count: pages[index].rows.length, more: Boolean(pages[index].cursor) };
+        recent.push(...pages[index].rows.map(toListing));
+      });
+      return { counts, recent };
     },
     async get(id) {
       return toListing(await listings.get(id));
     },
     async create(values) {
+      const queue = await listings.list({ where: { status: "pending" }, limit: MAX_PENDING });
+      if (queue.rows.length >= MAX_PENDING) throw new SubmissionLimitError("queue");
+      const email = values.contact_email.toLowerCase();
+      const fromEmail = queue.rows.filter((row) => String(row.contact_email ?? "").toLowerCase() === email).length;
+      if (fromEmail >= MAX_PENDING_PER_EMAIL) throw new SubmissionLimitError("email");
+
       const now = new Date().toISOString();
       const row = await listings.create({
         ...values,
@@ -205,10 +277,32 @@ export function listingStore(ctx) {
         history: withHistory(null, "submitted", now),
         submitted_at: now
       });
+
+      // Posts that arrive at the same moment can all pass the check above. Look
+      // again now that this one is saved: if it isn't among the MAX_PENDING
+      // oldest waiting listings, take it back out.
+      const first = await listings.list({
+        where: { status: "pending" },
+        order_by: [{ field: "submitted_at", direction: "asc" }],
+        limit: MAX_PENDING
+      });
+      if (first.cursor && !first.rows.some((item) => item.id === row.id)) {
+        await listings.delete(row.id);
+        throw new SubmissionLimitError("queue");
+      }
       return toListing(row);
     },
     async update(id, patch) {
       return toListing(await listings.update(id, patch));
+    },
+    async delete(id) {
+      await listings.delete(id);
+    },
+    /** Delete up to BULK_DELETE_MAX declined listings. Returns { deleted, more }. */
+    async deleteDeclined() {
+      const page = await listings.list({ where: { status: "rejected" }, limit: BULK_DELETE_MAX });
+      for (const row of page.rows) await listings.delete(row.id);
+      return { deleted: page.rows.length, more: Boolean(page.cursor) };
     }
   };
 }

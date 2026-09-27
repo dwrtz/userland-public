@@ -14,7 +14,7 @@ Outputs:
 - Manifest with `auth` (role `owner`, `public_signup: false`) and a `listings` collection.
 - Server routes in `server/index.js`, rules in `server/listings.js`, templates in `server/views.js`.
 - Static styles, fonts, and favicon under `public/`.
-- Tests in `tests/job-board.test.ts`.
+- Tests in `tests/job-board.test.ts`, run on the shared runtime harness (`tests/helpers.ts`), which refuses unindexed queries, bad enum values, and limits over 100 just like Userland does.
 
 Steps:
 
@@ -22,18 +22,21 @@ Steps:
 2. Rename the app in the manifest, then update `BRAND` in `server/views.js`, the tokens at the top of `public/assets/loamwork.css`, the `LOGO` SVG, and `public/favicon.svg`.
 3. Change `CATEGORIES` and `JOB_TYPES` in `server/listings.js`. They are validated in code, so no data migration is needed.
 4. To add a listing field: declare it in the manifest, add limits in `FIELD_LIMITS`, copy it in `toListing`, add it to the form in `listingFields`, and add it to `PRIVATE_FIELDS` if the public must not see it.
-5. Keep every `where` and `order_by` field inside a declared index. The Free plan allows 2 indexes per collection and 2 collections.
+5. Keep every `where` and `order_by` field inside a declared index. The Free plan allows 2 indexes per collection and 2 collections (the demo uses the second one until you remove it). `list` returns at most 100 rows; follow `cursor` to read more, as `listLive()` and `listByStatus()` in `server/listings.js` do, and never treat the first page as the whole list.
 6. Test with `npx vitest run examples/job-board`.
 7. Publish with `userland apps publish <dir> --message "..."`, record the app ID and release ID in the README, then create an owner invite with `POST /v0/apps/:app_id/admin-invites` and `{"email": "...", "roles": ["owner"]}`. Before publishing, install the CLI with `npm install -g @userland.fun/cli` and sign in with `userland login` (it opens the browser to approve the CLI and never asks for a password). The invite call needs an API key in `USERLAND_API_KEY`, but `userland login` saves its key to `~/.userland/credentials.json`, not the environment: have the owner run `userland auth api-keys create --name "owner invite"` and export the printed key and the app id in their own terminal (README.md shows the commands), then unset and revoke that key once they have signed in.
 
 Safety:
 
-- Keep the owner gate (`ownerAccess` in `server/index.js`) in front of every `/owner` route, including POST routes.
+- Keep the owner gate (`ownerAccess` in `server/index.js`) in front of every `/owner` route, including POST and delete routes.
 - Keep the same-origin check (`isSameOrigin`) on every POST. The sign-in cookie is SameSite=Lax and all `*.apps.userland.fun` apps are same-site, so this is what stops another app's page from posting owner actions.
 - Keep `access.read` and `access.write` at `server_only` so contact details are only reachable through server code.
 - Render visitor text only through the `html` tag in `server/views.js`, which escapes it. Use `raw()` only for markup you wrote.
 - Keep contact email, private notes, and history out of public pages (`publicListing()` strips them).
-- Keep the honeypot field and length limits on public forms.
+- Keep the honeypot field and length limits on public forms, and the spam limits in `listingStore().create()`: at most `MAX_PENDING` (100) listings waiting for review and `MAX_PENDING_PER_EMAIL` (3) per contact email. The queue is checked again after saving, so simultaneous posts can't push past the limit. Owners clean up spam with "Delete declined listings" on the Declined tab.
+- Keep `EMAIL_PATTERN` strict (no `? & = % #`), because apply addresses become `mailto:` links.
+- Look up status names and messages with `Object.hasOwn`, not `in` or bare `obj[key]`, so names like `constructor` are refused.
+- A data write can fail with `quota_exceeded` when the plan's rows run out; `server/index.js` turns that into a "paused" page instead of an error.
 - Do not log contact details with `ctx.log`; log listing IDs.
 - Do not put API keys or `USERLAND_API_KEY` in `public/` or server code.
 

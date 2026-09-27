@@ -1,11 +1,18 @@
 // Shared helpers for the job-board tests.
+//
+// makeCtx() builds on the shared runtime harness (scripts/runtime-harness.ts),
+// which reads manifest.userland.json and enforces the platform's data rules:
+// declared fields only, enum values, `where`/`order_by` fields must be indexed,
+// `limit` between 1 and 100, and cursor paging. A query the real platform would
+// refuse fails here too.
+import path from "node:path";
+import { createFakeRuntime, readExampleManifest, type FakeRow } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { createApp } from "../server/index.js";
 
-export type Row = Record<string, unknown> & { id: string; created_at: string; updated_at: string };
-
 export const DEMO_ORIGIN = "https://job-board-demo.apps.userland.fun";
 export const APP_ORIGIN = "https://loamwork.example.test";
+export const EXAMPLE_DIR = path.resolve(import.meta.dirname, "..");
 
 export const USERS: Record<string, { id: string; app_user_id: string; email: string; roles: string[] }> = {
   owner: { id: "appusr_owner", app_user_id: "appusr_owner", email: "owner@example.com", roles: ["owner"] },
@@ -13,54 +20,29 @@ export const USERS: Record<string, { id: string; app_user_id: string; email: str
 };
 
 export function makeCtx() {
-  const state: Record<string, Row[]> = { listings: [], "demo-listings": [] };
-  let counter = 0;
-  const data = {
-    collection(name: string) {
-      const rows = state[name];
-      if (!rows) throw new Error(`Unknown collection ${name}`);
-      return {
-        async create(input: Record<string, unknown>) {
-          counter += 1;
-          const now = new Date(Date.now() + counter).toISOString();
-          const row = { ...input, id: `row_${counter}`, created_at: now, updated_at: now } as Row;
-          rows.push(row);
-          return row;
-        },
-        async get(id: string) {
-          return rows.find((row) => row.id === id) ?? null;
-        },
-        async update(id: string, patch: Record<string, unknown>) {
-          const index = rows.findIndex((row) => row.id === id);
-          if (index === -1) throw new Error(`Missing row ${id}`);
-          rows[index] = { ...rows[index], ...patch };
-          return rows[index];
-        },
-        async delete(id: string) {
-          const index = rows.findIndex((row) => row.id === id);
-          if (index !== -1) rows.splice(index, 1);
-        },
-        async list(options: { where?: Record<string, unknown>; order_by?: Array<{ field: string; direction?: string }>; limit?: number } = {}) {
-          const where = options.where ?? {};
-          const filtered = rows.filter((row) => Object.entries(where).every(([key, value]) => row[key] === value));
-          for (const order of [...(options.order_by ?? [])].reverse()) {
-            filtered.sort((a, b) => String(a[order.field]).localeCompare(String(b[order.field])) * (order.direction === "desc" ? -1 : 1));
-          }
-          return { rows: filtered.slice(0, options.limit ?? 50) };
-        }
-      };
-    }
-  };
+  const rt = createFakeRuntime(readExampleManifest(EXAMPLE_DIR));
+  // ctx.state.listings (or ctx.state["demo-listings"]) is the live list of
+  // stored rows, so tests can check what was saved.
+  const state = new Proxy({} as Record<string, FakeRow[]>, {
+    get: (_target, name) => rt.state.rows.get(String(name)) ?? []
+  });
   return {
+    ...rt.ctx,
     state,
-    data,
+    // The session cookie names which test user is signed in.
     auth: {
+      ...rt.ctx.auth,
       async currentUser(request: Request) {
         const match = /__Host-ul_session=([a-z]+)/u.exec(request.headers.get("cookie") ?? "");
         return match ? (USERS[match[1]] ?? null) : null;
       }
     },
-    log: { info: vi.fn(async () => undefined), error: vi.fn(async () => undefined) }
+    log: {
+      debug: vi.fn(rt.ctx.log.debug),
+      info: vi.fn(rt.ctx.log.info),
+      warn: vi.fn(rt.ctx.log.warn),
+      error: vi.fn(rt.ctx.log.error)
+    }
   };
 }
 
@@ -103,7 +85,7 @@ export function post(server: Server, ctx: Ctx, url: string, fields: Record<strin
 }
 
 export async function seedApproved(ctx: Ctx, overrides: Record<string, unknown> = {}) {
-  const row = await ctx.data.collection("listings").create({
+  return await ctx.data.collection("listings").create({
     ...validListing,
     status: "approved",
     featured: false,
@@ -113,5 +95,29 @@ export async function seedApproved(ctx: Ctx, overrides: Record<string, unknown> 
     published_at: "2026-09-02T10:00:00.000Z",
     ...overrides
   });
-  return row;
+}
+
+/** Seed `count` listings, oldest first; listing i is dated i minutes after the base time. */
+export async function seedMany(ctx: Ctx, count: number, make: (index: number) => Record<string, unknown>) {
+  const rows = [];
+  for (let index = 0; index < count; index += 1) {
+    const at = new Date(Date.UTC(2026, 6, 1) + index * 60_000).toISOString();
+    rows.push(await seedApproved(ctx, { submitted_at: at, published_at: at, ...make(index) }));
+  }
+  return rows;
+}
+
+/** Follow "Show more" links on an owner tab and return every page's HTML. */
+export async function ownerPages(server: Server, ctx: Ctx, tab: string) {
+  const pages: string[] = [];
+  let url: string | null = `${APP_ORIGIN}/owner?tab=${tab}`;
+  while (url && pages.length < 50) {
+    const response = await get(server, ctx, url, "owner");
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    pages.push(body);
+    const next = /<a [^>]*href="([^"]+)" rel="next">Show more<\/a>/u.exec(body)?.[1];
+    url = next ? `${APP_ORIGIN}${next.replaceAll("&amp;", "&")}` : null;
+  }
+  return pages;
 }
