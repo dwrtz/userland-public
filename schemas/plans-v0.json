@@ -1,12 +1,11 @@
 {
-  "$comment": "Generated from dwrtz/userland packages/shared/src/entitlements.ts (PLAN_ORDER, PLAN_CONFIG). Do not edit by hand; the API remains authoritative.",
+  "$comment": "Generated from dwrtz/userland packages/shared/src/entitlements.ts (self-serve plans from PLAN_ORDER, PLAN_CONFIG). Values no plan here allows are reported as required_plan_key \"internal\" (not available on self-serve plans), matching UPGRADE_HINT_PLAN_ORDER. Do not edit by hand; the API remains authoritative.",
   "version": 0,
   "plan_order": [
     "free",
     "starter",
     "business",
-    "business_plus",
-    "agency"
+    "business_plus"
   ],
   "plan_aliases": {
     "pro": "starter",
@@ -146,50 +145,6 @@
     },
     "business_plus": {
       "display_name": "Business Plus",
-      "features": {
-        "runtime.static": true,
-        "runtime.server": true,
-        "private_apps": true,
-        "auth.app_users": true,
-        "auth.public_signup": true,
-        "auth.email_verification": false,
-        "data.enabled": true,
-        "files.enabled": true,
-        "files.private_stores": true,
-        "secrets.enabled": true,
-        "jobs.manual": true,
-        "jobs.scheduled": true,
-        "webhooks.enabled": true,
-        "webhooks.provider.generic_hmac": true,
-        "webhooks.provider.github": true,
-        "app_slugs": true,
-        "custom_domains": true,
-        "app_analytics": true,
-        "backups_export": true,
-        "priority_support": true
-      },
-      "manifest_limits": {
-        "auth.roles.max": 50,
-        "data.collections.max": 100,
-        "data.indexes_per_collection.max": 25,
-        "files.stores.max": 50,
-        "files.max_upload_size_bytes.max": 262144000,
-        "secrets.required.max": 100,
-        "jobs.declared.max": 100,
-        "jobs.schedule.allowed": [
-          "daily",
-          "hourly",
-          "every_15_minutes"
-        ],
-        "webhooks.declared.max": 100
-      },
-      "release_limits": {
-        "release.bundle_bytes.max": 524288000,
-        "release.file_count.max": 5000
-      }
-    },
-    "agency": {
-      "display_name": "Agency",
       "features": {
         "runtime.static": true,
         "runtime.server": true,

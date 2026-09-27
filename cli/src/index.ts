@@ -9,6 +9,8 @@ import {
   applyPlan,
   formatValidationReport,
   formatWarning,
+  isSelfServePlan,
+  LIMITS_DOCS_URL,
   listReleaseFiles,
   normalizePlanKey,
   planDisplayName,
@@ -1024,9 +1026,9 @@ async function publishPreflight(dir: string, options: CliOptions): Promise<boole
     for (const warning of structural.warnings) {
       console.error(formatWarning(warning));
     }
-    if (structural.required_plan_key === null) {
-      console.error("warning=plan_check_skipped This app uses features that are not available on any public plan; the API will check your account plan.");
-    } else if (structural.required_plan_key !== "free") {
+    if (structural.required_plan_key !== null && !isSelfServePlan(structural.required_plan_key)) {
+      console.error("warning=plan_check_skipped This app uses features that are not available on self-serve plans; the API will check your account plan. Contact support if you need them.");
+    } else if (structural.required_plan_key !== null && structural.required_plan_key !== "free") {
       console.error(`warning=plan_check_skipped This app needs the ${planDisplayName(structural.required_plan_key)} plan or higher; the API will check your account plan.`);
     }
     console.log("local_validation=passed_without_plan");
@@ -1135,7 +1137,11 @@ function printAnalyticsUpgradeState(appId: string, error: ApiError, json: boolea
   console.error("feature=app_analytics");
   if (planKey) console.error(`plan_key=${planKey}`);
   if (requiredPlanKey) console.error(`required_plan_key=${requiredPlanKey}`);
-  console.error(`Upgrade to ${requiredPlanKey ? planDisplayName(requiredPlanKey) : "a paid plan"} or higher to read traffic and error summaries for this app. Publishing and other app commands keep working.`);
+  if (requiredPlanKey && !isSelfServePlan(requiredPlanKey)) {
+    console.error("App Analytics is not available on self-serve plans for this account; contact support. Publishing and other app commands keep working.");
+  } else {
+    console.error(`Upgrade to ${requiredPlanKey ? planDisplayName(requiredPlanKey) : "a paid plan"} or higher to read traffic and error summaries for this app. Publishing and other app commands keep working.`);
+  }
   console.error(`Docs: ${APP_ANALYTICS_DOCS_URL}`);
 }
 
@@ -2061,7 +2067,7 @@ function structuredDetailLines(details: unknown): string[] {
   }
 
   const lines: string[] = [];
-  for (const key of ["metric", "plan_key", "required_plan_key", "limit", "limit_key", "current", "increment", "value", "upgrade_required"]) {
+  for (const key of ["metric", "plan_key", "required_plan_key", "limit", "limit_key", "current", "increment", "value", "upgrade_required", "self_serve_upgrade", "upgrade_url", "support_url"]) {
     if (details[key] !== undefined) {
       lines.push(`${key}=${formatFieldValue(details[key])}`);
     }
@@ -2105,9 +2111,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function docsUrlForError(message: string): string {
   if (message.startsWith("Unknown plan:")) {
-    return "https://docs.userland.fun/reference/limits";
+    return LIMITS_DOCS_URL;
   }
-  if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded") || message.includes("quota_exceeded") || message.includes("downgrade_incompatible")) {
+  if (message.includes("entitlement_required") || message.includes("plan_limit_exceeded")) {
+    return LIMITS_DOCS_URL;
+  }
+  if (message.includes("quota_exceeded") || message.includes("downgrade_incompatible")) {
     return "https://docs.userland.fun/reference/errors";
   }
   if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
@@ -2178,7 +2187,7 @@ Aliases:
 
 Validation:
   validate checks manifest.userland.json against the public schema, file paths, and plan limits offline.
-  Plans: free, starter, business, business_plus, agency. Without --plan it reports the minimum plan.
+  Plans: free, starter, business, business_plus. Without --plan it reports the minimum plan.
   Schema rules the API does not enforce are schema_strict warnings; --strict fails on them too.
   Exit codes: 0 valid, 1 manifest or file errors, 2 plan limits exceeded.
   apps publish runs the same checks first, using --plan or the account's plan; the API stays authoritative.

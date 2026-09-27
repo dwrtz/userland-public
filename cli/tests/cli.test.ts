@@ -716,6 +716,9 @@ describe("public CLI", () => {
           details: {
             plan_key: "free",
             required_plan_key: "business",
+            docs_url: "https://docs.userland.fun/reference/limits/",
+            self_serve_upgrade: true,
+            upgrade_url: "https://console.userland.fun/billing",
             violations: [
               {
                 kind: "manifest_feature",
@@ -745,7 +748,9 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("required_plan_key=business");
     expect(result.stderr).toContain("violation=/app/visibility feature=private_apps value=private requires=business");
     expect(result.stderr).toContain("violation=/resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
-    expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/errors");
+    expect(result.stderr).toContain("self_serve_upgrade=true");
+    expect(result.stderr).toContain("upgrade_url=https://console.userland.fun/billing");
+    expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/limits/");
   });
 
   test("validates an app directory offline", async () => {
@@ -790,10 +795,8 @@ describe("public CLI", () => {
     expect(alias.code).toBe(0);
     expect(alias.stdout).toContain("plan=business");
 
-    for (const plan of ["business_plus", "agency"]) {
-      const paid = await runCli(["validate", "examples/tiny-store", "--plan", plan], "http://127.0.0.1:1", { apiKey: null });
-      expect(paid.code).toBe(0);
-    }
+    const businessPlus = await runCli(["validate", "examples/tiny-store", "--plan", "business_plus"], "http://127.0.0.1:1", { apiKey: null });
+    expect(businessPlus.code).toBe(0);
   });
 
   test("prints stable validation JSON", async () => {
@@ -812,7 +815,7 @@ describe("public CLI", () => {
         allowed: false,
         plan_key: "starter",
         required_plan_key: "business",
-        message: "Public app-user signup: requires Business or higher."
+        message: "Public app-user signup: requires Business."
       },
       {
         kind: "manifest_limit",
@@ -822,7 +825,7 @@ describe("public CLI", () => {
         allowed: ["daily"],
         plan_key: "starter",
         required_plan_key: "business",
-        message: "Job schedule: hourly is not allowed on Starter (allowed: daily). Requires Business or higher."
+        message: "Job schedule: hourly is not allowed on Starter (allowed: daily). Requires Business."
       }
     ]);
 
@@ -852,10 +855,67 @@ describe("public CLI", () => {
     expect(output.errors.map((error) => error.manifest_path)).toEqual(["app.visibility", "runtime.static_root", "resources.jobs.nightly.schedule"]);
   });
 
+  test("accepts a top-level release message, including with --strict", async () => {
+    const dir = await temporaryAppDir({
+      app: { name: "Message" },
+      runtime: { static_root: "public" },
+      message: "Launch copy refresh"
+    });
+
+    for (const args of [["validate", dir], ["validate", dir, "--strict"], ["validate", dir, "--strict", "--plan", "free", "--json"]]) {
+      const result = await runCli(args, "http://127.0.0.1:1", { apiKey: null });
+      expect(result.code, args.join(" ")).toBe(0);
+      expect(result.stdout).not.toContain("schema_strict");
+      expect(result.stderr).toBe("");
+    }
+    const json = JSON.parse((await runCli(["validate", dir, "--strict", "--json"], "http://127.0.0.1:1", { apiKey: null })).stdout);
+    expect(json).toMatchObject({ ok: true, errors: [], warnings: [] });
+
+    const badMessage = await temporaryAppDir({ app: { name: "Message" }, runtime: { static_root: "public" }, message: 42 });
+    const bad = await runCli(["validate", badMessage, "--json"], "http://127.0.0.1:1", { apiKey: null });
+    expect(bad.code).toBe(1);
+    expect(JSON.parse(bad.stdout).errors).toEqual([{ code: "schema", manifest_path: "message", message: "must be a string" }]);
+  });
+
+  test("points values beyond Business Plus to support instead of a plan", async () => {
+    const dir = await temporaryAppDir({
+      app: { name: "Verify" },
+      runtime: { static_root: "public" },
+      resources: { auth: { mode: "app_users", email_verification: true } }
+    });
+
+    const report = await runCli(["validate", dir], "http://127.0.0.1:1", { apiKey: null });
+    expect(report.code).toBe(0);
+    expect(report.stdout).toContain("required_plan=internal");
+    expect(report.stdout).toContain("message=App-user email verification: is not available on self-serve plans; contact support.");
+    expect(report.stdout).toContain("This app uses features or limits that are not available on self-serve plans; contact support.\nDocs: https://docs.userland.fun/reference/limits/");
+
+    const blocked = await runCli(["validate", dir, "--plan", "business_plus"], "http://127.0.0.1:1", { apiKey: null });
+    expect(blocked.code).toBe(2);
+    expect(blocked.stdout).toContain("requires=internal");
+    expect(blocked.stdout).toContain("- Change or remove the manifest values above. Some of them are not available on self-serve plans; contact support if you need them.");
+    expect(blocked.stdout).toContain("Docs: https://docs.userland.fun/reference/limits/");
+    for (const output of [report.stdout, blocked.stdout]) {
+      expect(output).not.toMatch(/--plan internal|Internal|Agency|agency/u);
+    }
+  });
+
   test("rejects unknown plans and missing directories", async () => {
     const plan = await runCli(["validate", "examples/hello-static", "--plan", "gold"], "http://127.0.0.1:1", { apiKey: null });
     expect(plan.code).toBe(1);
-    expect(plan.stderr).toContain("Unknown plan: gold. Use one of: free, starter, business, business_plus, agency.");
+    expect(plan.stderr).toContain("Unknown plan: gold. Use one of: free, starter, business, business_plus.");
+
+    // Agency is off sale and the internal plan is operator-assigned: both are unknown plans here.
+    for (const retired of ["agency", "internal"]) {
+      const rejected = await runCli(["validate", "examples/hello-static", "--plan", retired], "http://127.0.0.1:1", { apiKey: null });
+      expect(rejected.code).toBe(1);
+      expect(rejected.stderr).toContain(`Unknown plan: ${retired}. Use one of: free, starter, business, business_plus.`);
+      expect(rejected.stderr).toContain("Docs: https://docs.userland.fun/reference/limits/");
+      expect(rejected.stdout).toBe("");
+    }
+    const publishAgency = await runCli(["apps", "publish", "examples/hello-static", "--plan", "agency"], "http://127.0.0.1:1");
+    expect(publishAgency.code).toBe(1);
+    expect(publishAgency.stderr).toContain("Unknown plan: agency. Use one of: free, starter, business, business_plus.");
 
     const missing = await runCli(["validate", "examples/does-not-exist", "--json"], "http://127.0.0.1:1", { apiKey: null });
     expect(missing.code).toBe(1);
@@ -1045,8 +1105,8 @@ describe("public CLI", () => {
     const result = await runCli(["apps", "publish", dir], api.baseUrl);
 
     expect(result.code).toBe(0);
-    expect(result.stderr).toContain("warning=plan_check_skipped This app uses features that are not available on any public plan; the API will check your account plan.");
-    expect(result.stderr).not.toContain("no public plan plan");
+    expect(result.stderr).toContain("warning=plan_check_skipped This app uses features that are not available on self-serve plans; the API will check your account plan. Contact support if you need them.");
+    expect(result.stderr).not.toMatch(/Internal|Agency|internal plan/u);
     expect(result.stdout).toContain("local_validation=passed_without_plan");
   });
 
@@ -1130,6 +1190,25 @@ recent_errors:
     expect(result.stdout).toContain("No traffic recorded in this range yet. Analytics appear after the app serves eligible app-owned requests");
     expect(result.stdout).not.toContain("top_paths:");
     expect(result.stdout).not.toContain("recent_errors:");
+  });
+
+  test("does not tell customers to buy a plan that is not on sale for analytics", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_x/analytics": {
+        __status: 402,
+        error: {
+          code: "entitlement_required",
+          message: "app_analytics is not available on self-serve plans; contact support.",
+          details: { plan_key: "free", required_plan_key: "internal", self_serve_upgrade: false }
+        }
+      }
+    });
+
+    const result = await runCli(["apps", "analytics", "app_x"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("App Analytics is not available on self-serve plans for this account; contact support.");
+    expect(result.stderr).not.toContain("Upgrade to");
   });
 
   test("shows an upgrade state when analytics is not in the plan", async () => {

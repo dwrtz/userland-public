@@ -12,9 +12,13 @@ import {
   manifestSchema,
   minimumPlanFor,
   normalizePlanKey,
+  isSelfServePlan,
   planData,
+  planDisplayName,
+  planRequirementText,
   releasePathError,
   releaseRequirements,
+  SUPPORT_ONLY_PLAN_KEY,
   SUPPORTED_SCHEMA_KEYWORDS,
   validateAppDirectory,
   validateManifestDocument,
@@ -27,8 +31,8 @@ const tempDirs: string[] = [];
 interface ParityCase {
   name: string;
   manifest: ManifestInput;
-  required_plan_key: string | null;
-  violations_by_plan: Record<string, Record<string, string | null>>;
+  required_plan_key: string;
+  violations_by_plan: Record<string, Record<string, string>>;
 }
 
 const parity = JSON.parse(await fs.readFile(path.join(repoRoot, "cli", "tests", "fixtures", "plan-parity.json"), "utf8")) as { cases: ParityCase[] };
@@ -37,9 +41,9 @@ function base(): ManifestInput {
   return { app: { name: "Case", visibility: "public" }, runtime: { static_root: "public" }, resources: {} };
 }
 
-function violationsFor(manifest: ManifestInput, plan: string): Record<string, string | null> {
+function violationsFor(manifest: ManifestInput, plan: string): Record<string, string> {
   const findings = evaluateRequirements(analyzeManifestRequirements(manifest), plan, planData().plans[plan]);
-  const byKey: Record<string, string | null> = {};
+  const byKey: Record<string, string> = {};
   for (const finding of findings) {
     const key = (finding.feature_key ?? finding.limit_key) as string;
     byKey[key] = key in byKey ? higherPlan(byKey[key], finding.required_plan_key) : finding.required_plan_key;
@@ -47,9 +51,8 @@ function violationsFor(manifest: ManifestInput, plan: string): Record<string, st
   return byKey;
 }
 
-function higherPlan(left: string | null, right: string | null): string | null {
-  if (left === null || right === null) return null;
-  const order = planData().plan_order;
+function higherPlan(left: string, right: string): string {
+  const order = [...planData().plan_order, SUPPORT_ONLY_PLAN_KEY];
   return order.indexOf(left) >= order.indexOf(right) ? left : right;
 }
 
@@ -67,11 +70,13 @@ async function appDir(manifest: unknown, files: Record<string, string> = { "publ
 }
 
 describe("plan artifact", () => {
-  test("lists the public launch plans in order and hides internal", () => {
+  test("lists only the self-serve plans in order: no retired Agency plan, no internal plan", () => {
     const data = planData();
-    expect(data.plan_order).toEqual(["free", "starter", "business", "business_plus", "agency"]);
+    expect(data.plan_order).toEqual(["free", "starter", "business", "business_plus"]);
     expect(Object.keys(data.plans)).toEqual(data.plan_order);
     expect(data.plans).not.toHaveProperty("internal");
+    expect(data.plans).not.toHaveProperty("agency");
+    expect(JSON.stringify(data)).not.toMatch(/agency/iu);
     for (const plan of data.plan_order) {
       expect(Object.keys(data.plans[plan].manifest_limits).sort()).toEqual(Object.keys(data.plans.free.manifest_limits).sort());
       expect(Object.keys(data.plans[plan].features).sort()).toEqual(Object.keys(data.plans.free.features).sort());
@@ -84,7 +89,20 @@ describe("plan artifact", () => {
     expect(normalizePlanKey("pro")).toBe("starter");
     expect(normalizePlanKey("team")).toBe("business");
     expect(normalizePlanKey("internal")).toBeUndefined();
+    expect(normalizePlanKey("agency")).toBeUndefined();
+    expect(normalizePlanKey("Agency")).toBeUndefined();
     expect(normalizePlanKey("gold")).toBeUndefined();
+  });
+
+  test("plan requirement text never offers a plan that is not on sale", () => {
+    expect(planRequirementText("business")).toBe("requires Business");
+    expect(planRequirementText("business_plus")).toBe("requires Business Plus");
+    expect(planRequirementText(SUPPORT_ONLY_PLAN_KEY)).toBe("is not available on self-serve plans; contact support");
+    expect(planRequirementText("agency")).toBe("is not available on self-serve plans; contact support");
+    expect(isSelfServePlan("agency")).toBe(false);
+    expect(isSelfServePlan(SUPPORT_ONLY_PLAN_KEY)).toBe(false);
+    // An account still on a retired plan gets a readable name for its current plan.
+    expect(planDisplayName("agency")).toBe("Agency");
   });
 });
 
@@ -102,7 +120,7 @@ describe("plan parity with the API plan rules", () => {
     for (const required of ["private-app", "public-signup", "scheduled-daily", "scheduled-hourly", "scheduled-every_15_minutes", "webhook-generic_hmac", "webhook-github", "private-store", "secrets-2", "collections-3", "roles-3", "stores-2", "indexes-3"]) {
       expect(names).toContain(required);
     }
-    expect(new Set(parity.cases.map((entry) => entry.required_plan_key))).toEqual(new Set(["free", "starter", "business", "business_plus", null]));
+    expect(new Set(parity.cases.map((entry) => entry.required_plan_key))).toEqual(new Set(["free", "starter", "business", "business_plus", SUPPORT_ONLY_PLAN_KEY]));
   });
 });
 
@@ -140,13 +158,32 @@ describe("offline entitlement checks", () => {
     }
   });
 
-  test("email verification is not offered on any public plan", () => {
+  test("email verification is not offered on any self-serve plan", () => {
     const manifest = base();
     manifest.resources.auth = { mode: "app_users", email_verification: true };
     const requirements = analyzeManifestRequirements(manifest);
-    expect(minimumPlanFor(requirements)).toBeNull();
-    const [finding] = evaluateRequirements(requirements, "agency", planData().plans.agency);
-    expect(finding).toMatchObject({ feature_key: "auth.email_verification", required_plan_key: null, allowed: false });
+    expect(minimumPlanFor(requirements)).toBe(SUPPORT_ONLY_PLAN_KEY);
+    const [finding] = evaluateRequirements(requirements, "business_plus", planData().plans.business_plus);
+    expect(finding).toMatchObject({
+      feature_key: "auth.email_verification",
+      required_plan_key: SUPPORT_ONLY_PLAN_KEY,
+      allowed: false,
+      message: "App-user email verification: is not available on self-serve plans; contact support."
+    });
+  });
+
+  test("limits beyond Business Plus point to support, not to a retired or internal plan", () => {
+    const manifest = base();
+    manifest.resources.auth = { mode: "app_users", roles: Array.from({ length: 51 }, (_, index) => `role${index}`) };
+    const requirements = analyzeManifestRequirements(manifest);
+    expect(minimumPlanFor(requirements)).toBe(SUPPORT_ONLY_PLAN_KEY);
+    const findings = evaluateRequirements(requirements, "business_plus", planData().plans.business_plus);
+    expect(findings).toEqual([expect.objectContaining({ limit_key: "auth.roles.max", required_plan_key: SUPPORT_ONLY_PLAN_KEY })]);
+    expect(findings[0].message).toBe("App-user roles: 51 exceeds the Business Plus limit of 50. This value is not available on self-serve plans; contact support.");
+    // An account on a retired plan is checked against its own entitlements and named plainly.
+    const [retired] = evaluateRequirements(requirements, "agency", planData().plans.business_plus);
+    expect(retired.message).toContain("exceeds the Agency limit of 50");
+    expect(retired.message).not.toMatch(/requires (Agency|Internal)/iu);
   });
 
   test("release file count and size limits are plan-gated", () => {
@@ -454,8 +491,8 @@ describe("public examples", () => {
       const dir = path.join(examplesRoot, entry.name);
       const report = await validateAppDirectory(dir);
       expect(report.errors, `${entry.name} should have no validation errors`).toEqual([]);
-      expect(report.required_plan_key, `${entry.name} should fit a public plan`).not.toBeNull();
       const required = report.required_plan_key as string;
+      expect(isSelfServePlan(required), `${entry.name} should fit a self-serve plan (got ${required})`).toBe(true);
 
       const planReport = await validateAppDirectory(dir, { planKey: required });
       expect(planReport.ok, `${entry.name} should pass on ${required}`).toBe(true);

@@ -85,7 +85,7 @@ npm run userland -- apps publish examples/<example-slug> --account <account-id>
 npm run userland -- support open --subject "Deploy failed" --message "The latest release is throwing errors." --app <app-id>
 ```
 
-`userland validate` needs no API key. It reports the lowest plan an app needs; `--plan` fails on anything the chosen plan does not include (exit code `2`). The Userland API still enforces plan limits when you publish.
+`userland validate` needs no API key. It reports the lowest plan an app needs; `--plan free|starter|business|business_plus` fails on anything the chosen plan does not include (exit code `2`). Features beyond Business Plus are not available on self-serve plans; contact support for those. Plan limits: https://docs.userland.fun/reference/limits/. The Userland API still enforces plan limits when you publish.
 
 The CLI starts a browser device-authorization flow for login and signup, then keeps the approved API key and optional selected `account_id` in `~/.userland/credentials.json`. It does not store platform passwords. Most single-user flows do not need account selection; use it when publishing into a team or client account.
 

@@ -102,7 +102,23 @@ const forbiddenReadmeSnippets = [
   "Internal/platform-admin only operations"
 ];
 
+// Agency was retired from sale on 2026-09-27 and `internal` is operator-assigned: neither may be
+// offered as a plan in the public CLI, its docs, or the public plan artifact.
+const retiredPlanPattern = /\bagency\b/iu;
+const cliValidationSource = await fs.readFile("cli/src/validation.ts", "utf8");
+const rootReadme = await fs.readFile("README.md", "utf8");
+const planArtifact = JSON.parse(await fs.readFile("schemas/plans-v0.json", "utf8")) as { plan_order?: string[]; plans?: Record<string, unknown>; plan_aliases?: Record<string, string> };
+const retiredPlanFailures = [
+  ...Object.entries({ "cli/src/index.ts": cliSource, "cli/src/validation.ts": cliValidationSource, "cli/README.md": cliReadme, "README.md": rootReadme })
+    .filter(([, contents]) => retiredPlanPattern.test(contents))
+    .map(([filePath]) => `${filePath} must not mention the retired Agency plan`),
+  ...[...(planArtifact.plan_order ?? []), ...Object.keys(planArtifact.plans ?? {}), ...Object.values(planArtifact.plan_aliases ?? {})]
+    .filter((plan) => plan === "agency" || plan === "internal")
+    .map((plan) => `schemas/plans-v0.json must not offer the ${plan} plan`)
+];
+
 const failures = [
+  ...retiredPlanFailures,
   ...missing("cli/src/index.ts", cliSource, requiredSourcePatterns),
   ...missing("cli/README.md", cliReadme, requiredReadmeSnippets),
   ...present("cli/src/index.ts", cliSource, forbiddenSourcePatterns),

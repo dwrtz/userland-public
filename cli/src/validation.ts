@@ -51,7 +51,8 @@ export interface ValidationFinding {
   value: unknown;
   allowed: boolean | number | string[] | null;
   plan_key: PlanKey;
-  required_plan_key: PlanKey | null;
+  /** Lowest self-serve plan that allows the value, or SUPPORT_ONLY_PLAN_KEY ("internal") when none does. */
+  required_plan_key: PlanKey;
   message: string;
 }
 
@@ -130,8 +131,32 @@ export function planData(): PlanData {
   return cachedPlanData;
 }
 
+/**
+ * The `required_plan_key` the API reports when no self-serve plan allows a value (the private
+ * UPGRADE_HINT_PLAN_ORDER falls through to its operator-assigned `internal` plan). It is never a
+ * valid --plan value and is never offered as an upgrade.
+ */
+export const SUPPORT_ONLY_PLAN_KEY = "internal";
+
+/** Public docs page for plan features and limits (the API's ENTITLEMENT_DOCS_URL). */
+export const LIMITS_DOCS_URL = "https://docs.userland.fun/reference/limits/";
+
+/** The self-serve plans, lowest first: Free plus the plans on sale. */
 export function publicPlanKeys(): PlanKey[] {
   return [...planData().plan_order];
+}
+
+/** True for plans a customer can pick without operator help (the plans in plan_order). */
+export function isSelfServePlan(planKey: PlanKey): boolean {
+  return planData().plan_order.includes(planKey);
+}
+
+/**
+ * Human text for "what plan unlocks this", matching the API's planRequirementText: never tells a
+ * customer to buy a plan that is not on sale.
+ */
+export function planRequirementText(planKey: PlanKey): string {
+  return isSelfServePlan(planKey) ? `requires ${planDisplayName(planKey)}` : "is not available on self-serve plans; contact support";
 }
 
 /** Returns the canonical public plan key, or undefined when the value is not a public plan. */
@@ -142,9 +167,9 @@ export function normalizePlanKey(value: string): PlanKey | undefined {
   return data.plan_order.includes(key) ? key : undefined;
 }
 
-export function planDisplayName(planKey: PlanKey | null): string {
-  if (planKey === null) return "no public plan";
-  return planData().plans[planKey]?.display_name ?? planKey;
+/** Display name for a plan key. Keys outside the public table (an account on a retired or operator-assigned plan) are title-cased. */
+export function planDisplayName(planKey: PlanKey): string {
+  return planData().plans[planKey]?.display_name ?? planKey.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
 function readSchemaArtifact(name: string): unknown {
@@ -804,7 +829,7 @@ export function evaluateRequirements(requirements: Requirement[], planKey: PlanK
         allowed: false,
         plan_key: planKey,
         required_plan_key: requiredPlan,
-        message: requiredPlan === null ? `${featureLabel(requirement.key)}: not available on any public plan.` : `${featureLabel(requirement.key)}: requires ${planDisplayName(requiredPlan)} or higher.`
+        message: `${featureLabel(requirement.key)}: ${planRequirementText(requiredPlan)}.`
       });
       continue;
     }
@@ -829,16 +854,16 @@ export function evaluateRequirements(requirements: Requirement[], planKey: PlanK
   return findings;
 }
 
-/** The lowest public plan that allows this requirement, or null when none does. */
-export function requiredPlanFor(requirement: Requirement): PlanKey | null {
+/** The lowest self-serve plan that allows this requirement, or SUPPORT_ONLY_PLAN_KEY when none does (as the API reports it). */
+export function requiredPlanFor(requirement: Requirement): PlanKey {
   const data = planData();
-  return data.plan_order.find((planKey) => planAllows(requirement, data.plans[planKey])) ?? null;
+  return data.plan_order.find((planKey) => planAllows(requirement, data.plans[planKey])) ?? SUPPORT_ONLY_PLAN_KEY;
 }
 
-/** The lowest public plan that allows every requirement, or null when none does. */
-export function minimumPlanFor(requirements: Requirement[]): PlanKey | null {
+/** The lowest self-serve plan that allows every requirement, or SUPPORT_ONLY_PLAN_KEY when none does. */
+export function minimumPlanFor(requirements: Requirement[]): PlanKey {
   const data = planData();
-  return data.plan_order.find((planKey) => requirements.every((requirement) => planAllows(requirement, data.plans[planKey]))) ?? null;
+  return data.plan_order.find((planKey) => requirements.every((requirement) => planAllows(requirement, data.plans[planKey]))) ?? SUPPORT_ONLY_PLAN_KEY;
 }
 
 function planAllows(requirement: Requirement, plan: PlanEntry): boolean {
@@ -891,10 +916,10 @@ function featureLabel(key: string): string {
   return FEATURE_LABELS[key] ?? key;
 }
 
-function limitMessage(requirement: Requirement, allowed: ManifestLimitValue, planKey: PlanKey, requiredPlan: PlanKey | null): string {
+function limitMessage(requirement: Requirement, allowed: ManifestLimitValue, planKey: PlanKey, requiredPlan: PlanKey): string {
   const label = LIMIT_LABELS[requirement.key] ?? requirement.key;
   const plan = planDisplayName(planKey);
-  const upgrade = requiredPlan === null ? "No public plan allows this value." : `Requires ${planDisplayName(requiredPlan)} or higher.`;
+  const upgrade = isSelfServePlan(requiredPlan) ? `Requires ${planDisplayName(requiredPlan)}.` : "This value is not available on self-serve plans; contact support.";
   if (Array.isArray(allowed)) {
     const allowedText = allowed.length === 0 ? "no scheduled jobs" : allowed.join(", ");
     return `${label}: ${String(requirement.value)} is not allowed on ${plan} (allowed: ${allowedText}). ${upgrade}`;
@@ -937,8 +962,8 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
   } else {
     lines.push("plan=none");
   }
-  if (report.errors.length === 0 || report.required_plan_key !== null) {
-    lines.push(`required_plan=${report.required_plan_key ?? "unavailable"}`);
+  if (report.required_plan_key !== null) {
+    lines.push(`required_plan=${report.required_plan_key}`);
   }
   lines.push(`release_files=${report.release.file_count}`);
   lines.push(`release_bytes=${report.release.bundle_bytes}`);
@@ -968,21 +993,29 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
     }
   }
 
+  const required = report.required_plan_key;
   if (report.violations.length > 0) {
     lines.push("");
     lines.push("Next steps:");
-    lines.push(`- Change or remove the manifest values above, or use a plan that includes them${report.required_plan_key ? ` (${report.required_plan_key})` : ""}.`);
-    if (report.required_plan_key) {
-      lines.push(`- Check against that plan: userland validate ${context.dir} --plan ${report.required_plan_key}`);
+    if (required !== null && isSelfServePlan(required)) {
+      lines.push(`- Change or remove the manifest values above, or use a plan that includes them (${planDisplayName(required)}).`);
+      lines.push(`- Check against that plan: userland validate ${context.dir} --plan ${required}`);
+    } else {
+      lines.push("- Change or remove the manifest values above. Some of them are not available on self-serve plans; contact support if you need them.");
     }
     lines.push("- The Userland API enforces plan limits authoritatively when you publish.");
-    lines.push("Docs: https://docs.userland.fun/reference/limits");
+    lines.push(`Docs: ${LIMITS_DOCS_URL}`);
   } else if (report.errors.length > 0) {
     lines.push("");
     lines.push("Docs: https://docs.userland.fun/reference/resource-manifest");
-  } else if (!report.plan && report.required_plan_key && report.required_plan_key !== "free") {
+  } else if (!report.plan && required !== null && required !== "free") {
     lines.push("");
-    lines.push(`This app needs the ${planDisplayName(report.required_plan_key)} plan or higher. Check a specific plan with --plan <plan>.`);
+    lines.push(
+      isSelfServePlan(required)
+        ? `This app needs the ${planDisplayName(required)} plan or higher. Check a specific plan with --plan <plan>.`
+        : "This app uses features or limits that are not available on self-serve plans; contact support."
+    );
+    lines.push(`Docs: ${LIMITS_DOCS_URL}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -997,7 +1030,8 @@ function findingLines(finding: ValidationFinding, includeAllowed: boolean): stri
   if (finding.limit_key) lines.push(`limit=${finding.limit_key}`);
   lines.push(`value=${formatValue(finding.value)}`);
   if (includeAllowed) lines.push(`allowed=${formatAllowedValue(finding.allowed)}`);
-  lines.push(`requires=${finding.required_plan_key ?? "unavailable"}`);
+  lines.push(`requires=${finding.required_plan_key}`);
+  lines.push(`message=${finding.message}`);
   return lines;
 }
 

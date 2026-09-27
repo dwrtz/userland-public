@@ -113,7 +113,7 @@ userland auth api-keys revoke key_... --yes
 
 `auth api-keys list` prints metadata only. `auth api-keys create` prints the raw key exactly once and does not write it to `~/.userland/credentials.json`. `auth api-keys revoke` prompts in interactive terminals unless `--yes` is passed.
 
-Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team, client, and agency workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
+Most users do not need to select an account. If no account is selected, the API uses the actor's default account. Team and client workflows can select an account with `--account <account-id>`, `USERLAND_ACCOUNT_ID`, or `userland accounts use <account-id>`. Platform account members manage apps, releases, secrets, billing, and settings; they are separate from app users inside a published app.
 
 ## Validate before publishing
 
@@ -136,7 +136,7 @@ It checks:
 
 A few schema rules are stricter than the API: unknown keys directly under the top level, `app`, `runtime`, or `resources`; `resources: null`; `null` for `auth.mode`, `jobs.*.trigger`, or `jobs.*.max_attempts`; leading or trailing spaces in tags, secret names, and content types; data index names such as `id`; and empty enum values. The API accepts these today, so validation reports them as `schema_strict` warnings and publishing is not blocked. `--strict` turns them into errors for CI checks against the published schema. A top-level `$schema` key (for editor support) and the CLI keys `files`, `message`, and `provenance` are always allowed.
 
-`--plan` accepts `free`, `starter`, `business`, `business_plus`, and `agency` (`pro` and `team` are accepted as older names for Starter and Business). Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them.
+`--plan` accepts `free`, `starter`, `business`, and `business_plus` (`pro` and `team` are accepted as older names for Starter and Business). Any other value is a usage error that lists the accepted plans. Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them. Values that no self-serve plan allows (for example app-user email verification, or more than the Business Plus limits) report `required_plan=internal`, and the message says they are not available on self-serve plans and to contact support. Plan limits are documented at https://docs.userland.fun/reference/limits/.
 
 Human output lists one block per problem:
 
@@ -149,17 +149,19 @@ required_plan=business
 release_files=7
 release_bytes=9755
 
-manifest_path=resources.jobs.expire-abandoned-orders.schedule
-limit=jobs.schedule.allowed
-value=hourly
-allowed=none
-requires=business
-
 manifest_path=resources.auth.public_signup
 feature=auth.public_signup
 value=true
 allowed=false
 requires=business
+message=Public app-user signup: requires Business.
+
+manifest_path=resources.jobs.expire-abandoned-orders.schedule
+limit=jobs.schedule.allowed
+value=hourly
+allowed=none
+requires=business
+message=Job schedule: hourly is not allowed on Free (allowed: no scheduled jobs). Requires Business.
 ```
 
 `--json` prints a stable object for scripts and coding agents:
@@ -179,7 +181,7 @@ requires=business
       "allowed": false,
       "plan_key": "free",
       "required_plan_key": "business",
-      "message": "Public app-user signup: requires Business or higher."
+      "message": "Public app-user signup: requires Business."
     }
   ],
   "plan_gated": [],
@@ -190,7 +192,7 @@ requires=business
 }
 ```
 
-`violations` are checked against the selected plan. `plan_gated` lists everything the Free plan does not include, whether or not `--plan` is passed. `errors` hold schema, path, and file problems with `code`, `manifest_path`, optional `file`, and `message`. Limit violations use `limit_key` instead of `feature_key`, and `allowed` is the plan's limit (a number, a list of allowed schedules, or `null` for unlimited). `required_plan_key` is `null` when no public plan allows a value.
+`violations` are checked against the selected plan. `plan_gated` lists everything the Free plan does not include, whether or not `--plan` is passed. `errors` hold schema, path, and file problems with `code`, `manifest_path`, optional `file`, and `message`. Limit violations use `limit_key` instead of `feature_key`, and `allowed` is the plan's limit (a number, a list of allowed schedules, or `null` for unlimited). `required_plan_key` is the lowest self-serve plan that allows a value, or `internal` when none does (the same key the API returns in `402` details); `internal` is not a plan you can select, so contact support for those values. The top-level `required_plan_key` is `null` only when manifest errors prevent the plan check.
 
 Exit codes: `0` valid, `1` manifest, file, or usage errors (including `schema_strict` issues with `--strict`), `2` plan limits exceeded.
 
@@ -240,7 +242,7 @@ recent_errors:
 2026-06-03T10:00:00.000Z error runtime.exception TypeError: boom
 ```
 
-API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API uses 30 days or the plan's retention window, whichever is shorter. When `--range` asks for more, the API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus and Agency 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
+API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API uses 30 days or the plan's retention window, whichever is shorter. When `--range` asks for more, the API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
 
 App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
 
