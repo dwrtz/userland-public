@@ -538,13 +538,13 @@ describe("public CLI", () => {
     });
     const credentialsFile = await temporaryCredentialsFile();
 
-    const login = await runCli(["login", "--no-browser", "--console-url", "http://console.local"], api.baseUrl, {
+    const login = await runCli(["login", "--no-browser", "--console-url", "https://console.local"], api.baseUrl, {
       apiKey: null,
       credentialsFile
     });
 
     expect(login.code).toBe(0);
-    expect(login.stdout).toContain("http://console.local/device?code=ABCD-EFGH");
+    expect(login.stdout).toContain("https://console.local/device?code=ABCD-EFGH");
     expect(login.stdout).toContain("user_code=ABCD-EFGH");
     expect(login.stdout).toContain(`Saved API key to ${credentialsFile}`);
     expect(login.stdout).toContain("selected_account_id=acct_created");
@@ -562,7 +562,7 @@ describe("public CLI", () => {
       api_key: "created_api_key",
       api_key_id: "apk_cli",
       api_base_url: api.baseUrl,
-      console_url: "http://console.local",
+      console_url: "https://console.local",
       username: "alice",
       account_id: "acct_created"
     });
@@ -578,7 +578,7 @@ describe("public CLI", () => {
     expect(status.code).toBe(0);
     expect(status.stdout).toContain("api_key=file");
     expect(status.stdout).toContain("api_key_id=apk_cli");
-    expect(status.stdout).toContain("console_url=http://console.local");
+    expect(status.stdout).toContain("console_url=https://console.local");
     expect(status.stdout).toContain("account=file");
     expect(status.stdout).toContain("account_id=acct_created");
     expect(status.stdout).toContain("username=alice");
@@ -1336,6 +1336,387 @@ recent_errors:
     expect(missing.stderr).toContain("Usage: userland apps analytics <app-id>");
     expect(requests).toHaveLength(requestCount);
   });
+  test("publishing a folder leaves out dotfiles such as .env, .npmrc, and .git, with a warning", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps": publishResponse("app_dots") });
+    const dir = await temporaryAppDir({ app: { name: "Dots" }, runtime: { static_root: "public", fallback: "index.html" } }, {
+      "public/index.html": "<h1>hi</h1>",
+      "public/.env.local": "SECRET=1",
+      "public/.well-known/security.txt": "Contact: mailto:security@userland.fun",
+      ".env": "STRIPE_SECRET_KEY=sk_live_abc",
+      ".npmrc": "//registry.npmjs.org/:_authToken=npm_SECRET",
+      ".git/config": '[remote "origin"] url = https://user:ghp_TOKEN@github.com/o/r'
+    });
+
+    for (const extra of [["--plan", "free"], ["--skip-local-validation"]]) {
+      const result = await runCli(["apps", "publish", dir, ...extra], api.baseUrl);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain("warning=dotfiles_skipped 4 dotfiles and dot-folders are not uploaded (.env, .git/, .npmrc, public/.env.local)");
+      const body = requests.at(-1)?.body as { files: Array<{ path: string; content_base64: string }> };
+      expect(body.files.map((file) => file.path)).toEqual(["public/.well-known/security.txt", "public/index.html"]);
+      expect(JSON.stringify(body)).not.toContain(Buffer.from("sk_live_abc").toString("base64").slice(0, 8));
+    }
+  });
+
+  test("refuses to publish a folder that holds a private key", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps": publishResponse("app_keys") });
+    const dir = await temporaryAppDir({ app: { name: "Keys" }, runtime: { static_root: "public" } }, {
+      "public/index.html": "<h1>hi</h1>",
+      "certs/localhost-key.pem": "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n"
+    });
+
+    const validated = await runCli(["apps", "publish", dir, "--plan", "free"], api.baseUrl);
+    expect(validated.code).toBe(1);
+    expect(validated.stderr).toContain("error=private_key\nfile=certs/localhost-key.pem\nmessage=looks like a private key");
+    expect(validated.stderr).not.toContain("--skip-local-validation");
+
+    const skipped = await runCli(["apps", "publish", dir, "--skip-local-validation"], api.baseUrl);
+    expect(skipped.code).toBe(1);
+    expect(skipped.stderr).toContain("Not publishing: certs/localhost-key.pem looks like a private key");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("never uploads symlinked files or paths outside the app folder, even with --skip-local-validation", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps": publishResponse("app_links") });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "userland-outside-"));
+    tempDirs.push(outside);
+    await fs.writeFile(path.join(outside, "credentials.json"), JSON.stringify({ api_key: "ul_live_VICTIMKEY" }));
+
+    const dir = await temporaryAppDir({
+      app: { name: "Links" },
+      runtime: { static_root: "public" },
+      files: [{ path: "public/index.html" }, { path: "public/robots.txt" }]
+    });
+    await fs.symlink(path.join(outside, "credentials.json"), path.join(dir, "public", "robots.txt"));
+
+    const validated = await runCli(["apps", "publish", dir, "--plan", "free"], api.baseUrl);
+    expect(validated.code).toBe(1);
+    expect(validated.stderr).toContain("error=symlink\nmanifest_path=files[1].path\nfile=public/robots.txt\nmessage=is a symlink.");
+    expect(validated.stderr).not.toContain("--skip-local-validation");
+
+    const skipped = await runCli(["apps", "publish", dir, "--skip-local-validation"], api.baseUrl);
+    expect(skipped.code).toBe(1);
+    expect(skipped.stderr).toContain("Not publishing: public/robots.txt is a symlink.");
+
+    await fs.writeFile(path.join(path.dirname(dir), `${path.basename(dir)}-outside.txt`), "outside");
+    const parent = await temporaryAppDir({ app: { name: "Parent" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: `../${path.basename(dir)}-outside.txt` }] });
+    const parentResult = await runCli(["apps", "publish", parent, "--skip-local-validation"], api.baseUrl);
+    expect(parentResult.code).toBe(1);
+    expect(parentResult.stderr).toContain("parent directory segments (..) are not allowed");
+    await fs.rm(path.join(path.dirname(dir), `${path.basename(dir)}-outside.txt`), { force: true });
+
+    expect(requests).toHaveLength(0);
+  });
+
+  test("publishes a web app manifest.json and leaves out only manifest.userland.json", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps": publishResponse("app_pwa") });
+    const dir = await temporaryAppDir({ app: { name: "Pwa" }, runtime: { static_root: "public", fallback: "index.html" } }, {
+      "public/index.html": '<link rel="manifest" href="/manifest.json">',
+      "public/manifest.json": JSON.stringify({ name: "Shop", short_name: "Shop", start_url: "/", display: "standalone", icons: [] })
+    });
+
+    const result = await runCli(["apps", "publish", dir, "--plan", "free"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    const body = requests.at(-1)?.body as { files: Array<{ path: string }> };
+    expect(body.files.map((file) => file.path)).toEqual(["public/index.html", "public/manifest.json"]);
+  });
+
+  test("rejects a missing or empty value for --app, --account, and other flags", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps": publishResponse("app_new") });
+
+    const emptyApp = await runCli(["apps", "publish", "examples/hello-static", "--app", "", "--plan", "free"], api.baseUrl);
+    expect(emptyApp.code).toBe(1);
+    expect(emptyApp.stderr).toContain('--app requires a value, but it was empty. If you passed a variable such as "$APP_ID", check that it is set.');
+
+    const trailingApp = await runCli(["apps", "publish", "examples/hello-static", "--app"], api.baseUrl);
+    expect(trailingApp.code).toBe(1);
+    expect(trailingApp.stderr).toContain("--app requires a value.");
+
+    const appThenFlag = await runCli(["apps", "publish", "examples/hello-static", "--app", "--message", "hi"], api.baseUrl);
+    expect(appThenFlag.code).toBe(1);
+    expect(appThenFlag.stderr).toContain("--app requires a value.");
+
+    const emptyAccount = await runCli(["apps", "list", "--account", " "], api.baseUrl);
+    expect(emptyAccount.code).toBe(1);
+    expect(emptyAccount.stderr).toContain("--account requires a value, but it was empty.");
+
+    const emptyName = await runCli(["auth", "api-keys", "create", "--name", ""], api.baseUrl);
+    expect(emptyName.code).toBe(1);
+    expect(emptyName.stderr).toContain("--name requires a value");
+
+    expect(requests).toHaveLength(0);
+  });
+
+  test("treats an empty USERLAND_ACCOUNT_ID as unset", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "GET /v0/apps": { apps: [] } });
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl, account_id: "acct_file" }));
+
+    const result = await runCli(["apps", "list"], api.baseUrl, { apiKey: null, credentialsFile, env: { USERLAND_ACCOUNT_ID: "" } });
+
+    expect(result.code).toBe(0);
+    expect(requests.at(-1)?.accountId).toBe("acct_file");
+  });
+
+  test("encodes app ids and checks secret names before building request paths", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app%2F..%2Fother/releases": { releases: [] },
+      "GET /v0/apps/app%3Fx%3D1/events": { events: [], cursor: null },
+      "POST /v0/apps/app%23frag/rollback": { app_id: "app#frag", release_id: "rel_1", previous_release_id: null, origin: "https://x.apps.userland.fun/", status: "live" },
+      "PUT /v0/apps/app%2Fx/secrets/API_TOKEN": { name: "API_TOKEN", present: true, updated_at: "2026-05-05T00:00:00.000Z" },
+      "PUT /v0/apps/app%20one": publishResponse("app one")
+    });
+
+    await expectCommand(["apps", "releases", "app/../other"], api.baseUrl, "");
+    await expectCommand(["apps", "events", "app?x=1"], api.baseUrl, "");
+    await expectCommand(["apps", "rollback", "app#frag", "rel_1"], api.baseUrl, "Rolled back");
+    const secret = await runCli(["apps", "secrets", "set", "app/x", "API_TOKEN"], api.baseUrl, { stdin: "value" });
+    expect(secret.code).toBe(0);
+    await expectCommand(["apps", "publish", "examples/hello-static", "--app", "app one", "--plan", "free"], api.baseUrl, "Published");
+
+    const badName = await runCli(["apps", "secrets", "set", "app_1", "FOO?x=1#"], api.baseUrl, { stdin: "value" });
+    expect(badName.code).toBe(1);
+    expect(badName.stderr).toContain("Invalid secret name: FOO?x=1#.");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "GET /v0/apps/app%2F..%2Fother/releases",
+      "GET /v0/apps/app%3Fx%3D1/events",
+      "POST /v0/apps/app%23frag/rollback",
+      "PUT /v0/apps/app%2Fx/secrets/API_TOKEN",
+      "PUT /v0/apps/app%20one"
+    ]);
+  });
+
+  test("warns when a secret or API key is passed on the command line and reads them from stdin", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps/app_ops/secrets/API_TOKEN": { name: "API_TOKEN", present: true, updated_at: "2026-05-05T00:00:00.000Z" }
+    });
+
+    const flag = await runCli(["apps", "secrets", "set", "app_ops", "API_TOKEN", "--value", "super-secret"], api.baseUrl);
+    expect(flag.code).toBe(0);
+    expect(flag.stderr).toContain("warning=secret_on_command_line");
+    expect(flag.stderr).not.toContain("super-secret");
+
+    const piped = await runCli(["apps", "secrets", "set", "app_ops", "API_TOKEN"], api.baseUrl, { stdin: "piped-secret\n" });
+    expect(piped.code).toBe(0);
+    expect(piped.stderr).toBe("");
+    expect(requests.at(-1)?.body).toEqual({ value: "piped-secret" });
+
+    const credentialsFile = await temporaryCredentialsFile();
+    const saveFlag = await runCli(["auth", "save-key", "--api-key", "flag_key"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(saveFlag.code).toBe(0);
+    expect(saveFlag.stderr).toContain("warning=api_key_on_command_line");
+
+    const savePiped = await runCli(["auth", "save-key"], api.baseUrl, { apiKey: null, credentialsFile, stdin: "piped_key\n" });
+    expect(savePiped.code).toBe(0);
+    expect(savePiped.stderr).toBe("");
+    expect(savePiped.stdout).not.toContain("piped_key");
+    const saved = JSON.parse(await fs.readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    expect(saved).toMatchObject({ api_key: "piped_key", api_base_url: api.baseUrl });
+    expect(requests).toHaveLength(2);
+  });
+
+  test("sends USERLAND_API_KEY and a saved key only to their own API", async () => {
+    const requests: RequestRecord[] = [];
+    const savedApi = await startMockApi(requests, { "GET /v0/apps": { apps: [] } });
+    const otherApi = await startMockApi(requests, { "GET /v0/apps": { apps: [] } });
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_key_id: "apk_saved", api_base_url: savedApi.baseUrl }));
+
+    // A saved key is not sent to a different USERLAND_API_BASE_URL.
+    const mismatch = await runCli(["apps", "list"], otherApi.baseUrl, { apiKey: null, credentialsFile });
+    expect(mismatch.code).toBe(1);
+    expect(mismatch.stderr).toContain(`The saved API key is for ${savedApi.baseUrl}, but USERLAND_API_BASE_URL is ${otherApi.baseUrl}.`);
+    expect(requests).toHaveLength(0);
+
+    // Without USERLAND_API_BASE_URL, the saved key goes to its own API, with a note that it is not the default.
+    const saved = await runCli(["apps", "list"], savedApi.baseUrl, { apiKey: null, credentialsFile, env: { USERLAND_API_BASE_URL: undefined } });
+    expect(saved.code).toBe(0);
+    expect(saved.stderr).toContain(`note=api_base_url Using the API at ${savedApi.baseUrl}, saved with this API key in ${credentialsFile}.`);
+    expect(requests.map((request) => request.authorization)).toEqual(["Bearer saved_key"]);
+
+    // USERLAND_API_KEY never goes to the saved URL: without USERLAND_API_BASE_URL it is for the default API.
+    const status = await runCli(["auth", "status"], savedApi.baseUrl, { apiKey: "env_key", credentialsFile, env: { USERLAND_API_BASE_URL: undefined } });
+    expect(status.code).toBe(0);
+    expect(status.stdout).toContain("api_base_url=https://api.userland.fun\n");
+    expect(status.stdout).toContain("api_key=env");
+
+    // save-key and login do not reuse a URL saved by an earlier login.
+    const saveKey = await runCli(["auth", "save-key"], savedApi.baseUrl, { apiKey: null, credentialsFile, stdin: "new_key", env: { USERLAND_API_BASE_URL: undefined } });
+    expect(saveKey.code).toBe(0);
+    expect(JSON.parse(await fs.readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: "new_key", api_base_url: "https://api.userland.fun", console_url: "https://console.userland.fun" });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("refuses plain http API URLs other than localhost", async () => {
+    const insecure = await runCli(["apps", "list"], "http://api.userland.test", {});
+    expect(insecure.code).toBe(1);
+    expect(insecure.stderr).toContain("API base URL must start with https:// (http:// is allowed only for localhost): http://api.userland.test");
+
+    const credentialsFile = await temporaryCredentialsFile();
+    const saveKey = await runCli(["auth", "save-key", "--api-base-url", "http://api.userland.test"], "http://127.0.0.1:1", { apiKey: null, credentialsFile, stdin: "key" });
+    expect(saveKey.code).toBe(1);
+    await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const withPassword = await runCli(["apps", "list"], "https://user:pass@api.userland.test", {});
+    expect(withPassword.code).toBe(1);
+    expect(withPassword.stderr).toContain("API base URL must not include a user name or password");
+    expect(withPassword.stderr).not.toContain("pass@");
+  });
+
+  test("does not print or open a sign-in link that is not a safe console URL", async () => {
+    const cases: Array<{ uri: string; env?: Record<string, string>; message: string }> = [
+      { uri: "file:///etc/passwd", message: "The sign-in link from the API must start with https://" },
+      { uri: "http://console.userland.test/device?code=A", message: "must start with https:// (http:// is allowed only for localhost)" },
+      { uri: "https://evil.userland.test/device?code=A&calc.exe", env: { USERLAND_CONSOLE_URL: "https://console.local" }, message: "The sign-in link from the API is on https://evil.userland.test, not the Userland console at https://console.local" }
+    ];
+    for (const testCase of cases) {
+      const requests: RequestRecord[] = [];
+      const api = await startMockApi(requests, {
+        "POST /v0/auth/device/start": { ...deviceStartResponse(), verification_uri_complete: testCase.uri },
+        "POST /v0/auth/device/poll": { ok: true, status: "approved", api_key: "should_not_save" }
+      });
+      const credentialsFile = await temporaryCredentialsFile();
+
+      const result = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile, env: testCase.env });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(testCase.message);
+      expect(result.stdout).not.toContain(testCase.uri);
+      expect(requests.map((request) => request.url)).toEqual(["/v0/auth/device/start"]);
+      await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+
+    // A link on the configured console is fine.
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/auth/device/start": deviceStartResponse(),
+      "POST /v0/auth/device/poll": { ok: true, status: "approved", api_key: "console_key", api_key_id: "apk_console" }
+    });
+    const ok = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, env: { USERLAND_CONSOLE_URL: "https://console.local/" } });
+    expect(ok.code).toBe(0);
+    expect(ok.stdout).toContain("https://console.local/device?code=ABCD-EFGH");
+  });
+
+  test("a new login revokes the key saved by the previous login for the same API", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/auth/device/start": [deviceStartResponse(), deviceStartResponse(), deviceStartResponse()],
+      "POST /v0/auth/device/poll": [
+        { ok: true, status: "approved", api_key: "new_key", api_key_id: "apk_new", default_account_id: "acct_1" },
+        { ok: true, status: "approved", api_key: "newer_key", api_key_id: "apk_newer", default_account_id: "acct_1" },
+        { ok: true, status: "approved", api_key: "newest_key", api_key_id: "apk_newest", default_account_id: "acct_1" }
+      ],
+      "DELETE /v0/auth/api-keys/apk_old": { ok: true, revoked: true, api_key_id: "apk_old" },
+      "DELETE /v0/auth/api-keys/apk_new": { __status: 404, error: { code: "not_found", message: "API key not found." } }
+    });
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key", api_key_id: "apk_old", api_base_url: api.baseUrl }));
+
+    const first = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(first.code).toBe(0);
+    expect(first.stdout).toContain("revoked_previous_api_key_id=apk_old");
+    expect(requests.find((request) => request.method === "DELETE")).toMatchObject({ url: "/v0/auth/api-keys/apk_old", authorization: "Bearer new_key" });
+    expect(JSON.parse(await fs.readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: "new_key", api_key_id: "apk_new" });
+
+    // If the old key cannot be revoked, the login still succeeds and says so.
+    const second = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(second.code).toBe(0);
+    expect(second.stderr).toContain("warning=previous_api_key_not_revoked The API key from your previous login (apk_new) is still active: API 404: API key not found.");
+    expect(JSON.parse(await fs.readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: "newer_key", api_key_id: "apk_newer" });
+
+    // A key saved with auth save-key has no saved id and is left alone.
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "manual_key", api_base_url: api.baseUrl }));
+    const deletesBefore = requests.filter((request) => request.method === "DELETE").length;
+    const third = await runCli(["login", "--no-browser"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(third.code).toBe(0);
+    expect(requests.filter((request) => request.method === "DELETE")).toHaveLength(deletesBefore);
+  });
+
+  test("logout says when the saved API key stays active", async () => {
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_key_id: "apk_saved", api_base_url: "http://127.0.0.1:1" }));
+
+    const result = await runCli(["auth", "logout"], "http://127.0.0.1:1", { apiKey: null, credentialsFile });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("note=api_key_still_active The saved API key apk_saved was not revoked and still works.");
+    await expect(fs.stat(credentialsFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("keeps credential folders and malformed files private", async () => {
+    // A folder the CLI did not create keeps its permissions; the file itself is always 0600.
+    const shared = await fs.mkdtemp(path.join(os.tmpdir(), "userland-shared-"));
+    tempDirs.push(shared);
+    await fs.chmod(shared, 0o755);
+    const credentialsFile = path.join(shared, "creds.json");
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "old_key" }), { mode: 0o644 });
+    await fs.chmod(credentialsFile, 0o644);
+
+    const saved = await runCli(["auth", "save-key"], "http://127.0.0.1:1", { apiKey: null, credentialsFile, stdin: "shared_key" });
+    expect(saved.code).toBe(0);
+    expect((await fs.stat(shared)).mode & 0o777).toBe(0o755);
+    expect((await fs.stat(credentialsFile)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await fs.readFile(credentialsFile, "utf8"))).toMatchObject({ api_key: "shared_key" });
+    expect((await fs.readdir(shared)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+
+    // A folder the CLI creates is private.
+    const created = await temporaryCredentialsFile();
+    const fresh = await runCli(["auth", "save-key"], "http://127.0.0.1:1", { apiKey: null, credentialsFile: created, stdin: "fresh_key" });
+    expect(fresh.code).toBe(0);
+    expect((await fs.stat(path.dirname(created))).mode & 0o777).toBe(0o700);
+
+    // A malformed file is reported without quoting its contents.
+    await fs.writeFile(credentialsFile, "ul_live_SUPERSECRET");
+    const malformed = await runCli(["apps", "list"], "http://127.0.0.1:1", { apiKey: null, credentialsFile });
+    expect(malformed.code).toBe(1);
+    expect(malformed.stderr).toContain(`Credentials file ${credentialsFile} is not valid JSON.`);
+    expect(malformed.stderr).not.toContain("ul_live_SU");
+  });
+
+  test("shows control characters from the API as visible escapes, except in --json output", async () => {
+    const requests: RequestRecord[] = [];
+    const hostile = "bad input \u001b]0;pwned\u0007\u001b[2K\nFAKE: all good\u009b31m";
+    const analytics = analyticsResponse();
+    analytics.recent_errors[0].message = hostile;
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops/events": {
+        events: [{ app_event_id: "evt_1", type: "app.log", severity: "warn", message: hostile, release_id: "rel_1", created_at: "2026-05-05T00:00:00.000Z" }],
+        cursor: null
+      },
+      "GET /v0/apps/app_ops/analytics": [analytics, analytics],
+      "GET /v0/apps/app_ops/releases": { __status: 400, error: { code: "bad_request", message: "no \u001b[31mway" } }
+    });
+
+    const events = await runCli(["apps", "events", "app_ops"], api.baseUrl);
+    expect(events.code).toBe(0);
+    expect(events.stdout).toContain("bad input \\x1b]0;pwned\\x07\\x1b[2K\\nFAKE: all good\\x9b31m");
+    expect(events.stdout).not.toContain("\u001b");
+    expect(events.stdout.split("\n").filter(Boolean)).toHaveLength(1);
+
+    const human = await runCli(["apps", "analytics", "app_ops"], api.baseUrl);
+    expect(human.stdout).toContain("\\x1b]0;pwned");
+    expect(human.stdout).not.toContain("\u001b");
+
+    const json = await runCli(["apps", "analytics", "app_ops", "--json"], api.baseUrl);
+    expect((JSON.parse(json.stdout) as { recent_errors: Array<{ message: string }> }).recent_errors[0].message).toBe(hostile);
+
+    const failed = await runCli(["apps", "releases", "app_ops"], api.baseUrl);
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain("API 400: no \\x1b[31mway");
+    expect(failed.stderr).not.toContain("\u001b");
+  });
 });
 
 function accountsResponse(): Record<string, unknown> {
@@ -1431,7 +1812,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; env?: Record<string, string | undefined> } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
@@ -1449,6 +1830,14 @@ async function runCli(
       env.USERLAND_ACCOUNT_ID = options.accountId;
     } else {
       delete env.USERLAND_ACCOUNT_ID;
+    }
+    delete env.USERLAND_CONSOLE_URL;
+    for (const [name, value] of Object.entries(options.env ?? {})) {
+      if (value === undefined) {
+        delete env[name];
+      } else {
+        env[name] = value;
+      }
     }
 
     const child = spawn(process.execPath, ["--import", "tsx", path.join("cli", "src", "index.ts"), ...args], {
@@ -1492,8 +1881,8 @@ function deviceStartResponse(): Record<string, unknown> {
   return {
     device_code: "dev_test_device_code",
     user_code: "ABCD-EFGH",
-    verification_uri: "http://console.local/device",
-    verification_uri_complete: "http://console.local/device?code=ABCD-EFGH",
+    verification_uri: "https://console.local/device",
+    verification_uri_complete: "https://console.local/device?code=ABCD-EFGH",
     expires_in: 60,
     interval: 0
   };

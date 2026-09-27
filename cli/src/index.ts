@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { promises as fs, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { constants as fsConstants, promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
+import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
 import {
   analyzeAppDirectory,
   applyPlan,
+  findManifest,
   formatValidationReport,
   formatWarning,
   isSelfServePlan,
@@ -14,7 +18,10 @@ import {
   listReleaseFiles,
   normalizePlanKey,
   planDisplayName,
+  privateKeyMessage,
   publicPlanKeys,
+  releaseFileProblem,
+  releaseListingWarnings,
   validateAppDirectory,
   validationExitCode,
   validationJson,
@@ -380,6 +387,9 @@ class ApiError extends Error {
 }
 
 const ANALYTICS_RANGES = ["7d", "30d", "90d"];
+const FILE_SAFETY_ERROR_CODES = new Set(["unsafe_path", "symlink", "missing_file", "private_key"]);
+// The API's rule for app secret names (packages/shared SECRET_NAME_PATTERN).
+const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/u;
 const ANALYTICS_USAGE = "Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]";
 const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics";
 
@@ -603,9 +613,11 @@ async function loginCommand(args: string[]): Promise<void> {
 }
 
 async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: boolean }): Promise<void> {
-  const credentials = await readCredentials();
-  const baseUrl = await apiBaseUrl(credentials, options.apiBaseUrl);
-  const configuredConsoleUrl = await consoleBaseUrl(credentials, options.consoleUrl);
+  const previous = await readCredentials();
+  // Log in to --api-base-url, USERLAND_API_BASE_URL, or the default API. A URL saved by an earlier
+  // login is not reused, so one login against another API does not stick for later logins.
+  const baseUrl = options.apiBaseUrl ?? envValue("USERLAND_API_BASE_URL") ?? DEFAULT_API_BASE_URL;
+  assertServiceUrl(baseUrl, "API base URL");
   const start = await requestJson<DeviceStartResponse>(baseUrl, "/v0/auth/device/start", {
     method: "POST",
     body: JSON.stringify({
@@ -614,16 +626,14 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
       requested_capability: "api_key"
     })
   });
-  const verificationUrl = options.consoleUrl
-    ? `${configuredConsoleUrl.replace(/\/$/u, "")}/device?code=${encodeURIComponent(start.user_code)}`
-    : start.verification_uri_complete;
-  const consoleUrl = options.consoleUrl ?? consoleUrlFromVerification(start.verification_uri, configuredConsoleUrl);
+  const verificationUrl = deviceVerificationUrl(start, baseUrl, options.consoleUrl);
+  const consoleUrl = options.consoleUrl ?? new URL(verificationUrl).origin;
 
   if (context.signupAlias) {
     console.log("Signup uses the same browser approval flow as login. New accounts are created in the browser after email proof.");
   }
   if (options.email) {
-    console.log(`email_hint=${options.email}`);
+    console.log(`email_hint=${terminalSafe(options.email)}`);
   }
   if (!options.noBrowser) {
     const opened = await openBrowser(verificationUrl);
@@ -635,10 +645,10 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
   console.log("");
   console.log(verificationUrl);
   console.log("");
-  console.log(`user_code=${start.user_code}`);
+  console.log(`user_code=${terminalSafe(String(start.user_code))}`);
   console.log("Waiting for approval...");
 
-  const response = await pollDeviceAuthorization(baseUrl, start);
+  const response = terminalSafeValue(await pollDeviceAuthorization(baseUrl, start));
 
   if (options.save !== false) {
     const filePath = await saveCredentials({
@@ -656,6 +666,7 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
     if (response.default_account_id) {
       console.log(`selected_account_id=${response.default_account_id}`);
     }
+    await revokeReplacedLoginKey(previous, { apiKey: response.api_key, apiKeyId: response.api_key_id, baseUrl });
     return;
   }
 
@@ -668,43 +679,109 @@ async function deviceLoginCommand(options: AuthOptions, context: { signupAlias: 
   }
 }
 
+/**
+ * Each login creates a new API key. When it replaces a key an earlier login saved for the same API,
+ * revoke the old one with the new key so the old key does not stay valid with no copy left. Keys saved
+ * with `auth save-key` have no saved id and are left alone. A failed revoke does not fail the login.
+ */
+async function revokeReplacedLoginKey(previous: CredentialsFile | undefined, current: { apiKey: string; apiKeyId?: string; baseUrl: string }): Promise<void> {
+  const previousKeyId = previous?.api_key_id;
+  if (!previous?.api_key || !previousKeyId || previousKeyId === current.apiKeyId || previous.api_key === current.apiKey) {
+    return;
+  }
+  if (!sameApi(previous.api_base_url ?? DEFAULT_API_BASE_URL, current.baseUrl)) {
+    return;
+  }
+  try {
+    await requestJson<ApiKeyRevokeResponse>(current.baseUrl, `/v0/auth/api-keys/${encodeURIComponent(previousKeyId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${current.apiKey}` }
+    });
+    console.log(`revoked_previous_api_key_id=${terminalSafe(previousKeyId)}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    console.error(
+      `warning=previous_api_key_not_revoked The API key from your previous login (${terminalSafe(previousKeyId)}) is still active: ${terminalSafe(message)}. Revoke it with: userland auth api-keys revoke ${terminalSafe(previousKeyId)}`
+    );
+  }
+}
+
+/**
+ * The browser link for device login. The link from the API must be https (http only for localhost)
+ * and, for the default API or a configured console, must be on the Userland console. Anything else is
+ * refused before it is printed or opened.
+ */
+function deviceVerificationUrl(start: DeviceStartResponse, baseUrl: string, consoleUrlFlag: string | undefined): string {
+  if (consoleUrlFlag !== undefined) {
+    const consoleUrl = assertServiceUrl(consoleUrlFlag, "--console-url");
+    return `${consoleUrl.href.replace(/\/$/u, "")}/device?code=${encodeURIComponent(String(start.user_code))}`;
+  }
+  const url = assertServiceUrl(typeof start.verification_uri_complete === "string" ? start.verification_uri_complete : "", "The sign-in link from the API");
+  const configuredConsole = envValue("USERLAND_CONSOLE_URL");
+  const expectedConsole = configuredConsole ?? (sameApi(baseUrl, DEFAULT_API_BASE_URL) ? DEFAULT_CONSOLE_BASE_URL : undefined);
+  if (expectedConsole !== undefined) {
+    const expectedOrigin = assertServiceUrl(expectedConsole, configuredConsole ? "USERLAND_CONSOLE_URL" : "Console URL").origin;
+    if (url.origin !== expectedOrigin) {
+      throw new Error(
+        `The sign-in link from the API is on ${url.origin}, not the Userland console at ${expectedOrigin}, so the CLI did not open it. Check --api-base-url and USERLAND_API_BASE_URL, or pass --console-url.`
+      );
+    }
+  }
+  return url.href;
+}
+
 async function authStatusCommand(): Promise<void> {
   const credentials = await readCredentials();
   const filePath = credentialsPath();
-  const apiKeySource = process.env.USERLAND_API_KEY ? "env" : credentials?.api_key ? "file" : "missing";
-  const selectedAccountId = process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
-  const accountSource = process.env.USERLAND_ACCOUNT_ID ? "env" : credentials?.account_id ? "file" : apiKeySource === "missing" ? "missing" : "default";
-  console.log(`api_base_url=${await apiBaseUrl(credentials)}`);
-  console.log(`console_url=${await consoleBaseUrl(credentials)}`);
-  console.log(`api_key=${apiKeySource}`);
+  const target = apiTarget(credentials);
+  const selectedAccountId = envValue("USERLAND_ACCOUNT_ID") ?? credentials?.account_id;
+  const accountSource = envValue("USERLAND_ACCOUNT_ID") ? "env" : credentials?.account_id ? "file" : target.keySource === "missing" ? "missing" : "default";
+  console.log(`api_base_url=${terminalSafe(target.baseUrl)}`);
+  console.log(`console_url=${terminalSafe(envValue("USERLAND_CONSOLE_URL") ?? credentials?.console_url ?? DEFAULT_CONSOLE_BASE_URL)}`);
+  console.log(`api_key=${target.keySource}`);
   console.log(`credentials_file=${filePath}`);
-  if (apiKeySource === "file" && credentials?.api_key_id) {
-    console.log(`api_key_id=${credentials.api_key_id}`);
+  if (target.keySource === "file" && credentials?.api_key_id) {
+    console.log(`api_key_id=${terminalSafe(credentials.api_key_id)}`);
   }
   console.log(`account=${accountSource}`);
   if (selectedAccountId) {
-    console.log(`account_id=${selectedAccountId}`);
+    console.log(`account_id=${terminalSafe(selectedAccountId)}`);
   }
-  if (apiKeySource === "file" && credentials?.username) {
-    console.log(`username=${credentials.username}`);
+  if (target.keySource === "file" && credentials?.username) {
+    console.log(`username=${terminalSafe(credentials.username)}`);
+  }
+  if (target.conflict) {
+    console.log(`warning=api_base_url_mismatch ${target.conflict}`);
   }
 }
 
 async function saveKeyCommand(args: string[]): Promise<void> {
   const options = parseAuthOptions(args);
-  const apiKey = options.apiKey ?? (await promptRequired("API key: "));
-  const credentials = await readCredentials();
+  if (options.apiKey !== undefined) {
+    console.error("warning=api_key_on_command_line A key passed with --api-key can be kept in shell history and seen by other programs on this computer. Pipe it on stdin instead: printf '%s' \"$USERLAND_API_KEY\" | userland auth save-key");
+  }
+  const apiKey = options.apiKey ?? (process.stdin.isTTY ? await promptHidden("API key: ") : (await readStdin()).trim());
+  if (!apiKey) {
+    throw new Error("API key is required. Pipe it on stdin (printf '%s' \"$USERLAND_API_KEY\" | userland auth save-key) or type it at the prompt.");
+  }
+  // The key is saved with the API it is for: --api-base-url, USERLAND_API_BASE_URL, or the default API.
+  const baseUrl = options.apiBaseUrl ?? envValue("USERLAND_API_BASE_URL") ?? DEFAULT_API_BASE_URL;
+  assertServiceUrl(baseUrl, "API base URL");
+  const consoleUrl = options.consoleUrl ?? envValue("USERLAND_CONSOLE_URL") ?? (sameApi(baseUrl, DEFAULT_API_BASE_URL) ? DEFAULT_CONSOLE_BASE_URL : null);
+  if (consoleUrl) {
+    assertServiceUrl(consoleUrl, "Console URL");
+  }
   const filePath = await saveCredentials({
     api_key: apiKey,
     api_key_id: null,
-    api_base_url: await apiBaseUrl(credentials, options.apiBaseUrl),
-    console_url: await consoleBaseUrl(credentials, options.consoleUrl),
+    api_base_url: baseUrl,
+    console_url: consoleUrl,
     username: null,
     account_id: options.account ?? null
   });
   console.log(`Saved API key to ${filePath}`);
   if (options.account) {
-    console.log(`selected_account_id=${options.account}`);
+    console.log(`selected_account_id=${terminalSafe(options.account)}`);
   }
 }
 
@@ -714,8 +791,14 @@ async function logoutCommand(args: string[]): Promise<void> {
   const filePath = credentialsPath();
   if (options.revoke) {
     if (credentials?.api_key && credentials.api_key_id) {
+      // A saved key is only sent to the API it was saved for.
+      const savedBaseUrl = credentials.api_base_url ?? DEFAULT_API_BASE_URL;
+      const requested = options.apiBaseUrl ?? envValue("USERLAND_API_BASE_URL");
+      if (requested !== undefined && !sameApi(requested, savedBaseUrl)) {
+        throw new Error(`The saved API key belongs to ${savedBaseUrl}, not ${requested}. Run \`userland auth logout --revoke\` without --api-base-url or USERLAND_API_BASE_URL.`);
+      }
       await requestJson<ApiKeyRevokeResponse>(
-        await apiBaseUrl(credentials, options.apiBaseUrl),
+        savedBaseUrl,
         `/v0/auth/api-keys/${encodeURIComponent(credentials.api_key_id)}`,
         {
           method: "DELETE",
@@ -724,10 +807,14 @@ async function logoutCommand(args: string[]): Promise<void> {
           }
         }
       );
-      console.log(`revoked_api_key_id=${credentials.api_key_id}`);
+      console.log(`revoked_api_key_id=${terminalSafe(credentials.api_key_id)}`);
     } else {
       console.log("revoke=skipped api_key_id_missing");
     }
+  } else if (credentials?.api_key && credentials.api_key_id) {
+    console.error(
+      `note=api_key_still_active The saved API key ${terminalSafe(credentials.api_key_id)} was not revoked and still works. Revoke it in the Userland console, or next time use \`userland auth logout --revoke\` to revoke it as you sign out.`
+    );
   }
   await fs.rm(filePath, { force: true });
   console.log("local_credentials=removed");
@@ -922,7 +1009,7 @@ async function supportOpenCommand(args: string[]): Promise<void> {
   const response = await apiFetch<SupportRequestResponse>("/v0/support/requests", {
     method: "POST",
     body: JSON.stringify(body)
-  }, { accountId: options.account, accountScoped: true });
+  }, { accountId: options.account, accountScoped: true, raw: options.json === true });
 
   if (options.json) {
     console.log(JSON.stringify(response, null, 2));
@@ -973,7 +1060,7 @@ async function publishCommand(args: string[]): Promise<void> {
   }
 
   const body = await readPublishDirectory(dir, options);
-  const response = await apiFetch<PublishResponse>(options.app ? `/v0/apps/${options.app}` : "/v0/apps", {
+  const response = await apiFetch<PublishResponse>(options.app !== undefined ? `/v0/apps/${encodeURIComponent(options.app)}` : "/v0/apps", {
     method: "PUT",
     body: JSON.stringify(body)
   }, { accountId: options.account, accountScoped: true });
@@ -1014,7 +1101,7 @@ async function publishPreflight(dir: string, options: CliOptions): Promise<boole
       if (message.includes("USERLAND_API_KEY")) {
         throw error;
       }
-      console.error(`warning=plan_lookup_failed ${message.split("\n")[0]}`);
+      console.error(`warning=plan_lookup_failed ${terminalSafe(message.split("\n")[0])}`);
       return undefined;
     });
     if (account) {
@@ -1079,7 +1166,10 @@ async function fetchAccountEntitlements(options: CliOptions): Promise<{ planKey:
 function printPublishBlocked(report: ValidationReport, dir: string): void {
   console.error("Local validation blocked this publish; nothing was uploaded.");
   process.stderr.write(formatValidationReport(report, { dir }));
-  console.error(`To send it to the API anyway (the API still enforces these rules): userland apps publish ${dir} --skip-local-validation`);
+  // Unsafe paths, symlinks, missing files, and private keys are never uploaded, even without local validation.
+  if (!report.errors.some((error) => FILE_SAFETY_ERROR_CODES.has(error.code))) {
+    console.error(`To send it to the API anyway (the API still enforces these rules): userland apps publish ${dir} --skip-local-validation`);
+  }
   process.exitCode = validationExitCode(report) || 1;
 }
 
@@ -1101,7 +1191,7 @@ async function analyticsCommand(args: string[]): Promise<void> {
   try {
     response = await apiFetch<AppAnalyticsResponse>(`/v0/apps/${encodeURIComponent(appId)}/analytics${suffix}`, {
       method: "GET"
-    }, { accountId: options.account, accountScoped: true });
+    }, { accountId: options.account, accountScoped: true, raw: options.json === true });
   } catch (error) {
     if (error instanceof ApiError && error.status === 402 && error.code === "entitlement_required") {
       printAnalyticsUpgradeState(appId, error, options.json === true);
@@ -1122,6 +1212,7 @@ function printAnalyticsUpgradeState(appId: string, error: ApiError, json: boolea
   const details = isPlainObject(error.details) ? error.details : {};
   const planKey = stringValue(details.plan_key);
   const requiredPlanKey = stringValue(details.required_plan_key);
+  const shown = (value: string | undefined) => (value === undefined ? undefined : terminalSafe(value));
   if (json) {
     console.log(JSON.stringify({
       app_id: appId,
@@ -1135,14 +1226,14 @@ function printAnalyticsUpgradeState(appId: string, error: ApiError, json: boolea
     }, null, 2));
   }
   console.error("App Analytics is not included in this account's plan.");
-  console.error(`error=${error.code}`);
+  console.error(`error=${shown(error.code)}`);
   console.error("feature=app_analytics");
-  if (planKey) console.error(`plan_key=${planKey}`);
-  if (requiredPlanKey) console.error(`required_plan_key=${requiredPlanKey}`);
+  if (planKey) console.error(`plan_key=${shown(planKey)}`);
+  if (requiredPlanKey) console.error(`required_plan_key=${shown(requiredPlanKey)}`);
   if (requiredPlanKey && !isSelfServePlan(requiredPlanKey)) {
     console.error("App Analytics is not available on self-serve plans for this account; contact support. Publishing and other app commands keep working.");
   } else {
-    console.error(`Upgrade to ${requiredPlanKey ? planDisplayName(requiredPlanKey) : "a paid plan"} or higher to read traffic and error summaries for this app. Publishing and other app commands keep working.`);
+    console.error(`Upgrade to ${requiredPlanKey ? terminalSafe(planDisplayName(requiredPlanKey)) : "a paid plan"} or higher to read traffic and error summaries for this app. Publishing and other app commands keep working.`);
   }
   console.error(`Docs: ${APP_ANALYTICS_DOCS_URL}`);
 }
@@ -1222,7 +1313,7 @@ async function releasesCommand(args: string[]): Promise<void> {
   }
   const options = parseAccountOptions(args.slice(1));
 
-  const response = await apiFetch<VersionResponse>(`/v0/apps/${appId}/releases`, {
+  const response = await apiFetch<VersionResponse>(`/v0/apps/${encodeURIComponent(appId)}/releases`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -1239,7 +1330,7 @@ async function rollbackCommand(args: string[]): Promise<void> {
   }
   const options = parseAccountOptions(args.slice(2));
 
-  const response = await apiFetch<RollbackResponse>(`/v0/apps/${appId}/rollback`, {
+  const response = await apiFetch<RollbackResponse>(`/v0/apps/${encodeURIComponent(appId)}/rollback`, {
     method: "POST",
     body: JSON.stringify({ release_id: releaseId })
   }, { accountId: options.account, accountScoped: true });
@@ -1257,12 +1348,18 @@ async function setSecretCommand(args: string[]): Promise<void> {
     usage(1);
   }
   const options = parseSecretSetOptions(optionArgs);
+  if (!SECRET_NAME_PATTERN.test(name)) {
+    throw new Error(`Invalid secret name: ${name}. Secret names use capital letters, numbers, and underscores, start with a letter, and are at most 64 characters (for example MODEL_API_KEY).`);
+  }
+  if (options.value !== undefined) {
+    console.error(`warning=secret_on_command_line A value passed with --value can be kept in shell history and seen by other programs on this computer. Pipe it on stdin instead: printf '%s' "$VALUE" | userland apps secrets set ${appId} ${name}`);
+  }
   const value = options.value ?? (await readStdin()).trimEnd();
   if (!value) {
-    throw new Error("Secret value is required on stdin or with --value.");
+    throw new Error("Secret value is required on stdin, for example: printf '%s' \"$VALUE\" | userland apps secrets set <app-id> <NAME>");
   }
 
-  const response = await apiFetch<{ name: string; present: boolean; updated_at: string }>(`/v0/apps/${appId}/secrets/${name}`, {
+  const response = await apiFetch<{ name: string; present: boolean; updated_at: string }>(`/v0/apps/${encodeURIComponent(appId)}/secrets/${encodeURIComponent(name)}`, {
     method: "PUT",
     body: JSON.stringify({ value })
   }, { accountId: options.account, accountScoped: true });
@@ -1284,7 +1381,7 @@ async function eventsCommand(args: string[]): Promise<void> {
   if (options.releaseId) params.set("release_id", options.releaseId);
   if (options.limit) params.set("limit", options.limit);
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  const response = await apiFetch<EventsResponse>(`/v0/apps/${appId}/events${suffix}`, {
+  const response = await apiFetch<EventsResponse>(`/v0/apps/${encodeURIComponent(appId)}/events${suffix}`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
 
@@ -1481,8 +1578,8 @@ async function readPublishDirectory(rootDir: string, options: CliOptions): Promi
     throw new Error(`Directory not found: ${rootDir}`);
   }
 
-  const manifest = await readManifest(absoluteRoot);
-  const files = await readReleaseFiles(absoluteRoot, manifest);
+  const { document: manifest, file: manifestFile } = await readManifest(absoluteRoot);
+  const files = await readReleaseFiles(absoluteRoot, manifest, manifestFile, { printSkipped: options.skipLocalValidation === true });
   const app = objectValue(manifest.app) ?? {
     name: path.basename(absoluteRoot)
   };
@@ -1503,7 +1600,19 @@ async function readPublishDirectory(rootDir: string, options: CliOptions): Promi
   };
 }
 
-async function readReleaseFiles(rootDir: string, manifest: Record<string, unknown>): Promise<Array<{ path: string; content_type: string; content_base64: string }>> {
+const READ_WITHOUT_FOLLOWING_LINKS = fsConstants.O_NOFOLLOW === undefined ? "r" : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+
+/**
+ * Reads the release files. Every path is checked again here, including with --skip-local-validation:
+ * paths the API would reject, symlinks, files outside the app folder, and private keys are never read
+ * or sent.
+ */
+async function readReleaseFiles(
+  rootDir: string,
+  manifest: Record<string, unknown>,
+  manifestFile: string | null,
+  output: { printSkipped: boolean }
+): Promise<Array<{ path: string; content_type: string; content_base64: string }>> {
   if (Array.isArray(manifest.files)) {
     manifest.files.forEach((entry) => {
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
@@ -1514,15 +1623,28 @@ async function readReleaseFiles(rootDir: string, manifest: Record<string, unknow
       }
     });
   }
-  const publishFiles = (await listReleaseFiles(rootDir, manifest)).map(async (entry) => {
-    const contents = await fs.readFile(entry.absolutePath);
-    return {
+  const listing = await listReleaseFiles(rootDir, manifest, { manifestFile });
+  if (listing.privateKeys.length > 0) {
+    throw new Error(`Not publishing: ${listing.privateKeys.join(", ")} ${privateKeyMessage()}`);
+  }
+  if (output.printSkipped) {
+    for (const warning of releaseListingWarnings(listing)) {
+      console.error(formatWarning(warning));
+    }
+  }
+  const files: Array<{ path: string; content_type: string; content_base64: string }> = [];
+  for (const entry of listing.files) {
+    const problem = await releaseFileProblem(rootDir, entry.path);
+    if (!problem.ok) {
+      throw new Error(`Not publishing: ${entry.path} ${problem.message}`);
+    }
+    const contents = await fs.readFile(entry.absolutePath, { flag: READ_WITHOUT_FOLLOWING_LINKS });
+    files.push({
       path: entry.path,
       content_type: entry.contentType ?? contentTypeForPath(entry.path),
       content_base64: contents.toString("base64")
-    };
-  });
-  const files = await Promise.all(publishFiles);
+    });
+  }
 
   if (files.length === 0) {
     throw new Error("Publish directory must contain at least one file.");
@@ -1531,61 +1653,133 @@ async function readReleaseFiles(rootDir: string, manifest: Record<string, unknow
   return files;
 }
 
-async function readManifest(rootDir: string): Promise<Record<string, unknown>> {
-  const userlandManifestPath = path.join(rootDir, "manifest.userland.json");
-  const legacyManifestPath = path.join(rootDir, "manifest.json");
-  let manifestPath = userlandManifestPath;
-  let contents = await fs.readFile(manifestPath, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  });
-  if (!contents) {
-    manifestPath = legacyManifestPath;
-    contents = await fs.readFile(manifestPath, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        return undefined;
-      }
-      throw error;
-    });
+async function readManifest(rootDir: string): Promise<{ document: Record<string, unknown>; file: string | null }> {
+  const found = await findManifest(rootDir);
+  if (!found.ok) {
+    throw new Error(found.message);
   }
-
-  if (!contents) {
-    return {};
-  }
-
-  const parsed: unknown = JSON.parse(contents);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("manifest.json must contain a JSON object.");
-  }
-  return parsed as Record<string, unknown>;
+  return { document: found.document, file: found.file };
 }
 
-async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accountId?: string; accountScoped?: boolean } = {}): Promise<T> {
+/**
+ * Calls the API with the selected key. Human output prints API text, so strings in the response come
+ * back with control characters shown as visible escapes; pass `raw` for output printed as JSON.
+ */
+async function apiFetch<T>(apiPath: string, init: RequestInit, options: { accountId?: string; accountScoped?: boolean; raw?: boolean } = {}): Promise<T> {
   const credentials = await readCredentials();
-  const apiKey = process.env.USERLAND_API_KEY ?? credentials?.api_key;
-  if (!apiKey) {
+  const target = apiTarget(credentials);
+  if (!target.apiKey) {
     throw new Error("USERLAND_API_KEY is required. Run `userland signup` or `userland login` to save credentials.");
   }
+  if (target.conflict) {
+    throw new Error(target.conflict);
+  }
+  noteSavedApiBaseUrl(target);
 
-  const baseUrl = await apiBaseUrl(credentials);
   const accountId = options.accountScoped ? selectedAccountId(options.accountId, credentials) : undefined;
   const headers: Record<string, string> = {
-    authorization: `Bearer ${apiKey}`,
+    authorization: `Bearer ${target.apiKey}`,
     ...(init.headers as Record<string, string> | undefined)
   };
   if (accountId) {
     headers["x-userland-account-id"] = accountId;
   }
-  return await requestJson<T>(baseUrl, apiPath, {
+  const body = await requestJson<T>(target.baseUrl, apiPath, {
     ...init,
     headers
   });
+  return options.raw ? body : terminalSafeValue(body);
 }
 
 function selectedAccountId(explicitAccountId: string | undefined, credentials: CredentialsFile | undefined): string | undefined {
-  return explicitAccountId ?? process.env.USERLAND_ACCOUNT_ID ?? credentials?.account_id;
+  return explicitAccountId ?? envValue("USERLAND_ACCOUNT_ID") ?? credentials?.account_id;
+}
+
+/** An environment variable, treating an empty or blank value as unset. */
+function envValue(name: string): string | undefined {
+  const value = process.env[name];
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
+interface ApiTarget {
+  apiKey: string | undefined;
+  keySource: "env" | "file" | "missing";
+  baseUrl: string;
+  baseUrlSource: "env" | "file" | "default";
+  /** Set when the saved key would be sent to a different API than the one it was saved for. */
+  conflict?: string;
+}
+
+/**
+ * Picks the API key and the API it is sent to as a pair. USERLAND_API_KEY goes to
+ * USERLAND_API_BASE_URL or the default API, never to a URL saved in the credentials file. A saved key
+ * only goes to the API it was saved with.
+ */
+function apiTarget(credentials: CredentialsFile | undefined): ApiTarget {
+  const envKey = envValue("USERLAND_API_KEY");
+  const envBaseUrl = envValue("USERLAND_API_BASE_URL");
+  if (envKey) {
+    return { apiKey: envKey, keySource: "env", baseUrl: envBaseUrl ?? DEFAULT_API_BASE_URL, baseUrlSource: envBaseUrl ? "env" : "default" };
+  }
+  if (!credentials?.api_key) {
+    return { apiKey: undefined, keySource: "missing", baseUrl: envBaseUrl ?? DEFAULT_API_BASE_URL, baseUrlSource: envBaseUrl ? "env" : "default" };
+  }
+  const savedBaseUrl = credentials.api_base_url ?? DEFAULT_API_BASE_URL;
+  const target: ApiTarget = { apiKey: credentials.api_key, keySource: "file", baseUrl: savedBaseUrl, baseUrlSource: credentials.api_base_url ? "file" : "default" };
+  if (envBaseUrl !== undefined && !sameApi(envBaseUrl, savedBaseUrl)) {
+    target.conflict = `The saved API key is for ${terminalSafe(savedBaseUrl)}, but USERLAND_API_BASE_URL is ${terminalSafe(envBaseUrl)}. The CLI only sends a saved key to the API it was saved for. Set USERLAND_API_KEY to a key for that API, log in again with USERLAND_API_BASE_URL set, or unset USERLAND_API_BASE_URL.`;
+  } else if (envBaseUrl !== undefined) {
+    target.baseUrlSource = "env";
+  }
+  return target;
+}
+
+let savedApiBaseUrlNoted = false;
+
+/** Says so on stderr when a saved key is used with an API other than the default one. */
+function noteSavedApiBaseUrl(target: ApiTarget): void {
+  if (savedApiBaseUrlNoted || target.baseUrlSource !== "file" || sameApi(target.baseUrl, DEFAULT_API_BASE_URL)) {
+    return;
+  }
+  savedApiBaseUrlNoted = true;
+  console.error(`note=api_base_url Using the API at ${terminalSafe(target.baseUrl)}, saved with this API key in ${credentialsPath()}.`);
+}
+
+/** True when two base URLs name the same API (ignoring case in the host and trailing slashes). */
+function sameApi(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    try {
+      const url = new URL(value);
+      return `${url.origin}${url.pathname.replace(/\/+$/u, "")}`;
+    } catch {
+      return value.replace(/\/+$/u, "");
+    }
+  };
+  return normalize(left) === normalize(right);
+}
+
+/**
+ * Checks a URL the CLI sends API keys to or opens in a browser: it must parse, use https (http only
+ * for localhost), and carry no user name or password.
+ */
+function assertServiceUrl(value: string, label: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} is not a valid URL: ${terminalSafe(value)}`);
+  }
+  if (url.username || url.password) {
+    throw new Error(`${label} must not include a user name or password: ${url.origin}`);
+  }
+  if (url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname))) {
+    return url;
+  }
+  throw new Error(`${label} must start with https:// (http:// is allowed only for localhost): ${url.protocol === "http:" ? url.origin : terminalSafe(value)}`);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(hostname);
 }
 
 async function pollDeviceAuthorization(baseUrl: string, start: DeviceStartResponse): Promise<Extract<DevicePollResponse, { ok: true }>> {
@@ -1641,7 +1835,8 @@ async function sleep(milliseconds: number): Promise<void> {
 }
 
 async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl.replace(/\/$/u, "")}${apiPath}`, {
+  const base = assertServiceUrl(baseUrl, "API base URL");
+  const response = await fetch(`${base.href.replace(/\/$/u, "")}${apiPath}`, {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -1650,7 +1845,12 @@ async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestIni
   });
 
   const text = await response.text();
-  const body = text ? (JSON.parse(text) as unknown) : undefined;
+  let body: unknown;
+  try {
+    body = text ? (JSON.parse(text) as unknown) : undefined;
+  } catch {
+    throw new ApiError(`API ${response.status}: the response was not JSON.`, response.status, undefined, undefined, undefined);
+  }
   if (!response.ok) {
     const message = errorMessage(body) ?? response.statusText;
     const parsed = isPlainObject(body) ? parseApiError(body) : {};
@@ -1660,32 +1860,14 @@ async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestIni
   return body as T;
 }
 
-async function apiBaseUrl(credentials?: CredentialsFile, override?: string): Promise<string> {
-  return override ?? process.env.USERLAND_API_BASE_URL ?? credentials?.api_base_url ?? (await readCredentials())?.api_base_url ?? DEFAULT_API_BASE_URL;
-}
-
-async function consoleBaseUrl(credentials?: CredentialsFile, override?: string): Promise<string> {
-  return override ?? process.env.USERLAND_CONSOLE_URL ?? credentials?.console_url ?? (await readCredentials())?.console_url ?? DEFAULT_CONSOLE_BASE_URL;
-}
-
-function consoleUrlFromVerification(verificationUri: string | undefined, fallback: string): string {
-  if (!verificationUri) {
-    return fallback;
-  }
-  try {
-    const url = new URL(verificationUri);
-    return `${url.origin}`;
-  } catch {
-    return fallback;
-  }
-}
-
+/** Opens a checked https (or localhost http) URL without going through a shell. */
 async function openBrowser(url: string): Promise<boolean> {
   const [command, args] =
     process.platform === "darwin"
       ? ["open", [url]]
       : process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
+        ? // `cmd /c start` would run anything after & or | in the URL; rundll32 hands it straight to the browser.
+          ["rundll32", ["url.dll,FileProtocolHandler", url]]
         : ["xdg-open", [url]];
 
   return await new Promise((resolve) => {
@@ -1699,7 +1881,11 @@ async function openBrowser(url: string): Promise<boolean> {
 }
 
 function credentialsPath(): string {
-  return process.env.USERLAND_CREDENTIALS_FILE ?? path.join(os.homedir(), ".userland", "credentials.json");
+  return envValue("USERLAND_CREDENTIALS_FILE") ?? defaultCredentialsPath();
+}
+
+function defaultCredentialsPath(): string {
+  return path.join(os.homedir(), ".userland", "credentials.json");
 }
 
 async function readCredentials(): Promise<CredentialsFile | undefined> {
@@ -1714,7 +1900,13 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
     return undefined;
   }
 
-  const parsed: unknown = JSON.parse(contents);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    // The parser's message quotes the start of the file, which can be an API key.
+    throw new Error(`Credentials file ${filePath} is not valid JSON. Fix it, or delete it and run \`userland login\` again.`);
+  }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`Credentials file must contain a JSON object: ${filePath}`);
   }
@@ -1730,6 +1922,12 @@ async function readCredentials(): Promise<CredentialsFile | undefined> {
   };
 }
 
+/**
+ * Writes the credentials file with 0600 permissions: to a new file in the same folder first, then
+ * renamed over the old one, so the key is never in a file with looser permissions and a failed write
+ * leaves the old file intact. The folder is set to 0700 only when the CLI creates it or it is the
+ * default ~/.userland folder, never a shared folder named by USERLAND_CREDENTIALS_FILE.
+ */
 async function saveCredentials(update: CredentialsUpdate): Promise<string> {
   const filePath = credentialsPath();
   const existing = (await readCredentials()) ?? {};
@@ -1746,10 +1944,19 @@ async function saveCredentials(update: CredentialsUpdate): Promise<string> {
   }
 
   const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  await fs.chmod(dir, 0o700).catch(() => undefined);
-  await fs.writeFile(filePath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
-  await fs.chmod(filePath, 0o600).catch(() => undefined);
+  const created = await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (created !== undefined || path.resolve(filePath) === path.resolve(defaultCredentialsPath())) {
+    await fs.chmod(dir, 0o700).catch(() => undefined);
+  }
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    await fs.chmod(tempPath, 0o600).catch(() => undefined);
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return filePath;
 }
 
@@ -1758,11 +1965,11 @@ function parseOptions(args: string[]): CliOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--app") {
-      options.app = args[++index];
+      options.app = requireOptionValue(arg, args[++index]);
     } else if (arg === "--message") {
-      options.message = args[++index];
+      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true });
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else if (arg === "--plan") {
       options.plan = requireOptionValue(arg, args[++index]);
     } else if (arg === "--skip-local-validation") {
@@ -1801,7 +2008,7 @@ function parseAnalyticsOptions(args: string[]): AnalyticsOptions {
     if (arg === "--range") {
       options.range = args[++index] ?? "";
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else if (arg === "--json") {
       options.json = true;
     } else {
@@ -1811,9 +2018,17 @@ function parseAnalyticsOptions(args: string[]): AnalyticsOptions {
   return options;
 }
 
-function requireOptionValue(flag: string, value: string | undefined): string {
+/**
+ * Returns a flag's value. A missing value, a value that is another flag, and (unless allowEmpty) an
+ * empty or blank value are usage errors: `--app "$APP_ID"` with an unset variable must not publish
+ * a new app, and `--account ""` must not fall back to the default account.
+ */
+function requireOptionValue(flag: string, value: string | undefined, options: { allowEmpty?: boolean } = {}): string {
   if (value === undefined || value.startsWith("--")) {
     throw new Error(`${flag} requires a value.`);
+  }
+  if (!options.allowEmpty && value.trim() === "") {
+    throw new Error(`${flag} requires a value, but it was empty. If you passed a variable such as "$APP_ID", check that it is set.`);
   }
   return value;
 }
@@ -1823,13 +2038,13 @@ function parseSupportOptions(args: string[]): SupportOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--subject") {
-      options.subject = args[++index];
+      options.subject = requireOptionValue(arg, args[++index]);
     } else if (arg === "--message") {
-      options.message = args[++index];
+      options.message = requireOptionValue(arg, args[++index], { allowEmpty: true });
     } else if (arg === "--app") {
-      options.app = args[++index];
+      options.app = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else if (arg === "--json") {
       options.json = true;
     } else {
@@ -1846,9 +2061,9 @@ function parseAuthOptions(args: string[]): AuthOptions {
     if (arg === "--username" || arg === "--password") {
       throw new Error("Userland platform auth is passwordless. Run `userland login` without username/password flags.");
     } else if (arg === "--email") {
-      options.email = args[++index];
+      options.email = requireOptionValue(arg, args[++index]);
     } else if (arg === "--api-key") {
-      options.apiKey = args[++index];
+      options.apiKey = requireOptionValue(arg, args[++index]);
     } else if (arg === "--no-save") {
       options.save = false;
     } else if (arg === "--save=false") {
@@ -1856,11 +2071,11 @@ function parseAuthOptions(args: string[]): AuthOptions {
     } else if (arg === "--no-browser") {
       options.noBrowser = true;
     } else if (arg === "--api-base-url") {
-      options.apiBaseUrl = args[++index];
+      options.apiBaseUrl = requireOptionValue(arg, args[++index]);
     } else if (arg === "--console-url") {
-      options.consoleUrl = args[++index];
+      options.consoleUrl = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else if (arg === "--revoke") {
       options.revoke = true;
     } else {
@@ -1875,7 +2090,7 @@ function parseApiKeyOptions(args: string[]): ApiKeyOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--name") {
-      options.name = args[++index];
+      options.name = requireOptionValue(arg, args[++index]);
     } else if (arg === "--yes" || arg === "-y") {
       options.yes = true;
     } else {
@@ -1890,9 +2105,9 @@ function parseSecretSetOptions(args: string[]): SecretSetOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--value") {
-      options.value = args[++index];
+      options.value = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1905,15 +2120,15 @@ function parseEventsOptions(args: string[]): EventsOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--type") {
-      options.type = args[++index];
+      options.type = requireOptionValue(arg, args[++index]);
     } else if (arg === "--severity") {
-      options.severity = args[++index];
+      options.severity = requireOptionValue(arg, args[++index]);
     } else if (arg === "--release") {
-      options.releaseId = args[++index];
+      options.releaseId = requireOptionValue(arg, args[++index]);
     } else if (arg === "--limit") {
-      options.limit = args[++index];
+      options.limit = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1926,9 +2141,9 @@ function parseDowngradePreviewOptions(args: string[]): DowngradePreviewOptions {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--to") {
-      options.to = args[++index];
+      options.to = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1941,7 +2156,7 @@ function parseAccountOptions(args: string[]): { account?: string } {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--account") {
-      options.account = args[++index];
+      options.account = requireOptionValue(arg, args[++index]);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -1960,12 +2175,26 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function promptRequired(prompt: string): Promise<string> {
-  const value = await promptLine(prompt);
-  if (!value) {
-    throw new Error(`${prompt.replace(/:\s*$/u, "")} is required.`);
+/** Reads a line from the terminal without showing what is typed (for API keys). */
+async function promptHidden(prompt: string): Promise<string> {
+  process.stdout.write(prompt);
+  const hidden = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    }
+  });
+  const readline = createInterface({ input: process.stdin, output: hidden, terminal: true });
+  readline.on("SIGINT", () => {
+    readline.close();
+    process.stdout.write("\n");
+    process.exit(130);
+  });
+  try {
+    return (await readline.question("")).trim();
+  } finally {
+    readline.close();
+    process.stdout.write("\n");
   }
-  return value;
 }
 
 async function promptLine(prompt: string): Promise<string> {
@@ -2148,7 +2377,7 @@ function usage(exitCode: number): never {
   userland signup [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
   userland login [--no-browser] [--email <email>] [--api-base-url <url>] [--console-url <url>] [--no-save]
   userland auth status
-  userland auth save-key --api-key <api-key> [--account <account-id>] [--api-base-url <url>] [--console-url <url>]
+  userland auth save-key [--account <account-id>] [--api-base-url <url>] [--console-url <url>]   (reads the key from stdin or a hidden prompt)
   userland auth logout [--revoke]
   userland auth api-keys list
   userland auth api-keys create --name <name>
@@ -2166,7 +2395,7 @@ function usage(exitCode: number): never {
   userland apps status <app-id> [--account <account-id>]
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
-  userland apps secrets set <app-id> <NAME> [--value <value>] [--account <account-id>]
+  userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
   userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
   userland apps routes list <app-id> [--account <account-id>]
@@ -2196,8 +2425,19 @@ Validation:
 
 Credentials:
   Commands use USERLAND_API_KEY first, then ~/.userland/credentials.json for API keys.
+  USERLAND_API_KEY goes to USERLAND_API_BASE_URL or https://api.userland.fun; a saved key only goes to the API it was saved for.
+  API URLs must use https:// (http:// only for localhost).
   App commands use --account, then USERLAND_ACCOUNT_ID, then saved account_id when set.
   Login and signup use browser device authorization and save only API-key credentials locally.
+  A new login revokes the API key saved by the previous login for the same API.
+  Pipe secrets and API keys on stdin: printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
+  (--value and --api-key still work, but the value can be kept in shell history.)
+
+Publishing a folder:
+  Without manifest files, apps publish uploads every regular file except manifest.userland.json.
+  Names that start with a dot (.env, .npmrc, .git/, and so on) are left out, except .well-known/
+  and dot-folders named in runtime.static_root or runtime.server_entry. Symlinks are never followed.
+  Private keys (such as id_rsa or a .pem file holding a private key) stop the publish.
 
 Docs:
   https://docs.userland.fun/reference/cli
@@ -2212,7 +2452,8 @@ Docs:
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
+  // Error text can quote the API or file names, so show control characters as visible escapes.
+  console.error(terminalSafeLines(message));
   console.error(`Docs: ${docsUrlForError(message)}`);
   process.exit(1);
 });

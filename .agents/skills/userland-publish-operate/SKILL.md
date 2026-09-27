@@ -36,7 +36,7 @@ Use this skill when publishing, updating, inspecting, or rolling back a Userland
 userland auth status
 userland apps publish examples/<example-slug>
 userland apps publish examples/<example-slug> --app <app-id>
-userland apps secrets set <app-id> <NAME> --value <value>
+printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
 userland apps releases <app-id>
 userland apps events <app-id>
 userland apps rollback <app-id> <release-id>
@@ -52,7 +52,9 @@ userland apps rollback <app-id> <release-id>
 ## Safety rules
 
 - Do not print API keys or secret values.
-- Do not commit `.env` files.
+- Pass secret values and API keys on stdin (as in the commands above), not with `--value` or `--api-key`, so they stay out of shell history, process lists, and transcripts.
+- Do not commit `.env` files. Publishing a folder leaves out dotfiles such as `.env`, `.npmrc`, and `.git/`, refuses private keys, and never follows symlinks; if the CLI reports `dotfiles_skipped`, `symlink`, or `private_key`, publish a build folder rather than working around it.
+- Always pass a non-empty `--app <app-id>` when updating an app; without `--app` the CLI creates a new app.
 - Do not commit `~/.userland` credential files.
 - Do not publish app aliases.
 - Use app origins for validation.

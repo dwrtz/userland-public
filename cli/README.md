@@ -22,7 +22,7 @@ userland login
 userland login --no-browser
 userland signup
 userland auth status
-userland auth save-key --api-key <api-key>
+printf '%s' "$USERLAND_API_KEY" | userland auth save-key
 userland auth logout
 userland auth logout --revoke
 userland auth api-keys list
@@ -47,7 +47,7 @@ userland apps status <app-id>
 userland apps releases <app-id>
 userland versions <app-id>
 userland apps rollback <app-id> <release-id>
-userland apps secrets set <app-id> <NAME> --value <value>
+printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
 userland apps events <app-id>
 userland apps analytics <app-id>
 userland apps analytics <app-id> --range 7d --json
@@ -66,7 +66,7 @@ npm run userland -- login
 npm run userland -- login --no-browser
 npm run userland -- signup
 npm run userland -- auth status
-npm run userland -- auth save-key --api-key <api-key>
+printf '%s' "$USERLAND_API_KEY" | npm run userland -- auth save-key
 npm run userland -- auth logout
 npm run userland -- auth logout --revoke
 npm run userland -- auth api-keys list
@@ -89,7 +89,7 @@ npm run userland -- apps status <app-id>
 npm run userland -- apps releases <app-id>
 npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
-npm run userland -- apps secrets set <app-id> <NAME> --value <value>
+printf '%s' "$VALUE" | npm run userland -- apps secrets set <app-id> <NAME>
 npm run userland -- apps events <app-id>
 npm run userland -- apps analytics <app-id> --range 30d
 npm run userland -- apps routes list <app-id>
@@ -101,6 +101,19 @@ npm run userland -- apps domains verify <app-id> <hostname>
 `login` starts a browser device-authorization flow. The CLI prints a verification URL and user code, opens the browser when possible, waits for approval, then saves the returned API key to `~/.userland/credentials.json` with `0600` permissions. `signup` is an alias for the same flow; if the email is new, account creation happens in the browser after email proof.
 
 The CLI does not store platform passwords. App commands prefer `USERLAND_API_KEY` when it is set, then fall back to the saved API key. `auth save-key` remains available for CI, support, and manually copied API keys.
+
+### Keys, API URLs, and secrets
+
+- An API key is always paired with the API it belongs to. `USERLAND_API_KEY` is sent to `USERLAND_API_BASE_URL`, or to `https://api.userland.fun` when that is not set; it is never sent to a URL saved in `~/.userland/credentials.json`. A saved key is sent only to the API it was saved with. If `USERLAND_API_BASE_URL` names a different API than the saved key's, the command stops with an error instead of sending the key there. When a saved key is used with an API other than `https://api.userland.fun`, the CLI prints a `note=api_base_url` line on stderr.
+- `login`, `signup`, and `auth save-key` use `--api-base-url`, then `USERLAND_API_BASE_URL`, then `https://api.userland.fun`. They do not reuse a URL saved by an earlier login.
+- API and console URLs must use `https://`. Plain `http://` is accepted only for `localhost`, `*.localhost`, `127.0.0.1`, and `[::1]`, for local development.
+- `login` only opens (or prints) a sign-in link that uses `https://`. For the default API, or when `USERLAND_CONSOLE_URL` is set, the link must also be on the Userland console; otherwise login stops before anything is opened.
+- Each `login` creates a new API key. When it replaces a key saved by an earlier `login` for the same API, the CLI revokes the old key and prints `revoked_previous_api_key_id=`. If that fails, the login still succeeds and a `warning=previous_api_key_not_revoked` line names the key to revoke. Keys saved with `auth save-key` are never revoked this way.
+- `auth logout` removes the saved key but does not revoke it unless you pass `--revoke`; it prints a `note=api_key_still_active` line when the key still works.
+- Pass secret values and API keys on stdin, not as flags, so they stay out of shell history and process lists: `printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>` and `printf '%s' "$USERLAND_API_KEY" | userland auth save-key`. In a terminal, `auth save-key` asks for the key without showing it. `--value` and `--api-key` still work but print a warning.
+- The credentials file is written with `0600` permissions through a temporary file in the same folder, so a failed write never leaves a half-written file. The CLI sets the folder to `0700` only when it creates the folder or it is `~/.userland`; a folder named by `USERLAND_CREDENTIALS_FILE` keeps its permissions. A credentials file that is not valid JSON is reported by path, without quoting its contents.
+- Empty flag values (`--app ""`, `--account ""`, a flag with no value) are usage errors, so a script with an unset variable never publishes a new app or picks another account by accident. Empty `USERLAND_*` environment variables count as unset.
+- Text from the API (event messages, app names, error messages) is shown with control characters as visible escapes such as `\x1b`, so it cannot change your terminal. `--json` output is unchanged.
 
 API key lifecycle commands use the same authenticated management endpoints as the browser console:
 
@@ -131,7 +144,7 @@ userland validate <dir> --strict
 It checks:
 
 - `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist, signed webhooks need a `secret`).
-- Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps. It warns when a file listed in `files` is a symlink that resolves outside the app directory (publish uploads the target's contents) and when directory publishing skips symlinks.
+- Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, symlinks listed in `files`, private keys in the folder, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps. It warns about the dotfiles and symlinks a folder publish leaves out (see "What gets uploaded" below).
 - Plan limits from `schemas/plans-v0.json`: private apps, app-user auth, public signup, data collection and index counts, file stores and upload sizes, required secrets, scheduled jobs and schedules, webhooks and providers, and release file count and size.
 
 A few schema rules are stricter than the API: unknown keys directly under the top level, `app`, `runtime`, or `resources`; `resources: null`; `null` for `auth.mode`, `jobs.*.trigger`, or `jobs.*.max_attempts`; leading or trailing spaces in tags, secret names, and content types; data index names such as `id`; and empty enum values. The API accepts these today, so validation reports them as `schema_strict` warnings and publishing is not blocked. `--strict` turns them into errors for CI checks against the published schema. `userland validate` accepts a top-level `$schema` key (for editor support) and the CLI keys `files`, `message` (the release message; `apps publish --message` overrides it), and `provenance`, and never reports them as unknown keys. The CLI ignores a `$schema`, `message`, or `provenance` of the wrong type when publishing (and so does the API for `message`), so a wrong type there is also a `schema_strict` warning; a malformed `files` list is an error because it changes which files are uploaded.
@@ -264,6 +277,18 @@ Docs: https://docs.userland.fun/reference/limits/
 For the same manifest, the CLI and the API's `402` `details.violations` agree on which `feature_key` and `limit_key` values are violated, on the highest `required_plan_key` for each key, and on the overall required plan. Individual entries can differ: the CLI reports each job, data collection, or file store on its own (so two scheduled jobs can give two `jobs.schedule.allowed` entries, one per schedule, with different `required_plan_key` values), where the API reports one combined entry per key. Release file count and size (`kind: release_limit`) are not part of the API's `details.violations`; the API reports them as a separate `plan_limit_exceeded` error with the same `limit_key` and `required_plan_key`. `message` is the CLI's own wording (it includes the value, the plan limit, and the plan that allows it), so do not compare it with the API's text, and `manifest_path` uses dotted paths such as `resources.webhooks.automation.provider` where the API uses JSON pointers. Both use the same rule for the plan: "requires <Plan>" for a self-serve plan, otherwise "not available on self-serve plans; contact support".
 
 Exit codes: `0` valid, `1` manifest, file, or usage errors (including `schema_strict` issues with `--strict`), `2` plan limits exceeded.
+
+### What gets uploaded
+
+Without a `files` list in `manifest.userland.json`, `apps publish <dir>` uploads every regular file in the folder except:
+
+- `manifest.userland.json` itself (or a top-level `manifest.json` that is the Userland manifest under its older name). Any other `manifest.json`, such as a web app manifest in `public/`, is uploaded like any other file. A top-level `manifest.json` without `app`, `runtime`, `resources`, or `files` is treated as an ordinary file.
+- Names that start with a dot, such as `.env`, `.env.local`, `.npmrc`, `.git/`, and `.DS_Store`, at any depth, because they often hold passwords and keys. `.well-known/` folders are still uploaded, and so are dot-folders that `runtime.static_root` or `runtime.server_entry` name (for example a `static_root` of `.output/public`). A `warning=dotfiles_skipped` line lists what was left out.
+- Symlinks, which are never followed (`warning=symlinks_skipped`).
+
+A folder that holds a private key (`id_rsa`, `id_ed25519`, and similar, `.p12` or `.pfx` files, or a `.pem` or `.key` file containing a private key) is not published: the command stops with `error=private_key` and names the file. Publish a build folder instead, or move the key out.
+
+With a `files` list, exactly those files are uploaded, including dotfiles you list on purpose. Each listed path must be a regular file inside the app folder: a listed symlink, or a file inside a symlinked folder, stops the publish with `error=symlink`, so a copied template cannot make a file from elsewhere on your computer public. These checks also run with `--skip-local-validation`, before anything is read or sent.
 
 `userland apps publish` runs the same validation before uploading anything. It checks plan limits against `--plan` when given, otherwise against the account's own plan and entitlements from `GET /v0/accounts/:account_id/limits` (for `--app` updates, the account that owns the app). Validation errors and plan violations stop the publish with the same output and nothing is uploaded; warnings, including `schema_strict`, print to stderr and do not block. If the account plan cannot be read, the CLI prints a warning and lets the API decide. `--skip-local-validation` sends the directory to the API without local checks.
 

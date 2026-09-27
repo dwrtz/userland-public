@@ -9,6 +9,9 @@ import {
   applyPlan,
   checkManifestDocument,
   evaluateRequirements,
+  findManifest,
+  formatWarning,
+  listReleaseFiles,
   manifestSchema,
   minimumPlanFor,
   normalizePlanKey,
@@ -16,6 +19,7 @@ import {
   planData,
   planDisplayName,
   planRequirementText,
+  releaseFileProblem,
   releasePathError,
   releaseRequirements,
   SUPPORT_ONLY_PLAN_KEY,
@@ -458,23 +462,35 @@ describe("validateAppDirectory", () => {
     expect(badFiles.errors).toEqual([{ code: "schema", manifest_path: "files", message: "must be an array of { path, content_type } objects" }]);
   });
 
-  test("warns when listed files resolve outside the app directory and when symlinks are skipped", async () => {
+  test("refuses symlinks listed in files and skips symlinks when walking the folder", async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "userland-outside-"));
     tempDirs.push(outside);
     await fs.writeFile(path.join(outside, "secret.txt"), "outside");
 
+    // A symlink to a file outside the app folder (for example a template shipping
+    // public/robots.txt -> ~/.userland/credentials.json) blocks validation and publishing.
     const listed = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/leak.txt" }] });
     await fs.symlink(path.join(outside, "secret.txt"), path.join(listed, "public", "leak.txt"));
     const listedReport = await validateAppDirectory(listed);
-    expect(listedReport.ok).toBe(true);
-    expect(listedReport.release.file_count).toBe(2);
-    expect(listedReport.warnings).toEqual([
-      expect.objectContaining({ code: "outside_app_directory", manifest_path: "files[1].path", file: "public/leak.txt", message: expect.stringContaining("resolves outside the app directory") })
+    expect(listedReport.ok).toBe(false);
+    expect(listedReport.release.file_count).toBe(1);
+    expect(listedReport.errors).toEqual([
+      expect.objectContaining({ code: "symlink", manifest_path: "files[1].path", file: "public/leak.txt", message: expect.stringContaining("is a symlink") })
     ]);
+    expect(listedReport.warnings).toEqual([]);
 
+    // Symlinks inside the app folder are refused too: they can point a public path at a private
+    // file such as .env or server code.
     const inside = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/alias.html" }] });
     await fs.symlink("index.html", path.join(inside, "public", "alias.html"));
-    expect((await validateAppDirectory(inside)).warnings).toEqual([]);
+    expect((await validateAppDirectory(inside)).errors).toEqual([expect.objectContaining({ code: "symlink", file: "public/alias.html" })]);
+
+    // A symlinked folder above a listed file is refused the same way.
+    const linkedFolder = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/assets/secret.txt" }] });
+    await fs.symlink(outside, path.join(linkedFolder, "public", "assets"));
+    expect((await validateAppDirectory(linkedFolder)).errors).toEqual([
+      expect.objectContaining({ code: "symlink", file: "public/assets/secret.txt", message: expect.stringContaining("is inside public/assets/, which is a symlink") })
+    ]);
 
     const walked = await appDir({ app: { name: "Links" }, runtime: { static_root: "public" } });
     await fs.symlink(path.join(outside, "secret.txt"), path.join(walked, "public", "leak.txt"));
@@ -483,6 +499,119 @@ describe("validateAppDirectory", () => {
     expect(walkedReport.warnings).toEqual([
       expect.objectContaining({ code: "symlinks_skipped", message: expect.stringContaining("1 symlink is not uploaded (public/leak.txt)") })
     ]);
+  });
+
+  test("leaves dotfiles and dot-folders out of a folder publish, except .well-known and dot-folders the manifest names", async () => {
+    const dir = await appDir(
+      { app: { name: "Dots" }, runtime: { static_root: "public" } },
+      {
+        "public/index.html": "<h1>hi</h1>",
+        ".env": "STRIPE_SECRET_KEY=sk_live_abc",
+        ".npmrc": "//registry.npmjs.org/:_authToken=npm_SECRET",
+        ".git/config": '[remote "origin"] url = https://user:ghp_TOKEN@github.com/o/r',
+        ".DS_Store": "x",
+        "public/.env.local": "SECRET=1",
+        "public/.well-known/security.txt": "Contact: mailto:security@userland.fun",
+        "public/.well-known/.hidden": "x"
+      }
+    );
+    const report = await validateAppDirectory(dir);
+    expect(report.ok).toBe(true);
+    expect(report.release.file_count).toBe(2);
+    expect(report.warnings).toEqual([
+      expect.objectContaining({
+        code: "dotfiles_skipped",
+        message: expect.stringContaining("6 dotfiles and dot-folders are not uploaded (.DS_Store, .env, .git/, .npmrc, public/.env.local, and 1 more)")
+      })
+    ]);
+    expect(formatWarning(report.warnings[0])).toContain("list every release file in manifest.userland.json files");
+
+    const listing = await listReleaseFiles(dir, { runtime: { static_root: "public" } }, { manifestFile: "manifest.userland.json" });
+    expect(listing.files.map((file) => file.path)).toEqual(["public/.well-known/security.txt", "public/index.html"]);
+    expect(listing.skippedDotfiles).toEqual([".DS_Store", ".env", ".git/", ".npmrc", "public/.env.local", "public/.well-known/.hidden"]);
+
+    // A build folder such as .output/public named in runtime.static_root is still published.
+    const nuxt = await appDir({ app: { name: "Nuxt" }, runtime: { static_root: ".output/public" } }, { ".output/public/index.html": "<h1>hi</h1>", ".output/public/.env": "x", ".cache/x": "y" });
+    const nuxtListing = await listReleaseFiles(nuxt, { runtime: { static_root: ".output/public" } }, { manifestFile: "manifest.userland.json" });
+    expect(nuxtListing.files.map((file) => file.path)).toEqual([".output/public/index.html"]);
+    expect(nuxtListing.skippedDotfiles).toEqual([".cache/", ".output/public/.env"]);
+    expect((await validateAppDirectory(nuxt)).ok).toBe(true);
+
+    // Listing a dotfile in files uploads it on purpose.
+    const listed = await appDir({ app: { name: "Dots" }, runtime: { static_root: "public" }, files: [{ path: "public/index.html" }, { path: "public/.nojekyll" }] }, { "public/index.html": "x", "public/.nojekyll": "" });
+    const listedReport = await validateAppDirectory(listed);
+    expect(listedReport.ok).toBe(true);
+    expect(listedReport.release.file_count).toBe(2);
+    expect(listedReport.warnings).toEqual([]);
+  });
+
+  test("refuses private keys found in a folder publish", async () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n";
+    const dir = await appDir(
+      { app: { name: "Keys" }, runtime: { static_root: "public" } },
+      {
+        "public/index.html": "<h1>hi</h1>",
+        "certs/localhost-key.pem": pem,
+        "certs/localhost.pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        "deploy/id_ed25519": "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+        "deploy/id_ed25519.pub": "ssh-ed25519 AAAA",
+        "public/slides/talk.key": "PK\u0003\u0004 keynote",
+        "server.p12": "binary"
+      }
+    );
+    const report = await validateAppDirectory(dir);
+    expect(report.ok).toBe(false);
+    expect(report.errors.map((error) => [error.code, error.file])).toEqual([
+      ["private_key", "certs/localhost-key.pem"],
+      ["private_key", "deploy/id_ed25519"],
+      ["private_key", "server.p12"]
+    ]);
+    expect(report.errors[0].message).toContain("looks like a private key");
+    expect(report.release.file_count).toBe(4);
+  });
+
+  test("uploads a web app manifest.json and leaves out only the Userland manifest", async () => {
+    const webManifest = JSON.stringify({ name: "Shop", short_name: "Shop", icons: [], start_url: "/", display: "standalone" });
+    const dir = await appDir({ app: { name: "Pwa" }, runtime: { static_root: "public" } }, {
+      "public/index.html": "<h1>hi</h1>",
+      "public/manifest.json": webManifest,
+      "public/data/manifest.userland.json": "{}",
+      "manifest.json": webManifest
+    });
+    const report = await validateAppDirectory(dir);
+    expect(report.ok).toBe(true);
+    expect(report.manifest_file).toBe("manifest.userland.json");
+    const listing = await listReleaseFiles(dir, {}, { manifestFile: "manifest.userland.json" });
+    expect(listing.files.map((file) => file.path)).toEqual(["manifest.json", "public/data/manifest.userland.json", "public/index.html", "public/manifest.json"]);
+
+    // Without manifest.userland.json, a top-level manifest.json with Userland keys is the older
+    // manifest name and is not uploaded; a web app manifest.json is an ordinary file.
+    const legacy = await appDir({ app: { name: "Legacy" }, runtime: { static_root: "public" } });
+    await fs.rename(path.join(legacy, "manifest.userland.json"), path.join(legacy, "manifest.json"));
+    const legacyReport = await validateAppDirectory(legacy);
+    expect(legacyReport.manifest_file).toBe("manifest.json");
+    expect(legacyReport.release.file_count).toBe(1);
+
+    const pwaOnly = await appDir(undefined, { "public/index.html": "<h1>hi</h1>", "manifest.json": webManifest });
+    const pwaReport = await validateAppDirectory(pwaOnly);
+    expect(pwaReport.manifest_file).toBeNull();
+    expect(pwaReport.release.file_count).toBe(2);
+    expect(pwaReport.warnings.map((warning) => warning.code)).toEqual(["web_app_manifest", "missing_manifest"]);
+    expect(await findManifest(pwaOnly)).toEqual({ ok: true, document: {}, file: null, webAppManifest: true });
+  });
+
+  test("checks release paths before any file is read", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "userland-outside-"));
+    tempDirs.push(outside);
+    await fs.writeFile(path.join(outside, "secret.txt"), "outside");
+    const dir = await appDir({ app: { name: "Paths" }, runtime: { static_root: "public" } });
+    await fs.symlink(path.join(outside, "secret.txt"), path.join(dir, "public", "robots.txt"));
+
+    expect(await releaseFileProblem(dir, "public/index.html")).toEqual({ ok: true, size: 11 });
+    expect(await releaseFileProblem(dir, "../secret.txt")).toMatchObject({ ok: false, code: "unsafe_path" });
+    expect(await releaseFileProblem(dir, "public/robots.txt")).toMatchObject({ ok: false, code: "symlink" });
+    expect(await releaseFileProblem(dir, "public/missing.txt")).toMatchObject({ ok: false, code: "missing_file" });
+    expect(await releaseFileProblem(dir, "public")).toMatchObject({ ok: false, code: "missing_file" });
   });
 
   test("applies plans to one analysis without re-reading the directory", async () => {
