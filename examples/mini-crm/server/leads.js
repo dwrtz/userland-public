@@ -171,9 +171,12 @@ export function validateNote(form) {
 // ---------------------------------------------------------------------------
 // Production store. Two managed data collections declared in the manifest:
 //   leads     one row per lead, holding the current stage and follow-up date.
-//             Indexes: by_stage (stage + received_at) for the board's tabs and
-//             pages, and by_request_key (unique) for the per-email limit on the
-//             public form.
+//             `via` is "form" for requests from the public form and "owner"
+//             for leads the owner adds. Indexes: by_stage (stage +
+//             received_at) for the board's tabs and pages, and by_via (via +
+//             received_at) for the public form's limits. The demo_visitor
+//             field is unused; earlier versions of the demo used it, and
+//             Userland refuses a release that removes a field once published.
 //   activity  an append-only history: received, added, stage, follow_up, note.
 //             Index: by_lead (lead_id) for a lead's history.
 // Both collections are server_only, so every read and write goes through the
@@ -203,14 +206,31 @@ export const DELETE_BATCH = 15;
 /**
  * Limits on the public request form, so a script can't use up the app's data
  * rows (Free includes 1,000, and each request uses 2):
- * - perEmailPerDay: requests one email address can send in a UTC day. Enforced
- *   with the unique by_request_key index, so it holds even when requests arrive
- *   at the same moment.
- * - perHour, perDay: requests the form takes across everyone. Checked with one
- *   query before saving, so a burst of simultaneous requests can pass it by
- *   a few. Leads the owner adds count toward these but are never refused.
+ * - perEmailPerDay: requests one email address can send in 24 hours.
+ * - perHour, perDay: requests the form takes from everyone in the last hour
+ *   and the last 24 hours.
+ * Only requests from the form count (via "form"). Leads the owner adds never
+ * count toward these and are never refused.
+ *
+ * How they hold when requests arrive at the same moment: each request counts
+ * the recent form leads, saves its lead, then counts again with its own lead
+ * included and takes the lead back if that count is over a limit. Whatever
+ * order simultaneous requests run in, the last one to count sees every lead
+ * that stays, so the leads that stay never pass a limit. The cost is that a
+ * few requests arriving together right at a limit can all be turned away.
+ * Keep perDay under FORM_WINDOW, the most leads one count can see.
  */
 export const REQUEST_LIMITS = { perEmailPerDay: 3, perHour: 20, perDay: 60 };
+
+/** Newest form leads loaded for each count. Must stay above REQUEST_LIMITS.perDay. */
+const FORM_WINDOW = 100;
+
+/**
+ * Leads saved by an earlier version of this app have no received_at, and sort
+ * ahead of every dated lead. Each board visit fills it in (from created_at)
+ * for up to this many of them.
+ */
+export const REPAIR_BATCH = 12;
 
 /** Thrown when the public form refuses a request. `scope` is "email" or "busy". */
 export class RequestLimitError extends Error {
@@ -296,60 +316,60 @@ export function summarizeLeads(groups, now) {
   };
 }
 
-/** A per-day key for one email address, without storing the address again. */
-async function requestKeyBase(email, now) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(email));
-  const hex = [...new Uint8Array(digest).slice(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${today(now)}:${hex}`;
-}
-
-function isUniqueConflict(error) {
-  return error?.code === "unique_conflict";
+/**
+ * Which REQUEST_LIMITS a count is over once `adding` more leads arrive:
+ * "email", "busy", or "" when there's room.
+ */
+function overLimit(counts, adding) {
+  if (counts.email + adding > REQUEST_LIMITS.perEmailPerDay) return "email";
+  if (counts.hour + adding > REQUEST_LIMITS.perHour || counts.day + adding > REQUEST_LIMITS.perDay) return "busy";
+  return "";
 }
 
 export function createStore(ctx) {
   const leads = () => ctx.data.collection("leads");
   const activity = () => ctx.data.collection("activity");
 
-  /** Refuse public requests while the form is over REQUEST_LIMITS.perHour or perDay. */
-  async function assertFormOpen(now) {
-    const { rows } = await leads().list({ order_by: NEWEST_FIRST, limit: REQUEST_LIMITS.perDay });
-    const since = (ms) => rows.filter((row) => Date.parse(row.received_at || row.created_at) > now.getTime() - ms).length;
-    if (since(HOUR_MS) >= REQUEST_LIMITS.perHour || since(DAY_MS) >= REQUEST_LIMITS.perDay) {
-      throw new RequestLimitError("busy");
-    }
+  /**
+   * Form leads received in the last hour and the last 24 hours, and how many
+   * of those came from `email`. One query on the by_via index.
+   */
+  async function formCounts(email, now) {
+    const { rows } = await leads().list({ where: { via: "form" }, order_by: NEWEST_FIRST, limit: FORM_WINDOW });
+    const after = (ms) => rows.filter((row) => Date.parse(row.received_at) > now.getTime() - ms);
+    const day = after(DAY_MS);
+    return { hour: after(HOUR_MS).length, day: day.length, email: day.filter((row) => row.email === email).length };
+  }
+
+  function leadRow(values, via, receivedAt) {
+    return {
+      name: values.name,
+      email: values.email,
+      phone: values.phone,
+      project: values.project,
+      budget: values.budget,
+      timeline: values.timeline || undefined,
+      details: values.details,
+      source: values.source,
+      stage: "new",
+      follow_up_on: "",
+      received_at: receivedAt,
+      via
+    };
+  }
+
+  /** The first history entry for a new lead. */
+  function firstEntry(lead, via) {
+    return { lead_id: lead.id, lead_name: lead.name, kind: via === "form" ? "received" : "added", stage: "new", body: "" };
   }
 
   /**
-   * Save a lead and its first history entry. ctx.data.transaction groups the
-   * two writes but does not undo the first if the second fails, so a lead can
-   * exist without its "received" entry; the pages handle that.
+   * Fill in received_at on leads from an earlier version of this app (see
+   * REPAIR_BATCH), so they sort by age with the rest.
    */
-  async function saveLead(values, { via, receivedAt, requestKey }) {
-    return await ctx.data.transaction(async (tx) => {
-      const lead = await tx.collection("leads").create({
-        name: values.name,
-        email: values.email,
-        phone: values.phone,
-        project: values.project,
-        budget: values.budget,
-        timeline: values.timeline || undefined,
-        details: values.details,
-        source: values.source,
-        stage: "new",
-        follow_up_on: "",
-        received_at: receivedAt,
-        request_key: requestKey
-      });
-      await tx.collection("activity").create({
-        lead_id: lead.id,
-        lead_name: values.name,
-        kind: via === "public" ? "received" : "added",
-        stage: "new",
-        body: ""
-      });
-      return normalizeLead(lead);
-    });
+  async function repairOlderLeads(rows) {
+    const older = rows.filter((row) => !row.received_at && row.created_at).slice(0, REPAIR_BATCH);
+    await Promise.all(older.map((row) => leads().update(row.id, { received_at: row.created_at })));
   }
 
   return {
@@ -364,9 +384,13 @@ export function createStore(ctx) {
       return { leads: page.rows.map(normalizeLead), cursor: page.cursor ?? "" };
     },
 
-    /** Counts for the board's tabs and stats: one query per stage. */
+    /**
+     * Counts for the board's tabs and stats: one query per stage. Also fills
+     * in received_at on a few older leads (repairOlderLeads).
+     */
     async summarize(now) {
       const pages = await Promise.all(STAGES.map(({ value }) => leads().list({ where: { stage: value }, order_by: NEWEST_FIRST, limit: COUNT_LIMIT })));
+      await repairOlderLeads(pages.flatMap((page) => page.rows));
       return summarizeLeads(
         STAGES.map(({ value }, index) => ({ stage: value, leads: pages[index].rows.map(normalizeLead), more: Boolean(pages[index].cursor) })),
         now
@@ -379,25 +403,40 @@ export function createStore(ctx) {
     },
 
     /**
-     * Create a lead. Public requests pass REQUEST_LIMITS first: each email
-     * address gets perEmailPerDay slots a day in the unique request_key index,
-     * and a request takes the first free slot. When every slot is taken the
-     * platform refuses the write, so two requests can never share one.
+     * Create a lead and its first history entry. ctx.data.transaction groups
+     * the two writes but does not undo the first if the second fails, so a
+     * lead can exist without its first entry; the pages handle that.
+     *
+     * Requests from the public form (via "public") pass REQUEST_LIMITS: count,
+     * save, count again, and take the lead back if the second count is over.
+     * The history entry is saved only once the lead has passed.
      */
     async createLead(values, { via, now = new Date() }) {
       const receivedAt = now.toISOString();
-      if (via !== "public") return await saveLead(values, { via, receivedAt });
-
-      await assertFormOpen(now);
-      const base = await requestKeyBase(values.email, now);
-      for (let slot = 0; slot < REQUEST_LIMITS.perEmailPerDay; slot += 1) {
-        try {
-          return await saveLead(values, { via, receivedAt, requestKey: `${base}:${slot}` });
-        } catch (error) {
-          if (!isUniqueConflict(error)) throw error;
-        }
+      if (via !== "public") {
+        return await ctx.data.transaction(async (tx) => {
+          const lead = await tx.collection("leads").create(leadRow(values, "owner", receivedAt));
+          await tx.collection("activity").create(firstEntry(lead, "owner"));
+          return normalizeLead(lead);
+        });
       }
-      throw new RequestLimitError("email");
+
+      const before = overLimit(await formCounts(values.email, now), 1);
+      if (before) throw new RequestLimitError(before);
+      const lead = await leads().create(leadRow(values, "form", receivedAt));
+      let after;
+      try {
+        after = overLimit(await formCounts(values.email, now), 0);
+      } catch (error) {
+        await leads().delete(lead.id).catch(() => {});
+        throw error;
+      }
+      if (after) {
+        await leads().delete(lead.id);
+        throw new RequestLimitError(after);
+      }
+      await activity().create(firstEntry(lead, "form"));
+      return normalizeLead(lead);
     },
 
     /** Change the stage and/or follow-up date, recording each change. */

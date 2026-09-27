@@ -12,7 +12,7 @@ Example page: https://userland.fun/examples/mini-crm/
 - Server runtime routes with server-rendered HTML and no client JavaScript.
 - App-user auth with a single `owner` role and no public signup. Owner routes check `ctx.auth.currentUser(request)` for the role.
 - Managed data: `leads` for the current state of each lead, `activity` for its history. The board queries leads by stage, newest first, and pages through them.
-- A unique index (`by_request_key`) that limits how many requests one email address can send a day, even when they arrive at the same moment.
+- Limits on the public form that hold even when requests arrive at the same moment: a request counts recent requests, saves its lead, counts again, and takes the lead back if it went over (see [Spam and limits](#spam-and-limits)).
 - `ctx.data.transaction` to group a lead with its first history entry. It doesn't undo the first write if the second fails, so a lead can exist without its history entry; the pages handle that.
 - App events from `ctx.log` for received leads, stage changes, and notes (ids only, no contact details).
 - Rollback to an earlier release without losing leads.
@@ -59,8 +59,10 @@ Every form post must come from the app's own pages. Other apps on `*.apps.userla
 
 ## Data model
 
-- `leads`: `name`, `email`, `phone`, `project`, `budget`, `timeline`, `details`, `stage`, `source`, `follow_up_on`, `received_at`, `request_key`, plus `id`, `created_at`, `updated_at`. Indexes: `by_stage` (`stage`, `received_at`) for the board, and `by_request_key` (unique) for the per-email limit. `request_key` is the UTC day, a hash of the email address, and a slot number; leads the owner adds have none.
+- `leads`: `name`, `email`, `phone`, `project`, `budget`, `timeline`, `details`, `stage`, `source`, `follow_up_on`, `received_at`, `via`, plus `id`, `created_at`, `updated_at`. `via` is `form` for requests from the public form and `owner` for leads the owner adds. Indexes: `by_stage` (`stage`, `received_at`) for the board, and `by_via` (`via`, `received_at`) for the form's limits. `demo_visitor` is unused: earlier versions of the demo saved leads with it, and Userland won't make a release live if it removes a field the published app already has.
 - `activity`: `lead_id`, `lead_name`, `kind` (`received`, `added`, `stage`, `follow_up`, `note`), `stage`, `body`, plus `id` and `created_at`. Index: `by_lead`. The demo adds `demo_visitor` and `demo_saved_at` and the `by_demo_visitor` index (see [Demo mode](#demo-mode)).
+
+Leads saved by an earlier version of this example have no `received_at` and would sort ahead of every new lead. Each visit to the board fills it in from `created_at` for up to 12 of them (`REPAIR_BATCH` in `server/leads.js`), so after a few visits they sort by age with the rest.
 
 Both collections are `server_only`. Public routes can create a lead but never read one back.
 
@@ -70,16 +72,20 @@ The board loads one page of 50 leads and counts up to 100 leads per stage; a sta
 
 The form has a hidden honeypot field that drops simple bots. On top of that, `REQUEST_LIMITS` in `server/leads.js` sets:
 
-- `perEmailPerDay` (3): requests one email address can send in a UTC day. Each address gets that many slots in the unique `by_request_key` index, so simultaneous requests can't get past it.
-- `perHour` (20) and `perDay` (60): requests the form takes across everyone. One query checks them before saving, so a burst of simultaneous requests can pass them by a few. Leads the owner adds count toward them but are never refused.
+- `perEmailPerDay` (3): requests one email address can send in 24 hours.
+- `perHour` (20) and `perDay` (60): requests the form takes from everyone in the last hour and the last 24 hours.
+
+Only requests from the form count. Leads the owner adds never count toward these limits and are never refused, so a busy day of phone leads doesn't close the form.
+
+Each request counts the recent form leads (one query on `by_via`), saves its lead, then counts again with its own lead included and takes the lead back if that count is over a limit. Whatever order simultaneous requests run in, the last one to count sees every lead that stays, so the leads that stay never pass a limit, even in a burst. The cost: a few requests arriving together right at a limit can all be turned away, and while a burst is being counted its leads briefly use data rows before they're taken back. Keep `perDay` under 100, the most leads one count can see.
 
 A refused visitor sees a page with the business phone number. When the app runs out of data rows, the form shows "We can't take requests online right now" with the phone number, the owner board says how to make room, and the app logs a `data row limit reached` event. The owner deletes spam from each lead's page ("Delete lead"); a lead with a long history may take a second press, since each request removes at most 15 history entries.
 
-These limits count requests, not senders: Userland doesn't document a visitor IP header for app code, so a script that changes its email address still gets `perHour` requests through. Lower the numbers if that's too many for the plan's rows.
+These limits count requests, not senders: Userland doesn't document a visitor IP header for app code, so a script that changes its email address still gets `perHour` requests through each hour and `perDay` each day. At 2 rows a request, a script running every day adds 120 rows a day until the owner deletes them. Lower the numbers if that's too many for the plan's rows.
 
 ## Publish
 
-Demo mode only turns on at the public demo's addresses, so a copy you publish anywhere else runs the signed-in owner board. For a real business, still remove the demo code before the first publish (see [Demo mode](#demo-mode)); removing its fields later is a resource change.
+Demo mode only turns on at the public demo's addresses, so a copy you publish anywhere else runs the signed-in owner board. For a real business, still remove the demo code before the first publish (see [Demo mode](#demo-mode)). Once a copy is published, keep its fields: Userland won't make a release live if it removes a field the app already has, so a copy published with the demo fields keeps them (unused) even after you delete `server/demo.js`.
 
 Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
 
@@ -111,13 +117,13 @@ The owner opens the invite link, sets a password, and signs in at `/_userland/au
 
 The demo saves only `activity` rows, tagged with the visitor's key and the time (`demo_visitor`, `demo_saved_at`); a lead a visitor adds is its first row. The key is the only thing tying entries to a visitor, so anyone who has a visitor's link sees that visitor's entries. The demo pages say this plainly and ask visitors to use made-up details. Visitors who only look around save nothing.
 
-Limits (`DEMO_LIMITS` and `DEMO_KEEP_HOURS` in `server/demo.js`): each visitor can save up to 10 leads and 40 entries, and the whole demo takes at most 60 entries in any hour. A visitor without a key gets a new one on their first save, so the hourly limit is the one that holds against scripts. Entries are removed 12 hours after they're saved: each save first deletes up to 4 expired rows. The demo therefore holds at most about 720 rows, inside Free's 1,000.
+Limits (`DEMO_LIMITS` and `DEMO_KEEP_HOURS` in `server/demo.js`): each visitor can save up to 10 leads and 40 entries, and the whole demo takes at most 60 entries in any hour. A visitor without a key gets a new one on their first save, so the hourly limit is the one that holds against scripts. Like the public form's limits, it counts again after saving and takes the entries back if the hour is over, so it holds even when saves arrive at the same moment. Entries are removed 12 hours after they're saved: each save first deletes up to 4 expired rows. The demo therefore holds at most 720 rows, inside Free's 1,000.
 
 To remove the demo code for a real business, before the first publish:
 
 1. Delete `server/demo.js`.
 2. In `server/index.js`, delete the `import { demo } from "./demo.js";` line and change the last line to `export default createApp();`.
-3. In `manifest.userland.json`, in the `activity` collection, remove the `demo_visitor` and `demo_saved_at` fields and the `by_demo_visitor` index. Keep `by_lead`.
+3. In `manifest.userland.json`, remove the `demo_visitor` field from the `leads` collection, and in the `activity` collection remove the `demo_visitor` and `demo_saved_at` fields and the `by_demo_visitor` index. Keep `by_lead`. Only do this step before the first publish (see [Publish](#publish)).
 4. Delete `tests/demo.test.ts` (the demo-mode tests).
 
 The owner routes require a signed-in app user with the `owner` role. The "the published app outside the demo's addresses" test in `tests/mini-crm.test.ts` checks that a copy published elsewhere keeps the owner board behind sign-in. The "turning demo mode off" tests run steps 1 to 4 on a copy of the example and then run the copy's remaining tests, so `npx vitest run examples/mini-crm` still passes after you follow the steps.

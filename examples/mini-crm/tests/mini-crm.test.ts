@@ -7,7 +7,7 @@ import { createFakeRuntime, expectHeadLikeGet, readExampleManifest } from "../..
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { createApp } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { COUNT_LIMIT, DELETE_BATCH, PAGE_SIZE, REQUEST_LIMITS, validateLead } from "../server/leads.js";
+import { COUNT_LIMIT, DELETE_BATCH, PAGE_SIZE, REPAIR_BATCH, REQUEST_LIMITS, validateLead } from "../server/leads.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { mailtoHref } from "../server/views.js";
 import { EXAMPLE_DIR, ORIGIN, OWNER, at, get, makeCtx, post, request } from "./helpers.js";
@@ -16,11 +16,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Save leads straight to the data collections, as if they arrived earlier. */
-async function seedLeads(ctx: ReturnType<typeof makeCtx>, count: number, { stage = "new", minutesApart = 1, from = Date.now() } = {}) {
+/**
+ * Save leads straight to the data collections, as if they arrived earlier.
+ * `via` is "form" (the public form) or "owner"; `older` saves them the way an
+ * earlier version of this app did, without received_at or via.
+ */
+async function seedLeads(ctx: ReturnType<typeof makeCtx>, count: number, { stage = "new", minutesApart = 1, from = Date.now(), via = "form", older = false, prefix = "Seeded" } = {}) {
   for (let index = 0; index < count; index += 1) {
     await ctx.data.collection("leads").create({
-      name: `Seeded ${String(index).padStart(3, "0")}`,
+      name: `${prefix} ${String(index).padStart(3, "0")}`,
       email: `seeded${index}@example.com`,
       phone: "",
       project: "kitchen",
@@ -29,10 +33,40 @@ async function seedLeads(ctx: ReturnType<typeof makeCtx>, count: number, { stage
       source: "website",
       stage,
       follow_up_on: "",
-      received_at: new Date(from - index * minutesApart * 60_000).toISOString()
+      ...(older ? {} : { received_at: new Date(from - index * minutesApart * 60_000).toISOString(), via })
     });
   }
 }
+
+/** Send `count` form requests at the same moment, each from a different address. */
+async function burst(app: any, ctx: ReturnType<typeof makeCtx>, count: number, label = "burst") {
+  const responses = await Promise.all(Array.from({ length: count }, (_, index) => post(app, ctx, "/estimate", { ...request, email: `${label}${index}@example.com` })));
+  return responses.map((response) => response.status);
+}
+
+/** A field's type in the manifest: "string", "enum", and so on. */
+function fieldType(spec: unknown) {
+  return typeof spec === "string" ? spec : (spec as { type: string }).type;
+}
+
+describe("the manifest", () => {
+  // Userland won't make a release live if it removes a field, or changes a
+  // field's type, that the published app already has. These are the fields
+  // earlier releases of this example published (the demo's are checked in
+  // tests/demo.test.ts).
+  it("keeps every field earlier releases published, with the same type", () => {
+    const published: Record<string, Record<string, string>> = {
+      leads: { name: "string", email: "string", phone: "string", project: "enum", budget: "enum", timeline: "enum", details: "string", stage: "enum", source: "enum", follow_up_on: "string" },
+      activity: { lead_id: "string", lead_name: "string", kind: "enum", stage: "enum", body: "string" }
+    };
+    const collections = (readExampleManifest(EXAMPLE_DIR) as any).resources.data.collections;
+    for (const [collection, fields] of Object.entries(published)) {
+      for (const [field, type] of Object.entries(fields)) {
+        expect(fieldType(collections[collection].fields[field]), `${collection}.${field}`).toBe(type);
+      }
+    }
+  });
+});
 
 describe("public estimate form", () => {
   it("renders the form without demo notices when demo mode is off", async () => {
@@ -56,8 +90,7 @@ describe("public estimate form", () => {
     expect(ctx.state.leads).toHaveLength(1);
     expect(ctx.state.leads[0]).toMatchObject({ name: "Jordan Pike", email: "jordan.pike@example.com", stage: "new", source: "website" });
     expect(ctx.state.leads[0]!.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    // The per-email key never repeats the address itself.
-    expect(String(ctx.state.leads[0]!.request_key)).not.toContain("jordan");
+    expect(ctx.state.leads[0]!.via).toBe("form");
     expect(ctx.state.activity[0]).toMatchObject({ lead_id: ctx.state.leads[0]!.id, kind: "received" });
     // App events never carry the visitor's contact details.
     expect(JSON.stringify(ctx.log.info.mock.calls)).not.toContain("jordan");
@@ -158,29 +191,41 @@ describe("form size", () => {
 });
 
 describe("limits on the public form", () => {
-  it("takes a few requests per email address a day, even when they arrive together", async () => {
+  it("takes a few requests per email address in 24 hours", async () => {
     const app = createApp();
     const ctx = makeCtx();
-    const responses = await Promise.all(Array.from({ length: REQUEST_LIMITS.perEmailPerDay + 3 }, () => post(app, ctx, "/estimate", request)));
-    const statuses = responses.map((response) => response.status).sort();
-    expect(statuses.filter((status) => status === 303)).toHaveLength(REQUEST_LIMITS.perEmailPerDay);
-    expect(statuses.filter((status) => status === 429)).toHaveLength(3);
-    expect(ctx.state.leads).toHaveLength(REQUEST_LIMITS.perEmailPerDay);
-    // No half-saved leads: every lead has its history entry.
-    expect(ctx.state.activity).toHaveLength(REQUEST_LIMITS.perEmailPerDay);
-
+    for (let index = 0; index < REQUEST_LIMITS.perEmailPerDay; index += 1) {
+      expect((await post(app, ctx, "/estimate", request)).status).toBe(303);
+    }
     const refused = await post(app, ctx, "/estimate", { ...request, email: "JORDAN.PIKE@example.com" });
     expect(refused.status).toBe(429);
     const text = await refused.text();
     expect(text).toContain("We already have your request");
     expect(text).toContain("(555) 010-0140");
     expect(ctx.log.warn).toHaveBeenCalledWith("request form limit reached", { scope: "email" });
+    expect(ctx.state.leads).toHaveLength(REQUEST_LIMITS.perEmailPerDay);
+    expect(ctx.state.activity).toHaveLength(REQUEST_LIMITS.perEmailPerDay);
 
-    // Another address still gets through, and the same one does the next day.
+    // Another address still gets through, and the same one does a day later.
     expect((await post(app, ctx, "/estimate", { ...request, email: "someone.else@example.com" })).status).toBe(303);
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + 24 * 3_600_000);
+    vi.setSystemTime(Date.now() + 24 * 3_600_000 + 1_000);
     expect((await post(app, ctx, "/estimate", request)).status).toBe(303);
+  });
+
+  it("never keeps more than perEmailPerDay requests from one address, even when they arrive together", async () => {
+    for (const jitterMs of [0, 5]) {
+      const app = createApp();
+      const ctx = makeCtx();
+      ctx.faults.jitterMs = jitterMs;
+      const statuses = await Promise.all(Array.from({ length: 12 }, () => post(app, ctx, "/estimate", request).then((response) => response.status)));
+      expect(statuses.every((status) => status === 303 || status === 429)).toBe(true);
+      const kept = statuses.filter((status) => status === 303).length;
+      expect(ctx.state.leads.length).toBeLessThanOrEqual(REQUEST_LIMITS.perEmailPerDay);
+      expect(ctx.state.leads).toHaveLength(kept);
+      // Every lead that stayed has its history entry; refused ones left nothing.
+      expect(ctx.state.activity).toHaveLength(kept);
+    }
   });
 
   it("pauses the form after perHour requests in an hour, then opens again", async () => {
@@ -214,15 +259,56 @@ describe("limits on the public form", () => {
     expect(ctx.state.leads).toHaveLength(REQUEST_LIMITS.perDay);
   });
 
-  it("lets a burst of simultaneous requests pass perHour by no more than the burst", async () => {
+  it("keeps the form open however many leads the owner adds", async () => {
     const app = createApp();
-    const ctx = makeCtx();
-    await seedLeads(ctx, REQUEST_LIMITS.perHour - 1, { minutesApart: 0 });
-    const burst = await Promise.all(Array.from({ length: 5 }, (_, index) => post(app, ctx, "/estimate", { ...request, email: `burst${index}@example.com` })));
-    expect(burst.every((response) => response.status === 303 || response.status === 429)).toBe(true);
-    expect(ctx.state.leads.length).toBeLessThanOrEqual(REQUEST_LIMITS.perHour - 1 + 5);
-    // Once the burst has landed, the form is paused.
-    expect((await post(app, ctx, "/estimate", { ...request, email: "after@example.com" })).status).toBe(429);
+    const ctx = makeCtx({ user: OWNER });
+    for (let index = 0; index < REQUEST_LIMITS.perHour + 5; index += 1) {
+      expect((await post(app, ctx, "/admin/leads", { ...request, email: `phone${index}@example.com`, source: "phone" })).status).toBe(303);
+    }
+    // A busy day of phone leads, more than the form's daily limit.
+    await seedLeads(ctx, REQUEST_LIMITS.perDay + 10, { via: "owner", minutesApart: 10, prefix: "Phone" });
+    expect(ctx.state.leads.every((lead) => lead.via === "owner")).toBe(true);
+    ctx.setUser(null);
+    expect((await post(app, ctx, "/estimate", request)).status).toBe(303);
+  });
+
+  it("never keeps more than perHour requests when a burst arrives at once", async () => {
+    for (const jitterMs of [0, 5]) {
+      const app = createApp();
+      const ctx = makeCtx();
+      ctx.faults.jitterMs = jitterMs;
+      const statuses = await burst(app, ctx, 300);
+      expect(statuses.every((status) => status === 303 || status === 429)).toBe(true);
+      const kept = statuses.filter((status) => status === 303).length;
+      expect(ctx.state.leads.length).toBeLessThanOrEqual(REQUEST_LIMITS.perHour);
+      expect(ctx.state.leads).toHaveLength(kept);
+      expect(ctx.state.activity).toHaveLength(kept);
+
+      // Afterwards the form takes requests one at a time up to exactly perHour.
+      ctx.faults.jitterMs = 0;
+      for (let index = 0; index < REQUEST_LIMITS.perHour + 2; index += 1) {
+        await post(app, ctx, "/estimate", { ...request, email: `after${index}@example.com` });
+      }
+      expect(ctx.state.leads).toHaveLength(REQUEST_LIMITS.perHour);
+      expect(ctx.state.activity).toHaveLength(REQUEST_LIMITS.perHour);
+    }
+  });
+
+  it("never passes perHour or perDay when a burst lands near the limit", async () => {
+    const nearHour = makeCtx();
+    nearHour.faults.jitterMs = 5;
+    await seedLeads(nearHour, REQUEST_LIMITS.perHour - 2, { minutesApart: 0 });
+    await burst(createApp(), nearHour, 30);
+    expect(nearHour.state.leads.length).toBeLessThanOrEqual(REQUEST_LIMITS.perHour);
+    expect(nearHour.state.leads.length).toBeGreaterThanOrEqual(REQUEST_LIMITS.perHour - 2);
+
+    const nearDay = makeCtx();
+    nearDay.faults.jitterMs = 5;
+    // Two hours back and older, so the hourly limit has room.
+    await seedLeads(nearDay, REQUEST_LIMITS.perDay - 2, { minutesApart: 15, from: Date.now() - 2 * 3_600_000 });
+    await burst(createApp(), nearDay, 30);
+    expect(nearDay.state.leads.length).toBeLessThanOrEqual(REQUEST_LIMITS.perDay);
+    expect(nearDay.state.activity.length).toBe(nearDay.state.leads.length - (REQUEST_LIMITS.perDay - 2));
   });
 
   it("asks visitors to call when the app is out of data rows, and tells the owner how to make room", async () => {
@@ -443,6 +529,30 @@ describe("lead board pages", () => {
     expect(second).not.toContain("Older leads");
   });
 
+  it("dates leads saved by an earlier version of the app, so they stop crowding out new ones", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-08-01T12:00:00Z"));
+    const app = createApp();
+    const ctx = makeCtx();
+    const older = REPAIR_BATCH * 2 + 5;
+    await seedLeads(ctx, older, { older: true, prefix: "Older" });
+
+    // Older leads don't count toward the form's limits or hide recent requests from them.
+    for (let index = 0; index < REQUEST_LIMITS.perHour; index += 1) {
+      vi.setSystemTime(Date.parse("2026-09-01T12:00:00Z") + index * 60_000);
+      expect((await post(app, ctx, "/estimate", { ...request, name: `Recent ${index}`, email: `recent${index}@example.com` })).status).toBe(303);
+    }
+    expect((await post(app, ctx, "/estimate", { ...request, email: "one.more@example.com" })).status).toBe(429);
+
+    // Each board visit dates REPAIR_BATCH of them; after that the newest lead is on top.
+    ctx.setUser(OWNER);
+    const visits = Math.ceil(older / REPAIR_BATCH);
+    for (let visit = 0; visit < visits; visit += 1) expect((await get(app, ctx, "/admin")).status).toBe(200);
+    expect(ctx.state.leads.every((lead) => typeof lead.received_at === "string")).toBe(true);
+    const board = await (await get(app, ctx, "/admin")).text();
+    expect(board.match(/class="lead-link"[^>]*>([^<]+)</)![1]).toBe(`Recent ${REQUEST_LIMITS.perHour - 1}`);
+  });
+
   it("recovers from a broken page link", async () => {
     const app = createApp();
     const ctx = makeCtx({ user: OWNER });
@@ -528,8 +638,12 @@ function withoutDemoImport(source: string) {
   return kept.join("\n");
 }
 
-/** Step 3: in the activity collection, drop demo_visitor, demo_saved_at, and by_demo_visitor. */
+/**
+ * Step 3: drop demo_visitor from leads, and demo_visitor, demo_saved_at, and
+ * by_demo_visitor from activity.
+ */
 function withoutDemoFields(manifest: any) {
+  delete manifest.resources.data.collections.leads.fields.demo_visitor;
   const activity = manifest.resources.data.collections.activity;
   delete activity.fields.demo_visitor;
   delete activity.fields.demo_saved_at;

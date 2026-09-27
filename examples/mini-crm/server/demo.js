@@ -21,12 +21,20 @@
 // - Limits (DEMO_LIMITS): each visitor can save a few leads and entries, and
 //   the whole demo takes at most `perHour` entries in any hour. A visitor
 //   without a key gets a new one on their first save, so the hourly limit is
-//   the one that holds against scripts. Both are checked with a query before
-//   saving, so simultaneous saves can pass them by a few.
+//   the one that holds against scripts. Each save checks both first; then,
+//   once its entries are saved, it counts the last hour again with them
+//   included and takes them back if the count is over `perHour`. The last
+//   save to count sees every entry that stays, so the hourly limit holds even
+//   when saves arrive at the same moment (a few saves arriving together right
+//   at the limit can all be turned away). The per-visitor limits are checked
+//   only before saving; a script gets nothing from them anyway.
 // - Entries are removed DEMO_KEEP_HOURS after they're saved: every save first
 //   deletes a few expired rows (SWEEP_BATCH). With the hourly limit, the demo
-//   holds at most about perHour x DEMO_KEEP_HOURS rows (720), inside the Free
+//   holds at most perHour x DEMO_KEEP_HOURS rows (720), inside the Free
 //   plan's 1,000.
+// - The leads collection keeps a demo_visitor field that nothing uses: older
+//   versions of the demo saved leads there, and Userland refuses a release
+//   that removes a field the live app already has.
 //
 // Demo mode only turns on for the hostnames in DEMO_HOSTS, so a copy of this
 // app published anywhere else runs the real, signed-in owner board and saves
@@ -36,8 +44,11 @@
 // 1. Delete this file.
 // 2. In server/index.js, delete the `import { demo } from "./demo.js";` line and
 //    change the last line to `export default createApp();`.
-// 3. In manifest.userland.json, in the activity collection, remove the
-//    demo_visitor and demo_saved_at fields and the by_demo_visitor index.
+// 3. In manifest.userland.json, remove the demo_visitor field from the leads
+//    collection, and in the activity collection remove the demo_visitor and
+//    demo_saved_at fields and the by_demo_visitor index. Do this before the
+//    first publish: once an app is live, Userland won't release a version that
+//    removes a field, so a published copy keeps them (unused).
 // 4. Delete tests/demo.test.ts.
 // The owner routes then require a signed-in app user with the owner role.
 // ---------------------------------------------------------------------------
@@ -54,7 +65,8 @@ const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 /**
  * Most leads and entries one visitor can save, and most entries the whole
  * demo takes in any hour. Adding a lead is one entry; each stage change,
- * follow-up date, or note is one more.
+ * follow-up date, or note is one more. Keep perHour under 100, the most
+ * entries one count can see.
  */
 export const DEMO_LIMITS = { leads: 10, entries: 40, perHour: 60 };
 
@@ -232,17 +244,28 @@ function openStore(ctx, key, now = new Date()) {
       .sort(byReceived);
   }
 
+  /** The newest 100 entries across the demo, newest first. */
+  async function newestEntries() {
+    return await activity().list({ order_by: [{ field: "demo_saved_at", direction: "desc" }], limit: 100 });
+  }
+
+  /** How many of `rows` the demo saved in the last hour. */
+  function countLastHour(rows) {
+    return rows.filter((row) => !isExpired(row) && Date.parse(row.demo_saved_at) > now.getTime() - HOUR_MS).length;
+  }
+
   /**
    * Remove up to SWEEP_BATCH expired rows, then return how many entries the
    * whole demo saved in the last hour. Rows without demo_saved_at come from an
    * older version of the demo, count as expired, and sort first when newest
    * first; those older versions also saved each lead in the leads
-   * collection, so that row goes too.
+   * collection, so that row goes too. Until they're all gone, they take
+   * places in the newest 100 and can hide recent entries from the count.
    */
   async function sweepAndCountLastHour() {
     const [oldest, newest] = await Promise.all([
       activity().list({ order_by: [{ field: "demo_saved_at", direction: "asc" }], limit: SWEEP_BATCH }),
-      activity().list({ order_by: [{ field: "demo_saved_at", direction: "desc" }], limit: 100 })
+      newestEntries()
     ]);
     const expired = new Map();
     for (const row of [...newest.rows, ...oldest.rows]) {
@@ -256,7 +279,7 @@ function openStore(ctx, key, now = new Date()) {
         }
       })
     );
-    return newest.rows.filter((row) => !isExpired(row) && Date.parse(row.demo_saved_at) > now.getTime() - HOUR_MS).length;
+    return countLastHour(newest.rows);
   }
 
   /** Throw DemoLimitError unless this visitor, and the demo, can take `entries` more. */
@@ -268,10 +291,24 @@ function openStore(ctx, key, now = new Date()) {
     if ((await sweepAndCountLastHour()) + entries > DEMO_LIMITS.perHour) throw new DemoLimitError("everyone");
   }
 
-  async function record(entry) {
-    const row = await activity().create({ ...entry, demo_visitor: key, demo_saved_at: new Date().toISOString() });
-    own = null;
-    return normalizeActivity(row);
+  /**
+   * Save this visitor's entries, then count the last hour again with them
+   * included. Over DEMO_LIMITS.perHour, take them all back and refuse.
+   */
+  async function record(entries) {
+    const saved = [];
+    try {
+      for (const entry of entries) {
+        saved.push(await activity().create({ ...entry, demo_visitor: key, demo_saved_at: new Date().toISOString() }));
+      }
+      if (countLastHour((await newestEntries()).rows) > DEMO_LIMITS.perHour) throw new DemoLimitError("everyone");
+    } catch (error) {
+      await Promise.all(saved.map((row) => activity().delete(row.id).catch(() => {})));
+      throw error;
+    } finally {
+      own = null;
+    }
+    return saved.map(normalizeActivity);
   }
 
   return {
@@ -297,7 +334,7 @@ function openStore(ctx, key, now = new Date()) {
     async createLead(values, { via }) {
       await assertRoom({ lead: true });
       const details = Object.fromEntries(LEAD_FIELDS.map((field) => [field, values[field] ?? ""]));
-      const entry = await record({ lead_id: `demo-${newKey()}`, lead_name: values.name, kind: via === "public" ? "received" : "added", stage: "new", body: JSON.stringify(details) });
+      const [entry] = await record([{ lead_id: `demo-${newKey()}`, lead_name: values.name, kind: via === "public" ? "received" : "added", stage: "new", body: JSON.stringify(details) }]);
       return leadFromEntry(entry);
     },
 
@@ -306,14 +343,17 @@ function openStore(ctx, key, now = new Date()) {
       const followChanged = values.follow_up_on !== lead.follow_up_on;
       if (!stageChanged && !followChanged) return lead;
       await assertRoom({ entries: (stageChanged ? 1 : 0) + (followChanged ? 1 : 0) });
-      if (stageChanged) await record({ lead_id: lead.id, lead_name: lead.name, kind: "stage", stage: values.stage, body: "" });
-      if (followChanged) await record({ lead_id: lead.id, lead_name: lead.name, kind: "follow_up", body: values.follow_up_on });
+      await record([
+        ...(stageChanged ? [{ lead_id: lead.id, lead_name: lead.name, kind: "stage", stage: values.stage, body: "" }] : []),
+        ...(followChanged ? [{ lead_id: lead.id, lead_name: lead.name, kind: "follow_up", body: values.follow_up_on }] : [])
+      ]);
       return { ...lead, ...values };
     },
 
     async addNote(lead, body) {
       await assertRoom();
-      return await record({ lead_id: lead.id, lead_name: lead.name, kind: "note", body });
+      const [entry] = await record([{ lead_id: lead.id, lead_name: lead.name, kind: "note", body }]);
+      return entry;
     },
 
     async recentActivity(limit) {

@@ -45,8 +45,12 @@
               "values": ["website", "phone", "referral", "repeat_client", "other"]
             },
             "follow_up_on": "string",
+            "demo_visitor": "string",
             "received_at": "datetime",
-            "request_key": "string"
+            "via": {
+              "type": "enum",
+              "values": ["form", "owner"]
+            }
           },
           "indexes": [
             {
@@ -54,9 +58,8 @@
               "fields": ["stage", "received_at"]
             },
             {
-              "name": "by_request_key",
-              "fields": ["request_key"],
-              "unique": true
+              "name": "by_via",
+              "fields": ["via", "received_at"]
             }
           ],
           "access": {

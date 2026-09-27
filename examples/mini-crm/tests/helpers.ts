@@ -18,11 +18,16 @@ export const EXAMPLE_DIR = path.resolve(import.meta.dirname, "..");
  * - a unique index clash throws code "unique_conflict";
  * - ctx.data.transaction does not undo earlier writes when a later one throws;
  * - `faults.quotaFull` makes every create throw code "quota_exceeded", like an
- *   app that has used its plan's data rows.
+ *   app that has used its plan's data rows;
+ * - `faults.jitterMs` waits a random 0 to jitterMs milliseconds before each
+ *   data call, so simultaneous requests interleave in many different orders.
  */
 export function makeCtx({ user = null as User, manifest = readExampleManifest(EXAMPLE_DIR) } = {}) {
   const rt = createFakeRuntime(manifest, { user: user ? { ...user, app_user_id: user.id } : null });
-  const faults = { quotaFull: false };
+  const faults = { quotaFull: false, jitterMs: 0 };
+  const jitter = async () => {
+    if (faults.jitterMs > 0) await new Promise((resolve) => setTimeout(resolve, Math.random() * faults.jitterMs));
+  };
 
   const rethrow = (error: any): never => {
     if (error?.code === "unique_violation") throw Object.assign(new Error(error.message), { code: "unique_conflict", status: 409 });
@@ -33,13 +38,26 @@ export function makeCtx({ user = null as User, manifest = readExampleManifest(EX
     const inner = rt.ctx.data.collection(name);
     return {
       async create(input: Record<string, unknown>) {
+        await jitter();
         if (faults.quotaFull) throw Object.assign(new Error("Data row quota exceeded."), { code: "quota_exceeded", status: 402 });
         return await inner.create(input).catch(rethrow);
       },
-      get: inner.get,
-      update: (id: string, patch: Record<string, unknown>) => inner.update(id, patch).catch(rethrow),
-      delete: inner.delete,
-      list: inner.list,
+      async get(id: string) {
+        await jitter();
+        return await inner.get(id);
+      },
+      async update(id: string, patch: Record<string, unknown>) {
+        await jitter();
+        return await inner.update(id, patch).catch(rethrow);
+      },
+      async delete(id: string) {
+        await jitter();
+        return await inner.delete(id);
+      },
+      async list(query?: Parameters<typeof inner.list>[0]) {
+        await jitter();
+        return await inner.list(query);
+      },
       query: inner.query
     };
   };

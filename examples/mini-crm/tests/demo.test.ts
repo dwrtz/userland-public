@@ -1,11 +1,11 @@
 // Tests for the public demo's demo mode (server/demo.js). Delete this file
 // together with server/demo.js when you turn demo mode off (see README.md).
-import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+import { expectHeadLikeGet, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app, { createApp } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { DEMO_HOSTS, DEMO_KEEP_HOURS, DEMO_LIMITS, SWEEP_BATCH, demo } from "../server/demo.js";
-import { DEMO_ORIGIN, type Ctx, at, demoKey, makeCtx, request } from "./helpers.js";
+import { DEMO_ORIGIN, EXAMPLE_DIR, type Ctx, at, demoKey, makeCtx, request } from "./helpers.js";
 
 // Demo mode only turns on at the public demo's addresses.
 const { get, post } = at(DEMO_ORIGIN);
@@ -230,14 +230,35 @@ describe("demo mode", () => {
     expect((await post(app, ctx, "/estimate", request)).status).toBe(303);
   });
 
-  it("lets a burst of simultaneous saves pass the hourly limit by no more than the burst", async () => {
+  it("never keeps more than perHour entries an hour when saves arrive at once", async () => {
+    for (const jitterMs of [0, 5]) {
+      const app = createApp({ demo });
+      const ctx = makeCtx();
+      ctx.faults.jitterMs = jitterMs;
+      // Keyless saves, like a script: each one gets a new visitor key.
+      const statuses = await Promise.all(Array.from({ length: 300 }, () => post(app, ctx, "/estimate", request).then((response) => response.status)));
+      expect(statuses.every((status) => status === 303 || status === 429)).toBe(true);
+      expect(ctx.state.activity.length).toBeLessThanOrEqual(DEMO_LIMITS.perHour);
+      expect(ctx.state.activity).toHaveLength(statuses.filter((status) => status === 303).length);
+
+      // Afterwards the demo takes saves one at a time up to exactly perHour.
+      ctx.faults.jitterMs = 0;
+      for (let index = 0; index < DEMO_LIMITS.perHour + 2; index += 1) await post(app, ctx, "/estimate", request);
+      expect(ctx.state.activity).toHaveLength(DEMO_LIMITS.perHour);
+    }
+  });
+
+  it("takes back both entries of a stage change that lands over the hourly limit", async () => {
     const app = createApp({ demo });
     const ctx = makeCtx();
-    await seedEntries(ctx, DEMO_LIMITS.perHour - 1);
-    const burst = await Promise.all(Array.from({ length: 5 }, () => post(app, ctx, "/estimate", request)));
-    expect(burst.every((response) => response.status === 303 || response.status === 429)).toBe(true);
-    expect(ctx.state.activity.length).toBeLessThanOrEqual(DEMO_LIMITS.perHour - 1 + 5);
-    expect((await post(app, ctx, "/estimate", request)).status).toBe(429);
+    ctx.faults.jitterMs = 5;
+    await seedEntries(ctx, DEMO_LIMITS.perHour - 3);
+    const statuses = await Promise.all(
+      Array.from({ length: 20 }, (_, index) => post(app, ctx, "/admin/leads/sample-maya/stage", { stage: "won", follow_up_on: `2026-10-${String(index + 1).padStart(2, "0")}` }).then((response) => response.status))
+    );
+    expect(ctx.state.activity.length).toBeLessThanOrEqual(DEMO_LIMITS.perHour);
+    // Each kept change saved its stage and its follow-up date together.
+    expect(ctx.state.activity.length - (DEMO_LIMITS.perHour - 3)).toBe(2 * statuses.filter((status) => status === 303).length);
   });
 
   it("removes expired entries, and rows from older versions of the demo, a few per save", async () => {
@@ -265,6 +286,14 @@ describe("demo mode", () => {
     const board = await (await get(app, ctx, `/admin?demo=${demoKey(fresh)}`)).text();
     expect(board).not.toContain("Jordan Pike");
     expect(board).toContain(`All<span class="tab-count">9</span>`);
+  });
+
+  it("keeps the demo fields earlier releases published, so the demo can be updated", () => {
+    // Userland won't make a release live if it removes a field the published
+    // app already has. Only the demo_visitor field on leads is unused now.
+    const collections = (readExampleManifest(EXAMPLE_DIR) as any).resources.data.collections;
+    expect(collections.leads.fields.demo_visitor).toBe("string");
+    expect(collections.activity.fields.demo_visitor).toBe("string");
   });
 
   it("keeps a full demo within the Free plan's 1,000 data rows", () => {
