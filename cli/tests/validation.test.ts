@@ -412,7 +412,7 @@ describe("validateAppDirectory", () => {
     expect(report.ok).toBe(true);
     expect(report.errors).toEqual([]);
     expect(report.warnings).toEqual([
-      expect.objectContaining({ code: "schema_strict", manifest_path: "extra", message: expect.stringContaining("is not an allowed key (allowed: app, runtime, resources)") })
+      expect.objectContaining({ code: "schema_strict", manifest_path: "extra", message: expect.stringMatching(/is not an allowed key \(allowed: .*app, runtime, resources/u) })
     ]);
 
     const strict = await validateAppDirectory(await appDir(manifest), { strict: true });

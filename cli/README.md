@@ -138,61 +138,130 @@ A few schema rules are stricter than the API: unknown keys directly under the to
 
 `--plan` accepts `free`, `starter`, `business`, and `business_plus` (`pro` and `team` are accepted as older names for Starter and Business). Any other value is a usage error that lists the accepted plans. Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them. Values that no self-serve plan allows (for example app-user email verification, or more than the Business Plus limits) report `required_plan=internal`, and the message says they are not available on self-serve plans and to contact support. Plan limits are documented at https://docs.userland.fun/reference/limits/.
 
-Human output lists one block per problem:
+Human output lists one block per problem. This is the complete output for `userland validate examples/webhook-automation --plan free`, which exits `2`:
 
 ```text
 Validation failed.
-manifest=examples/tiny-store/manifest.userland.json
+manifest=examples/webhook-automation/manifest.userland.json
 plan=free
 plan_source=flag
-required_plan=business
-release_files=7
-release_bytes=9755
+required_plan=starter
+release_files=6
+release_bytes=5816
 
-manifest_path=resources.auth.public_signup
-feature=auth.public_signup
-value=true
+manifest_path=resources.webhooks
+feature=webhooks.enabled
+value=1
 allowed=false
-requires=business
-message=Public app-user signup: requires Business.
+requires=starter
+message=Webhooks: requires Starter.
 
-manifest_path=resources.jobs.expire-abandoned-orders.schedule
-limit=jobs.schedule.allowed
-value=hourly
-allowed=none
-requires=business
-message=Job schedule: hourly is not allowed on Free (allowed: no scheduled jobs). Requires Business.
+manifest_path=resources.webhooks.automation.provider
+feature=webhooks.provider.generic_hmac
+value=generic_hmac
+allowed=false
+requires=starter
+message=Generic HMAC webhooks: requires Starter.
+
+manifest_path=resources.webhooks
+limit=webhooks.declared.max
+value=1
+allowed=0
+requires=starter
+message=Webhooks: 1 exceeds the Free limit of 0. Requires Starter.
+
+Next steps:
+- Change or remove the manifest values above, or use a plan that includes them (Starter).
+- Check against that plan: userland validate examples/webhook-automation --plan starter
+- The Userland API enforces plan limits authoritatively when you publish.
+Docs: https://docs.userland.fun/reference/limits/
 ```
 
-`--json` prints a stable object for scripts and coding agents:
+`--json` prints a stable object for scripts and coding agents. The same check as JSON:
 
 ```json
 {
   "ok": false,
   "plan": "free",
   "plan_source": "flag",
-  "required_plan_key": "business",
+  "required_plan_key": "starter",
   "violations": [
     {
       "kind": "manifest_feature",
-      "manifest_path": "resources.auth.public_signup",
-      "feature_key": "auth.public_signup",
-      "value": true,
+      "manifest_path": "resources.webhooks",
+      "feature_key": "webhooks.enabled",
+      "value": 1,
       "allowed": false,
       "plan_key": "free",
-      "required_plan_key": "business",
-      "message": "Public app-user signup: requires Business."
+      "required_plan_key": "starter",
+      "message": "Webhooks: requires Starter."
+    },
+    {
+      "kind": "manifest_feature",
+      "manifest_path": "resources.webhooks.automation.provider",
+      "feature_key": "webhooks.provider.generic_hmac",
+      "value": "generic_hmac",
+      "allowed": false,
+      "plan_key": "free",
+      "required_plan_key": "starter",
+      "message": "Generic HMAC webhooks: requires Starter."
+    },
+    {
+      "kind": "manifest_limit",
+      "manifest_path": "resources.webhooks",
+      "limit_key": "webhooks.declared.max",
+      "value": 1,
+      "allowed": 0,
+      "plan_key": "free",
+      "required_plan_key": "starter",
+      "message": "Webhooks: 1 exceeds the Free limit of 0. Requires Starter."
     }
   ],
-  "plan_gated": [],
+  "plan_gated": [
+    {
+      "kind": "manifest_feature",
+      "manifest_path": "resources.webhooks",
+      "feature_key": "webhooks.enabled",
+      "value": 1,
+      "allowed": false,
+      "plan_key": "free",
+      "required_plan_key": "starter",
+      "message": "Webhooks: requires Starter."
+    },
+    {
+      "kind": "manifest_feature",
+      "manifest_path": "resources.webhooks.automation.provider",
+      "feature_key": "webhooks.provider.generic_hmac",
+      "value": "generic_hmac",
+      "allowed": false,
+      "plan_key": "free",
+      "required_plan_key": "starter",
+      "message": "Generic HMAC webhooks: requires Starter."
+    },
+    {
+      "kind": "manifest_limit",
+      "manifest_path": "resources.webhooks",
+      "limit_key": "webhooks.declared.max",
+      "value": 1,
+      "allowed": 0,
+      "plan_key": "free",
+      "required_plan_key": "starter",
+      "message": "Webhooks: 1 exceeds the Free limit of 0. Requires Starter."
+    }
+  ],
   "errors": [],
   "warnings": [],
   "manifest_file": "manifest.userland.json",
-  "release": { "file_count": 7, "bundle_bytes": 9755 }
+  "release": {
+    "file_count": 6,
+    "bundle_bytes": 5816
+  }
 }
 ```
 
 `violations` are checked against the selected plan. `plan_gated` lists everything the Free plan does not include, whether or not `--plan` is passed. `errors` hold schema, path, and file problems with `code`, `manifest_path`, optional `file`, and `message`. Limit violations use `limit_key` instead of `feature_key`, and `allowed` is the plan's limit (a number, a list of allowed schedules, or `null` for unlimited). `required_plan_key` is the lowest self-serve plan that allows a value, or `internal` when none does (the same key the API returns in `402` details); `internal` is not a plan you can select, so contact support for those values. The top-level `required_plan_key` is `null` only when manifest errors prevent the plan check.
+
+For the same manifest, `kind`, `feature_key` or `limit_key`, `plan_key`, and `required_plan_key` match the `402` `details.violations` the API returns on publish. `message` is the CLI's own wording (it includes the value, the plan limit, and the plan that allows it), so do not compare it with the API's text, and `manifest_path` uses dotted paths such as `resources.webhooks.automation.provider` where the API uses JSON pointers. Both use the same rule for the plan: "requires <Plan>" for a self-serve plan, otherwise "not available on self-serve plans; contact support".
 
 Exit codes: `0` valid, `1` manifest, file, or usage errors (including `schema_strict` issues with `--strict`), `2` plan limits exceeded.
 
@@ -255,7 +324,7 @@ userland accounts downgrade preview --to starter --account <account-id>
 userland apps status <app-id> --account <account-id>
 ```
 
-`accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts.
+`accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts. `accounts downgrade preview --to` takes the same plans as `validate --plan`: `free`, `starter`, `business`, or `business_plus`.
 
 Support requests:
 

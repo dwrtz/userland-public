@@ -441,6 +441,11 @@ describe("public CLI", () => {
     expect(preview.code).toBe(0);
     expect(preview.stdout).toContain("compatible=false");
     expect(preview.stdout).toContain("violation=type=deployment_limit key=custom_domains.max");
+
+    // Plan aliases and casing are normalized before the request is sent.
+    const aliased = await runCli(["accounts", "downgrade", "preview", "--to", " FREE ", "--account", "acct_ops"], api.baseUrl);
+    expect(aliased.code).toBe(0);
+    expect(requests.at(-1)).toMatchObject({ method: "GET", url: "/v0/accounts/acct_ops/downgrade-preview?plan=free" });
   });
 
   test("supports app status and route management commands", async () => {
@@ -877,6 +882,49 @@ describe("public CLI", () => {
     expect(JSON.parse(bad.stdout).errors).toEqual([{ code: "schema", manifest_path: "message", message: "must be a string" }]);
   });
 
+  test("publishes the manifest release message unless --message overrides it", async () => {
+    const dir = await temporaryAppDir({
+      app: { name: "Message" },
+      runtime: { static_root: "public" },
+      message: "Launch copy refresh"
+    });
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
+      "PUT /v0/apps": {
+        status: "created",
+        app_id: "app_message",
+        release_id: "rel_message",
+        origin: "https://app_message.apps.userland.fun/",
+        previous_release_id: null,
+        activation: { status: "active", reasons: [], previous_release_id: null }
+      }
+    });
+
+    const fromManifest = await runCli(["apps", "publish", dir], api.baseUrl);
+    expect(fromManifest.code).toBe(0);
+    expect(fromManifest.stdout).toContain("local_validation=passed");
+    expect(fromManifest.stdout).not.toContain("schema_strict");
+    const manifestPublish = requests.filter((request) => request.method === "PUT").at(-1);
+    expect((manifestPublish?.body as { message?: string }).message).toBe("Launch copy refresh");
+
+    const overridden = await runCli(["apps", "publish", dir, "--message", "Flag wins"], api.baseUrl);
+    expect(overridden.code).toBe(0);
+    const flagPublish = requests.filter((request) => request.method === "PUT").at(-1);
+    expect((flagPublish?.body as { message?: string }).message).toBe("Flag wins");
+  });
+
+  test("README validate samples are the real output for webhook-automation", async () => {
+    const readme = await fs.readFile(path.join(repoRoot, "cli", "README.md"), "utf8");
+    const human = await runCli(["validate", "examples/webhook-automation", "--plan", "free"], "http://127.0.0.1:1", { apiKey: null });
+    expect(human.code).toBe(2);
+    expect(readme).toContain("```text\n" + human.stdout + "```");
+    const json = await runCli(["validate", "examples/webhook-automation", "--plan", "free", "--json"], "http://127.0.0.1:1", { apiKey: null });
+    expect(json.code).toBe(2);
+    expect(readme).toContain("```json\n" + json.stdout + "```");
+  });
+
   test("points values beyond Business Plus to support instead of a plan", async () => {
     const dir = await temporaryAppDir({
       app: { name: "Verify" },
@@ -916,6 +964,12 @@ describe("public CLI", () => {
     const publishAgency = await runCli(["apps", "publish", "examples/hello-static", "--plan", "agency"], "http://127.0.0.1:1");
     expect(publishAgency.code).toBe(1);
     expect(publishAgency.stderr).toContain("Unknown plan: agency. Use one of: free, starter, business, business_plus.");
+    for (const retired of ["agency", "internal"]) {
+      const downgrade = await runCli(["accounts", "downgrade", "preview", "--to", retired, "--account", "acct_ops"], "http://127.0.0.1:1");
+      expect(downgrade.code).toBe(1);
+      expect(downgrade.stderr).toContain(`Unknown plan: ${retired}. Use one of: free, starter, business, business_plus.`);
+      expect(downgrade.stdout).toBe("");
+    }
 
     const missing = await runCli(["validate", "examples/does-not-exist", "--json"], "http://127.0.0.1:1", { apiKey: null });
     expect(missing.code).toBe(1);

@@ -880,8 +880,10 @@ async function downgradePreviewCommand(args: string[]): Promise<void> {
   if (!options.to) {
     usage(1);
   }
+  // Only self-serve plans (and their older aliases) are valid targets; any other plan key is a usage error.
+  const targetPlanKey = requirePlanKey(options.to);
   const accountId = await resolveAccountId(options.account);
-  const params = new URLSearchParams({ plan: options.to });
+  const params = new URLSearchParams({ plan: targetPlanKey });
   const response = await apiFetch<DowngradePreviewResponse>(`/v0/accounts/${encodeURIComponent(accountId)}/downgrade-preview?${params.toString()}`, {
     method: "GET"
   }, { accountId: options.account, accountScoped: true });
