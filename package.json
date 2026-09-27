@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "userland": "tsx cli/src/index.ts",
-    "cli:build": "rm -rf cli/dist && tsc -p cli/tsconfig.build.json",
+    "cli:build": "rm -rf cli/dist && tsc -p cli/tsconfig.build.json && mkdir -p cli/dist/schemas && cp schemas/resource-manifest-v0.schema.json schemas/plans-v0.json cli/dist/schemas/",
     "cli:test": "vitest run cli/tests",
     "cli:pack": "npm pack ./cli --dry-run",
     "test": "npm run validate:catalog && npm run validate:manifests && npm run validate:skills && npm run validate:links && npm run validate:cli && npm run cli:build && npm run cli:pack && npm run cli:test && vitest run examples scripts",
