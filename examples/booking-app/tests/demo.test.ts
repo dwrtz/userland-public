@@ -3,8 +3,9 @@
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { createApp, validateBooking } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { sweepExpiredRows } from "../server/demo.js";
-import { NOW, ORIGIN, book, get, logged, openTime, post, rows, runtime, type Runtime } from "./helpers.js";
+import { MAX_VISITOR_ROWS, sweepExpiredRows } from "../server/demo.js";
+import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
+import { NOW, ORIGIN, allTabs, book, get, holds, logged, openTime, post, requests, rows, runtime, type Runtime } from "./helpers.js";
 
 function keyFrom(location: string | null) {
   return new URL(location!, ORIGIN).searchParams.get("v");
@@ -38,7 +39,7 @@ describe("public booking flow in the demo", () => {
 
     // The activity log gets ids only, never contact details.
     const [entry] = logged(rt, "booking requested");
-    expect(entry!.metadata).toMatchObject({ booking_id: rows(rt, "bookings")[0]!.id });
+    expect(entry!.metadata).toMatchObject({ booking_id: requests(rt)[0]!.id });
     expect(JSON.stringify(entry!.metadata)).not.toContain("example.com");
   });
 
@@ -75,7 +76,7 @@ describe("public booking flow in the demo", () => {
     const rt = runtime();
     const first = await book(app, rt, { customer_name: "First" });
     const key = keyFrom(first.headers.get("location"));
-    const firstBooking = rows(rt, "bookings").find((row) => row.data.customer_name === "First")!;
+    const firstBooking = requests(rt).find((row) => row.data.customer_name === "First")!;
     expect(firstBooking.data.starts_at).toBe("2026-09-29T22:00:00.000Z");
 
     const again = await post(app, rt, `/book?v=${key}`, {
@@ -121,7 +122,7 @@ describe("demo privacy", () => {
     expect(newVisitorInbox).toContain("Priya Raman"); // Sample bookings.
 
     // A confirmation link only works with the visitor's own key.
-    const aliceRef = rows(rt, "bookings").find((row) => row.data.customer_name === "Alice Private")!.data.ref;
+    const aliceRef = requests(rt).find((row) => row.data.customer_name === "Alice Private")!.data.ref;
     expect((await get(app, rt, `/booked?ref=${aliceRef}&v=${bob}`)).status).toBe(404);
     expect((await get(app, rt, `/booked?ref=${aliceRef}`)).status).toBe(404);
   });
@@ -136,9 +137,9 @@ describe("demo privacy", () => {
     const key = keyFrom(confirmed.headers.get("location"));
     expect(key).toBeTruthy();
 
-    const mine = await (await get(app, rt, `/studio?show=confirmed&v=${key}`)).text();
+    const mine = await (await get(app, rt, `/studio?show=upcoming&v=${key}`)).text();
     expect(mine).toContain("Priya Raman");
-    const someoneElse = await (await get(app, rt, "/studio?show=confirmed")).text();
+    const someoneElse = await (await get(app, rt, "/studio?show=upcoming")).text();
     expect(someoneElse).not.toContain("Priya Raman");
 
     const rename = await post(app, rt, `/studio/lessons/sample-service-2?v=${key}`, { name: "Piano for grown-ups", summary: "", duration_minutes: "45", price: "65", active: "yes" });
@@ -150,17 +151,17 @@ describe("demo privacy", () => {
   it("copies samples once, on the first owner-side change, without duplicating them", async () => {
     const rt = runtime();
     const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
-    expect(rows(rt, "bookings")).toHaveLength(1); // Booking alone does not copy the samples.
+    expect(requests(rt)).toHaveLength(1); // Booking alone does not copy the samples.
 
-    const inbox = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
+    const inbox = await allTabs(app, rt, key);
     expect(inbox.match(/<h2>Priya Raman<\/h2>/gu)).toHaveLength(1);
     const sampleId = inbox.match(/id="booking-(sample-booking-\d+)"/u)![1];
 
     await post(app, rt, `/studio/bookings/${sampleId}/status?v=${key}`, { status: "confirmed", show: "all" });
     await post(app, rt, `/studio/bookings/${sampleId}/status?v=${key}`, { status: "declined", show: "all" });
-    expect(rows(rt, "bookings")).toHaveLength(6);
+    expect(requests(rt)).toHaveLength(6);
 
-    const after = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
+    const after = await allTabs(app, rt, key);
     expect(after.match(/<h2>Priya Raman<\/h2>/gu)).toHaveLength(1);
     expect(after.match(/<h2>Casey Visitor<\/h2>/gu)).toHaveLength(1);
   });
@@ -220,11 +221,11 @@ describe("double-clicked owner buttons in the demo", () => {
     // Both requests copied the samples, which is the case being tested.
     expect(rows(rt, "bookings").filter((row) => row.data.demo_copy_of)).toHaveLength(10);
 
-    const all = await (await get(app, rt, `/studio?show=all&v=${key}`)).text();
+    const all = await allTabs(app, rt, key);
     for (const name of ["Priya Raman", "Tom Becker", "Hannah Silva", "Daniel Moreau", "Grace Liu", "Casey Visitor"]) {
       expect(all.match(new RegExp(`<h2>${name}</h2>`, "gu"))).toHaveLength(1);
     }
-    const confirmed = await (await get(app, rt, `/studio?show=confirmed&v=${key}`)).text();
+    const confirmed = await (await get(app, rt, `/studio?show=upcoming&v=${key}`)).text();
     expect(confirmed).toContain("<h2>Priya Raman</h2>");
     expect(confirmed).toContain("<h2>Tom Becker</h2>");
   });
@@ -258,5 +259,88 @@ describe("demo address", () => {
     const customDomain = await (await get(app, rt, "/", "https://lessons.example.com")).text();
     expect(customDomain).not.toContain("noindex");
     expect(customDomain).not.toContain("Built with Userland");
+  });
+});
+
+describe("demo safeguards", () => {
+  const app = createApp({ demoMode: true, now: () => NOW });
+  const details = { customer_name: "Casey Visitor", customer_email: "casey@example.com", student_details: "Me" };
+
+  it("warns visitors that anyone with the link can see what they type", async () => {
+    const rt = runtime();
+    expect(await (await get(app, rt, "/book")).text()).toContain("anyone with this page's link can see what you type");
+    expect(await (await get(app, rt, "/studio")).text()).toContain("Anyone with this page's link can see them");
+  });
+
+  it("gives one visitor's time to only one of two requests sent together, but keeps visitors apart", async () => {
+    const rt = runtime();
+    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
+    const slot = { service_id: "sample-service-1", date: "2026-10-01", time: "15:00" };
+    const same = await Promise.all([post(app, rt, `/book?v=${key}`, { ...slot, ...details }), post(app, rt, `/book?v=${key}`, { ...slot, ...details, customer_email: "two@example.com" })]);
+    expect(same.map((response) => response.status).sort()).toEqual([303, 409]);
+    // Another visitor has their own calendar, so the same time is open to them.
+    expect((await post(app, rt, "/book", { ...slot, ...details })).status).toBe(303);
+  });
+
+  it("caps how much one visitor can save", async () => {
+    const rt = runtime();
+    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"))!;
+    const bookings = rt.ctx.data.collection("bookings");
+    while (rows(rt, "bookings").length < MAX_VISITOR_ROWS) {
+      await bookings.create({ status: "declined", ref: `WH-X${rows(rt, "bookings").length}`, starts_at: "2026-09-30T22:00:00.000Z", ends_at: "2026-09-30T22:30:00.000Z", history: [], demo_key: key, demo_expires_at: "2026-09-29T17:00:00.000Z" });
+    }
+    const refused = await post(app, rt, `/book?v=${key}`, { service_id: "sample-service-1", date: "2026-10-01", time: "15:00", ...details });
+    expect(refused.status).toBe(429);
+    expect(await refused.text()).toContain("plenty for one demo visit");
+    const lesson = await post(app, rt, `/studio/lessons?v=${key}`, { name: "Duet lesson", summary: "", duration_minutes: "60", price: "90", active: "yes" });
+    expect(lesson.status).toBe(429);
+    expect(rows(rt, "services")).toHaveLength(0);
+  });
+
+  it("makes room again once a visitor's rows are a day old, even before they are deleted", async () => {
+    let now = NOW;
+    const later = createApp({ demoMode: true, now: () => now });
+    const rt = runtime();
+    const key = keyFrom((await book(later, rt, { customer_name: "Casey Visitor" })).headers.get("location"))!;
+    const bookings = rt.ctx.data.collection("bookings");
+    while (rows(rt, "bookings").length < MAX_VISITOR_ROWS) {
+      await bookings.create({ status: "declined", ref: `WH-X${rows(rt, "bookings").length}`, starts_at: "2026-09-30T22:00:00.000Z", ends_at: "2026-09-30T22:30:00.000Z", history: [], demo_key: key, demo_expires_at: "2026-09-29T17:00:00.000Z" });
+    }
+    const slot = { service_id: "sample-service-1", date: "2026-10-01", time: "15:00" };
+    expect((await post(later, rt, `/book?v=${key}`, { ...slot, ...details })).status).toBe(429);
+    now = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+    expect((await post(later, rt, `/book?v=${key}`, { ...slot, ...details })).status).toBe(303);
+  });
+
+  it("lets visitors delete their own requests but not the samples", async () => {
+    const rt = runtime();
+    const key = keyFrom((await book(app, rt, { customer_name: "Casey Visitor" })).headers.get("location"));
+    const inbox = await (await get(app, rt, `/studio?v=${key}`)).text();
+    const own = requests(rt)[0]!;
+    expect(inbox).toContain(`/studio/bookings/${own.id}/delete`);
+    expect(inbox).not.toContain("/studio/bookings/sample-booking-1/delete");
+    await post(app, rt, `/studio/bookings/${own.id}/delete?v=${key}`, { show: "new" });
+    expect(requests(rt)).toHaveLength(0);
+    expect(holds(rt)).toHaveLength(0);
+  });
+
+  it("reopens a declined sample by holding its time", async () => {
+    const rt = runtime();
+    const reopened = await post(app, rt, "/studio/bookings/sample-booking-5/status", { status: "new", show: "declined" });
+    const key = keyFrom(reopened.headers.get("location"));
+    const grace = requests(rt).find((row) => row.data.customer_name === "Grace Liu")!;
+    expect(grace.data.status).toBe("new");
+    expect(holds(rt).every((row) => row.data.hold_for === grace.data.ref && row.data.demo_key === key)).toBe(true);
+    expect(holds(rt).length).toBeGreaterThan(0);
+  });
+});
+
+describe("HEAD requests in the demo", () => {
+  it("answer like GET, without a body", async () => {
+    const app = createApp({ demoMode: true, now: () => NOW });
+    const rt = runtime();
+    for (const pathname of ["/", "/book", "/studio"]) {
+      expect((await expectHeadLikeGet(app, rt.ctx, `${ORIGIN}${pathname}`)).status).toBe(200);
+    }
   });
 });

@@ -49,15 +49,17 @@
             "customer_phone": "string",
             "student_details": "string",
             "message": "string",
-            "status": { "type": "enum", "values": ["new", "confirmed", "declined", "cancelled"] },
+            "status": { "type": "enum", "values": ["new", "confirmed", "declined", "cancelled", "hold"] },
             "history": "json",
+            "hold": "string",
+            "hold_for": "string",
             "demo_key": "string",
             "demo_expires_at": "datetime",
             "demo_copy_of": "string"
           },
           "indexes": [
-            { "name": "by_scope_status", "fields": ["demo_key", "status", "starts_at", "demo_expires_at"] },
-            { "name": "by_ref", "fields": ["ref"], "unique": true }
+            { "name": "by_scope_status", "fields": ["demo_key", "status", "starts_at", "demo_expires_at", "ref"] },
+            { "name": "by_hold", "fields": ["hold"], "unique": true }
           ],
           "access": { "read": "server_only", "write": "server_only" }
         }

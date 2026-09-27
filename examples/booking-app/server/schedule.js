@@ -117,6 +117,25 @@ export function slotsForDay(date, durationMinutes, busy, now = new Date()) {
   return slots;
 }
 
+/**
+ * The time blocks, one slot step long, that a lesson from `startsAt` to
+ * `endsAt` touches. Two lessons that overlap always share at least one block,
+ * which is what the double-booking holds in index.js rely on.
+ */
+export function timeBlocks(startsAt, endsAt) {
+  const step = STUDIO_HOURS.slotStepMinutes * MINUTE;
+  const blocks = [];
+  for (let at = Math.floor(Date.parse(startsAt) / step) * step; at < Date.parse(endsAt); at += step) {
+    blocks.push({ starts_at: new Date(at).toISOString(), ends_at: new Date(at + step).toISOString() });
+  }
+  return blocks;
+}
+
+/** True when two `{ starts_at, ends_at }` times overlap. */
+export function overlaps(a, b) {
+  return Date.parse(a.starts_at) < Date.parse(b.ends_at) && Date.parse(b.starts_at) < Date.parse(a.ends_at);
+}
+
 export function formatDayName(date) {
   return formatter({ weekday: "short" }, "UTC").format(new Date(`${date}T12:00:00Z`));
 }
