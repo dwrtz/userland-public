@@ -1,42 +1,59 @@
 # Booking Lite
 
-Slot booking app that claims availability inside a Userland data transaction.
+Let people book time slots without two people getting the same slot.
 
-## Capabilities
+## What it shows
 
-- Server runtime routes.
-- Data collections for `slots` and `bookings`.
-- `ctx.data.transaction` around slot claim and booking creation.
+- Server routes to add sample slots, list open slots, and book one.
+- `slots` and `bookings` data collections that only server code can write.
+- A data transaction that checks the slot is still open and books it in one step, so a second booking for the same slot is refused.
+- Public slot lists never show who booked.
+
+## Plan
+
+**Plan needed: Free.** Nothing in this example needs a paid plan.
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/booking-lite
 ```
 
-## Verify
+## Try it
 
-Seed initial slots:
+Add two sample slots (tomorrow and the day after):
 
 ```sh
-curl -X POST <origin>/api/seed
+curl -X POST https://<app-id>.apps.userland.fun/api/seed
 ```
 
-List available slots:
+List open slots:
 
 ```sh
-curl <origin>/api/slots
+curl https://<app-id>.apps.userland.fun/api/slots
 ```
 
 Book a slot:
 
 ```sh
-curl -X POST <origin>/api/bookings \
+curl -X POST https://<app-id>.apps.userland.fun/api/bookings \
   -H 'content-type: application/json' \
   --data '{"slot_id":"<slot-id>","name":"Ada","email":"ada@example.test"}'
 ```
 
 The first booking returns `201`. A second booking for the same slot returns `409`.
+
+## Troubleshoot or undo
+
+```sh
+userland apps events <app-id> --severity error --limit 25
+userland apps releases <app-id>
+userland apps rollback <app-id> <release-id>
+```
 
 ## Userland docs
 
@@ -47,6 +64,7 @@ The first booking returns `201`. A second booking for the same slot returns `409
 - CLI: https://docs.userland.fun/reference/cli
 - Agent skills: https://docs.userland.fun/reference/agent-skills
 - Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Plan limits: https://docs.userland.fun/reference/limits
 
 Capability docs:
 

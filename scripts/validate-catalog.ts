@@ -1,20 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { assertCatalogEntry, assertEntryMatchesManifest } from "./catalog-entry.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const allowedCapabilities = new Set(["static", "server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback", "transactions"]);
-const allowedDifficulty = new Set(["beginner", "intermediate", "advanced"]);
-
-type CatalogEntry = {
-  slug: string;
-  title: string;
-  summary: string;
-  path: string;
-  capabilities: string[];
-  difficulty: string;
-  userland_api_version: string;
-};
-
 const catalog = await readJson(path.join(root, "catalog.json"));
 assertObject(catalog, "catalog.json must be an object.");
 if (catalog.version !== 0) throw new Error("catalog.json version must be 0.");
@@ -38,6 +26,9 @@ for (const entry of catalog.examples) {
   for (const requiredFile of ["README.md", "AGENT.md", "manifest.userland.json"]) {
     await assertFile(path.join(absoluteExamplePath, requiredFile), `${entry.path} is missing ${requiredFile}`);
   }
+  const manifest = await readJson(path.join(absoluteExamplePath, "manifest.userland.json"));
+  assertObject(manifest, `${entry.path}/manifest.userland.json must be an object.`);
+  assertEntryMatchesManifest(entry, manifest);
 }
 
 for (const examplePath of exampleDirs) {
@@ -52,22 +43,6 @@ async function listExampleDirs(): Promise<Set<string>> {
   const examplesRoot = path.join(root, "examples");
   const entries = await readdir(examplesRoot, { withFileTypes: true });
   return new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => `examples/${entry.name}`));
-}
-
-function assertCatalogEntry(value: unknown): asserts value is CatalogEntry {
-  assertObject(value, "Catalog entry must be an object.");
-  for (const key of ["slug", "title", "summary", "path", "difficulty", "userland_api_version"]) {
-    if (typeof value[key] !== "string" || value[key].length === 0) throw new Error(`Catalog entry ${key} must be a non-empty string.`);
-  }
-  const entry = value as CatalogEntry;
-  if (!/^[a-z][a-z0-9-]*$/u.test(entry.slug)) throw new Error(`Catalog slug is invalid: ${entry.slug}`);
-  if (entry.path !== `examples/${entry.slug}`) throw new Error(`Catalog path must be examples/${entry.slug}.`);
-  if (!allowedDifficulty.has(entry.difficulty)) throw new Error(`Unknown difficulty for ${entry.slug}: ${entry.difficulty}`);
-  if (entry.userland_api_version !== "v0") throw new Error(`${entry.slug} must target Userland API v0.`);
-  if (!Array.isArray(entry.capabilities) || entry.capabilities.length === 0) throw new Error(`${entry.slug} must declare capabilities.`);
-  for (const capability of entry.capabilities) {
-    if (typeof capability !== "string" || !allowedCapabilities.has(capability)) throw new Error(`Unknown capability for ${entry.slug}: ${capability}`);
-  }
 }
 
 async function readJson(filePath: string): Promise<unknown> {

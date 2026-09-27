@@ -2,7 +2,7 @@
 
 Goal: adapt a webhook-to-job automation pattern.
 
-Plan requirement: this example requires a Starter account plan or higher because it declares a generic HMAC webhook.
+Plan: `required_plan` is `starter`. `paid_features` is `["webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.declared.max"]`: Free allows no webhooks. The one secret and one manual job fit Free limits.
 
 Inputs:
 
@@ -12,22 +12,26 @@ Inputs:
 
 Outputs:
 
-- Manifest with `webhooks`, `jobs`, `secrets`, and data collection.
+- Manifest with `webhooks`, `jobs`, `secrets`, and a data collection.
 - Server job handler.
 - Operator instructions for setting the webhook secret.
 
 Steps:
 
-1. Rename the webhook and job together.
-2. Keep the manifest `webhooks.<name>.job` value equal to the runtime job name.
-3. Store only non-sensitive payload details.
-4. Validate with `npm run validate:manifests`.
-5. Test with `npm test`.
+1. Rename the webhook and job together. `resources.webhooks.<name>.job` must equal a key in `resources.jobs` and the `event.name` your `job(event, ctx)` handler checks.
+2. Keep `resources.webhooks.<name>.secret` listed in `resources.secrets.required`.
+3. Senders sign with `X-Userland-Timestamp` (Unix seconds, 5-minute tolerance) and `X-Userland-Signature` (hex HMAC-SHA256 of timestamp + raw body, keyed with the webhook secret); the README has a signed curl example.
+4. Read the body from `event.payload.payload`. Webhook-delivered jobs receive `event.payload = { webhook_delivery_id, name, headers, payload }`, and signature headers are redacted.
+5. Make processing idempotent: look up `external_id` (indexed, unique) before creating a row.
+6. Store only the payload fields you need, and keep public routes to summaries.
+7. Validate: `npm run validate:manifests -- webhook-automation` and `npx vitest run examples/webhook-automation`.
+8. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting the secret does not activate it. Set it with `printf '%s' "$AUTOMATION_WEBHOOK_SECRET" | userland apps secrets set <app-id> AUTOMATION_WEBHOOK_SECRET`, then publish again into the same app with `userland apps publish examples/webhook-automation --app <app-id>` (without `--app` the CLI creates a second app).
 
 Safety:
 
-- Do not verify webhook signatures in frontend code.
+- Do not verify webhook signatures in frontend code; Userland verifies them before delivery.
 - Do not log raw secrets or sensitive webhook payloads.
+- Do not return stored payloads from public routes.
 
 ## Userland docs
 
@@ -38,8 +42,10 @@ Safety:
 - CLI: https://docs.userland.fun/reference/cli
 - Agent skills: https://docs.userland.fun/reference/agent-skills
 - Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Plan limits: https://docs.userland.fun/reference/limits
 
 Capability docs:
 
+- Secrets: https://docs.userland.fun/guides/secrets
 - Jobs: https://docs.userland.fun/guides/jobs
 - Webhooks: https://docs.userland.fun/guides/webhooks

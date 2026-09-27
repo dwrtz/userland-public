@@ -1,22 +1,54 @@
 # AI Secret Tool
 
-Server-only secret access pattern for calling a model provider without exposing API keys.
+Call an AI model provider from the server so the provider key never reaches the browser.
 
-This example uses a mock model call by default. Replace `callMockModel` with a real provider call in `server/index.js`.
+The example uses a stand-in model call. Replace `callMockModel` in `server/index.js` with your provider's API.
 
-## Required secret
+**Before you connect a real provider key:** `/api/run` does not require sign-in. Anyone who finds the app's URL can call it, and every call would spend your provider credit. Add app sign-in (declare `resources.auth` and return 401 when `ctx.auth.currentUser(request)` is empty) or a per-user rate limit first. Invite-only sign-in works on the Free plan; see the Auth guide.
 
-```sh
-userland apps secrets set <app-id> MODEL_API_KEY --value <value>
-```
+## What it shows
+
+- One server route, `/api/run`, that takes a prompt and returns an answer.
+- A `MODEL_API_KEY` secret that only server code can read. It is never sent to the browser, returned, or logged.
+
+## Plan
+
+**Plan needed: Free.** Nothing in this example needs a paid plan. The Free plan allows one required secret; a second secret needs Starter or higher.
 
 ## Publish
 
+Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
+
 ```sh
+npm install -g @userland.fun/cli
+userland login
 userland apps publish examples/ai-secret-tool
 ```
 
-The frontend must call `/api/run`; it should never receive or store `MODEL_API_KEY`.
+The first publish creates the app and prints its app id. That release is not live yet: its activation status is `pending_secrets` because the secret is missing. Setting a secret does not activate a stored release, so set it and then publish again into the same app:
+
+```sh
+printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY
+userland apps publish examples/ai-secret-tool --app <app-id>
+```
+
+Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
+
+## Try it
+
+```sh
+curl -X POST https://<app-id>.apps.userland.fun/api/run \
+  -H 'content-type: application/json' \
+  --data '{"prompt":"Summarize this"}'
+```
+
+## Troubleshoot or undo
+
+```sh
+userland apps events <app-id> --severity error --limit 25
+userland apps releases <app-id>
+userland apps rollback <app-id> <release-id>
+```
 
 ## Userland docs
 
@@ -27,7 +59,9 @@ The frontend must call `/api/run`; it should never receive or store `MODEL_API_K
 - CLI: https://docs.userland.fun/reference/cli
 - Agent skills: https://docs.userland.fun/reference/agent-skills
 - Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Plan limits: https://docs.userland.fun/reference/limits
 
 Capability docs:
 
 - Secrets: https://docs.userland.fun/guides/secrets
+- Auth: https://docs.userland.fun/guides/auth

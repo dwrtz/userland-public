@@ -16,13 +16,20 @@ const forbiddenText = [
   "github.com/userland-fun/userland-examples",
   "github.com/<ORG>",
   "workers/docs",
-  "workers/marketing"
+  "workers/marketing",
+  // Old password-based CLI auth. The CLI now signs in through the browser with `userland login`.
+  "--password",
+  "--username",
+  "keychain"
 ];
 
+// Optional slugs limit validation to specific examples: tsx scripts/validate-links.ts blog-cms tiny-store
+const onlySlugs = new Set(process.argv.slice(2));
 let checked = 0;
 
 for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
+  if (onlySlugs.size > 0 && !onlySlugs.has(entry.name)) continue;
   for (const file of ["README.md", "AGENT.md"]) {
     const relativePath = `examples/${entry.name}/${file}`;
     const body = await readFile(path.join(root, relativePath), "utf8");

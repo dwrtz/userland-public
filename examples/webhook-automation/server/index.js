@@ -9,21 +9,46 @@ function json(data, init = {}) {
 }
 
 async function listEvents(ctx) {
-  const events = await ctx.data.collection("automation-events").list({
-    order_by: [{ field: "created_at", direction: "desc" }]
+  // Without an `order_by`, rows come back most recently updated first.
+  // Return a summary only: stored payloads stay server-side.
+  const events = await ctx.data.collection("automation-events").list({ limit: 50 });
+  return json({
+    events: events.rows.map((row) => ({
+      id: row.id,
+      external_id: row.external_id,
+      status: row.status,
+      created_at: row.created_at
+    }))
   });
-  return json({ events: events.rows });
 }
 
+// When a manifest webhook uses `deliver_to: "job"`, Userland verifies the
+// signature and enqueues the job with this payload:
+//   { webhook_delivery_id, name, headers, payload }
+// where `payload` is the parsed request body.
 async function processAutomationEvent(event, ctx) {
-  const payload = event.payload ?? {};
-  const externalId = String(payload.external_id ?? event.id ?? `event_${Date.now()}`);
-  const row = await ctx.data.collection("automation-events").create({
+  const delivery = event.payload ?? {};
+  const body = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
+  const externalId = String(body.external_id ?? delivery.webhook_delivery_id ?? event.job_id);
+  const events = ctx.data.collection("automation-events");
+
+  // Webhook providers retry. Skip deliveries that were already processed.
+  const existing = await events.list({ where: { external_id: externalId }, limit: 1 });
+  if (existing.rows.length > 0) {
+    await ctx.log.info("automation event already processed", { automation_event_id: existing.rows[0].id, external_id: externalId });
+    return;
+  }
+
+  const row = await events.create({
     external_id: externalId,
     status: "processed",
-    payload
+    payload: body
   });
-  await ctx.log.info("automation event processed", { automation_event_id: row.id, external_id: externalId });
+  await ctx.log.info("automation event processed", {
+    automation_event_id: row.id,
+    external_id: externalId,
+    webhook_delivery_id: delivery.webhook_delivery_id
+  });
 }
 
 export default {
@@ -41,4 +66,3 @@ export default {
     }
   }
 };
-

@@ -1,17 +1,30 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { listUnsupportedKeywords, validateJsonSchema } from "./json-schema.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const examplesRoot = path.join(root, "examples");
+const manifestSchema = await readJsonObject(path.join(root, "schemas", "resource-manifest-v0.schema.json"));
+const unsupportedKeywords = listUnsupportedKeywords(manifestSchema);
+if (unsupportedKeywords.length > 0) {
+  throw new Error(`schemas/resource-manifest-v0.schema.json uses keywords scripts/json-schema.ts does not check: ${unsupportedKeywords.join(", ")}`);
+}
 
+// Optional slugs limit validation to specific examples: tsx scripts/validate-manifests.ts blog-cms tiny-store
+const onlySlugs = new Set(process.argv.slice(2));
 const exampleDirs = await readdir(examplesRoot, { withFileTypes: true });
 let count = 0;
 
 for (const entry of exampleDirs) {
   if (!entry.isDirectory()) continue;
+  if (onlySlugs.size > 0 && !onlySlugs.has(entry.name)) continue;
   const examplePath = path.join(examplesRoot, entry.name);
   const manifestPath = path.join(examplePath, "manifest.userland.json");
   const manifest = await readJsonObject(manifestPath);
+  const schemaErrors = validateJsonSchema(manifestSchema, manifest);
+  if (schemaErrors.length > 0) {
+    throw new Error(`${entry.name}: manifest.userland.json does not match schemas/resource-manifest-v0.schema.json:\n- ${schemaErrors.join("\n- ")}`);
+  }
   validateManifest(manifest, entry.name);
   await validateReferencedFiles(examplePath, manifest, entry.name);
   count += 1;

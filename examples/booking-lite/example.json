@@ -5,6 +5,8 @@
   "path": "examples/booking-lite",
   "capabilities": ["server", "data", "transactions"],
   "difficulty": "intermediate",
-  "userland_api_version": "v0"
+  "userland_api_version": "v0",
+  "required_plan": "free",
+  "paid_features": [],
+  "launch_role": "capability-fixture"
 }
-

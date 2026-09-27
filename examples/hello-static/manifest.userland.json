@@ -9,7 +9,6 @@
     "static_root": "public",
     "fallback": "index.html"
   },
-  "resources": {},
-  "message": "Initial hello-static example"
+  "resources": {}
 }
 

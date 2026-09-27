@@ -9,25 +9,36 @@ function json(data, init = {}) {
 }
 
 async function listSlots(ctx) {
+  // `where` and `order_by` fields must be indexed; see the by_status index.
   const slots = await ctx.data.collection("slots").list({
     where: { status: "available" },
-    order_by: [{ field: "starts_at", direction: "asc" }]
+    order_by: [{ field: "starts_at", direction: "asc" }],
+    limit: 50
   });
-  return json({ slots: slots.rows });
+  // Public list: never include who booked a slot.
+  return json({ slots: slots.rows.map((slot) => ({ id: slot.id, title: slot.title, starts_at: slot.starts_at, status: slot.status })) });
+}
+
+// Demo slots start tomorrow and the day after at 16:00 UTC.
+function upcomingSlotTime(daysFromNow) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + daysFromNow);
+  date.setUTCHours(16, 0, 0, 0);
+  return date.toISOString();
 }
 
 async function seedSlots(ctx) {
-  const slots = await ctx.data.collection("slots").list({});
-  if (slots.rows.length > 0) {
-    return json({ seeded: false, slots: slots.rows });
-  }
   const collection = ctx.data.collection("slots");
+  const existing = await collection.list({ limit: 1 });
+  if (existing.rows.length > 0) {
+    return json({ seeded: false });
+  }
   const seeded = [
-    await collection.create({ title: "Intro call", starts_at: "2026-06-01T16:00:00.000Z", status: "available", booked_by: "" }),
-    await collection.create({ title: "Planning session", starts_at: "2026-06-02T16:00:00.000Z", status: "available", booked_by: "" })
+    await collection.create({ title: "Intro call", starts_at: upcomingSlotTime(1), status: "available", booked_by: "" }),
+    await collection.create({ title: "Planning session", starts_at: upcomingSlotTime(2), status: "available", booked_by: "" })
   ];
   await ctx.log.info("booking slots seeded", { count: seeded.length });
-  return json({ seeded: true, slots: seeded }, { status: 201 });
+  return json({ seeded: true, slots: seeded.map((slot) => ({ id: slot.id, title: slot.title, starts_at: slot.starts_at, status: slot.status })) }, { status: 201 });
 }
 
 async function createBooking(request, ctx) {
@@ -65,7 +76,13 @@ async function createBooking(request, ctx) {
   }
 
   await ctx.log.info("slot booked", { slot_id: slotId, booking_id: result.booking.id });
-  return json({ booking: result.booking, slot: result.slot }, { status: 201 });
+  return json(
+    {
+      booking: { id: result.booking.id, slot_id: slotId, status: result.booking.status },
+      slot: { id: result.slot.id, title: result.slot.title, starts_at: result.slot.starts_at, status: result.slot.status }
+    },
+    { status: 201 }
+  );
 }
 
 export default {

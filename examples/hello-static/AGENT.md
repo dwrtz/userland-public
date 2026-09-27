@@ -2,27 +2,31 @@
 
 Goal: adapt a static-only Userland app.
 
+Plan: `required_plan` is `free`; `paid_features` is `[]`. A static app with `app.visibility: "public"` publishes on every plan. Setting `visibility` to `private` requires a paid plan (`private_apps`).
+
 Inputs:
 
 - Static page content.
-- Optional CSS and browser JavaScript.
+- Optional CSS, browser JavaScript, and images.
 
 Outputs:
 
-- `manifest.userland.json`.
+- `manifest.userland.json` with `runtime.static_root: "public"` and no `resources`.
 - Files under `public/`.
 
 Steps:
 
-1. Keep `runtime.static_root` set to `public`.
-2. Add static assets under `public/`.
-3. Do not add `server/index.js` unless the app needs dynamic routes or managed resources.
-4. Validate with `npm run validate:manifests`.
+1. Rename `app.name`, `app.summary`, and `app.tags`. Tags must be lowercase words and cannot be reserved names such as `secrets` or `auth`.
+2. Add static assets under `public/`. Keep `runtime.fallback` as `index.html` for a single-page app, or use `404`.
+3. Do not add `server/index.js` unless the app needs dynamic routes or managed resources; start from `server-notes` instead.
+4. Validate: `npm run validate:manifests -- hello-static`.
+5. Check the account before publishing: `userland auth status`, then `userland apps publish examples/hello-static`.
 
 Safety:
 
-- Do not put `USERLAND_API_KEY` in static files.
-- Do not put app secrets in static files.
+- Do not put `USERLAND_API_KEY` or any other key in static files.
+- Do not publish files under `_userland/`.
+- Do not call the Userland control-plane API from browser code.
 
 ## Userland docs
 
@@ -33,7 +37,9 @@ Safety:
 - CLI: https://docs.userland.fun/reference/cli
 - Agent skills: https://docs.userland.fun/reference/agent-skills
 - Troubleshooting: https://docs.userland.fun/guides/troubleshooting
+- Plan limits: https://docs.userland.fun/reference/limits
 
 Capability docs:
 
 - Static quickstart: https://docs.userland.fun/quickstarts/static-app
+- Rollback: https://docs.userland.fun/guides/rollback

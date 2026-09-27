@@ -30,7 +30,7 @@ Outputs:
 
 ## How to use this repo
 
-1. Read `catalog.json` to choose an example by capability and difficulty.
+1. Read `catalog.json` to choose an example by capability, difficulty, and `required_plan`. Each entry also lists `paid_features`, the manifest features that need more than the Free plan. Check your plan with `userland accounts limits`.
 2. Open the matching example directory.
 3. Read the example `README.md` and `AGENT.md`.
 4. Use the repo-scoped skills in `.agents/skills` when working in Codex.
