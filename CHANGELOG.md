@@ -9,7 +9,7 @@
 - `userland accounts downgrade preview --to <plan>` now accepts only `free`, `starter`, `business`, and `business_plus` (and the older names `pro` and `team`); other values are a usage error.
 - Print `self_serve_upgrade`, `upgrade_url`, and `support_url` from API `402` details, and link plan errors to https://docs.userland.fun/reference/limits/.
 - Fix the `ai-secret-tool` example tag `secrets`, which is a reserved name the API rejects.
-- Add six launch examples, each with a live demo and a page at `https://userland.fun/examples/<slug>/`: `booking-app`, `waitlist-app`, `mini-crm`, `invoice-generator`, `link-in-bio-app`, and `job-board`. All run on the Free plan.
+- Add six launch examples, each with a live demo and a page at `https://userland.fun/examples/<slug>/`: `booking-app`, `waitlist-app`, `mini-crm`, `invoice-generator`, `link-in-bio-app`, and `job-board`. All run on the Free plan. Each README covers installing the CLI, `userland login`, and getting an API key into `USERLAND_API_KEY` for the owner invite, and lists the steps to remove the demo mode; a "removing demo mode" test runs those steps on a copy of the app, and the demo-only tests live in each example's `tests/demo.test.ts`.
 - Catalog entries and `example.json` now include `required_plan`, `paid_features`, and `launch_role` (plus `demo_url` and `page_url` for launch examples). `npm run validate:catalog` checks the plan fields against what `userland validate --strict` reports for each example.
 - `schemas/resource-manifest-v0.schema.json` accepts the optional top-level release `message`.
 
