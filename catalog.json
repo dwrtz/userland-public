@@ -73,6 +73,20 @@
       "page_url": "https://userland.fun/examples/link-in-bio-app/"
     },
     {
+      "slug": "job-board",
+      "title": "Job Board",
+      "summary": "Niche job board with category filters, employer submissions, and an owner review queue.",
+      "path": "examples/job-board",
+      "capabilities": ["server", "auth", "data"],
+      "difficulty": "intermediate",
+      "userland_api_version": "v0",
+      "required_plan": "free",
+      "paid_features": [],
+      "launch_role": "launch-example",
+      "demo_url": "https://job-board-demo.apps.userland.fun/",
+      "page_url": "https://userland.fun/examples/job-board/"
+    },
+    {
       "slug": "hello-static",
       "title": "Hello Static",
       "summary": "Small static app with no server runtime or managed resources.",
