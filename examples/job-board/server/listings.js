@@ -51,12 +51,13 @@ const HISTORY_LIMIT = 20;
 // (like ?bcc=...) into the "Email the employer" link.
 const EMAIL_PATTERN = /^[a-z0-9._+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/iu;
 
-// Spam limits for the public "Post a job" form. The board never holds more than
+// Spam limits for the public "Post a job" form. The board holds at most
 // MAX_PENDING listings waiting for review, and one contact email can have at most
 // MAX_PENDING_PER_EMAIL of them. Both are checked before saving and again right
-// after (see create() below), so posts that arrive at the same moment can't push
-// past them. Raise them if your board is busy, keeping MAX_PENDING at 100 or less
-// so one data call can read the whole queue.
+// after (see create() below), so a burst of posts at the same moment is turned
+// away too, give or take a post that saves in the very same instant. Raise them
+// if your board is busy, keeping MAX_PENDING at 100 or less so one data call can
+// read the whole queue.
 export const MAX_PENDING = 100;
 export const MAX_PENDING_PER_EMAIL = 3;
 

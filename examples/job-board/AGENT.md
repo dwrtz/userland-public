@@ -34,7 +34,7 @@ Safety:
 - Keep `access.read` and `access.write` at `server_only` so contact details are only reachable through server code.
 - Render visitor text only through the `html` tag in `server/views.js`, which escapes it. Use `raw()` only for markup you wrote.
 - Keep contact email, private notes, and history out of public pages (`publicListing()` strips them).
-- Keep the honeypot field and length limits on public forms, and the spam limits in `listingStore().create()`: at most `MAX_PENDING` (100) listings waiting for review and `MAX_PENDING_PER_EMAIL` (3) per contact email. Both are checked again after saving, so simultaneous posts can't push past them. Owners clean up spam with "Delete declined listings" on the Declined tab.
+- Keep the honeypot field and length limits on public forms, and the spam limits in `listingStore().create()`: at most `MAX_PENDING` (100) listings waiting for review and `MAX_PENDING_PER_EMAIL` (3) per contact email. Both are checked again after saving, so a burst of simultaneous posts is turned away too (give or take one saved in the very same instant). Owners clean up spam with "Delete declined listings" on the Declined tab.
 - Keep `EMAIL_PATTERN` strict (no `? & = % #`), because apply addresses become `mailto:` links.
 - Look up status names and messages with `Object.hasOwn`, not `in` or bare `obj[key]`, so names like `constructor` are refused.
 - A data write can fail with `quota_exceeded` when the plan's rows run out; `server/index.js` turns that into a "paused" page instead of an error.

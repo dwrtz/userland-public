@@ -42,6 +42,9 @@ const MAX_ROWS_PER_VISITOR = 30;
 const MAX_ACTIVE_ROWS = 200;
 // Once the demo is full, each save removes up to this many of the oldest rows.
 const EVICT_PER_SAVE = 2;
+// When many saves at once push the demo further over, each save takes back up
+// to this many of the newest extra rows.
+const TRIM_PER_SAVE = 5;
 // "Delete declined listings" in the demo handles this many per press.
 const DEMO_BULK_DELETE_MAX = 10;
 const KEEP_FOR_MS = 24 * 60 * 60 * 1000;
@@ -368,19 +371,26 @@ function demoStore(ctx, visitor) {
   // After a save, look at the unexpired rows, newest first. A few over the cap
   // (the normal case once the demo is full): delete the oldest ones. Many over
   // (lots of saves at the same moment, like a script firing requests in
-  // parallel): take this save back out if it's among the newest extras, and
-  // show the busy page.
+  // parallel): delete up to TRIM_PER_SAVE of the newest extras, this save
+  // first if it's one of them, and show the busy page. Every save that finds
+  // the demo far over the cap trims a few more, so it gets back under the cap
+  // however the saves overlapped, instead of staying stuck on the busy page.
   async function keepUnderCap(row) {
     const active = await newestActive(rows);
+    const takeBack = () => {
+      own = own?.filter((item) => item.id !== row.id) ?? null;
+      return new DemoLimitError("busy");
+    };
+    // Another save at the same moment already took this one back out.
+    if (!active.some((item) => item.id === row.id)) throw takeBack();
     const over = active.length - MAX_ACTIVE_ROWS;
     if (over <= 0) return;
-    const position = active.findIndex((item) => item.id === row.id);
     if (over > EVICT_PER_SAVE) {
-      if (position !== -1 && position < over) {
-        await rows.delete(row.id);
-        own = own?.filter((item) => item.id !== row.id) ?? null;
-        throw new DemoLimitError("busy");
-      }
+      const extras = active.slice(0, over);
+      const isExtra = extras.some((item) => item.id === row.id);
+      const trim = [...(isExtra ? [row] : []), ...extras.filter((item) => item.id !== row.id)].slice(0, TRIM_PER_SAVE);
+      for (const item of trim) await rows.delete(item.id);
+      if (isExtra) throw takeBack();
       return;
     }
     for (const old of active.slice(-over)) {
@@ -456,9 +466,9 @@ function demoStore(ctx, visitor) {
       await deleteOne(await mine(), id);
     },
     // Up to DEMO_BULK_DELETE_MAX per press, with no cleanup sweep, so this
-    // request stays around 16 data calls at most: 1 read, up to 10 deletes,
-    // and for the one declined sample listing a saved copy (1 save, up to 3
-    // reads and 2 deletes in saveRow).
+    // request stays under 20 data calls: 1 read, up to 10 deletes, and for the
+    // one declined sample listing a saved copy (1 save, then up to 3 reads and
+    // TRIM_PER_SAVE deletes in keepUnderCap).
     async deleteDeclined() {
       requireVisitor();
       swept = true;

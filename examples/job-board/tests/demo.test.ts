@@ -153,6 +153,26 @@ describe("public demo", () => {
     expect(ctx.state["demo-listings"].filter((row) => String(row.expires_at) <= new Date().toISOString())).toHaveLength(0);
   });
 
+  it("gets back under the cap after a big burst, so later visitors aren't stuck on the busy page", async () => {
+    const ctx = makeCtx();
+    await seedDemoRows(ctx, 150, { title: "Earlier", visitor: "", expires_at: later() });
+    const burst = await Promise.all(Array.from({ length: 200 }, (_, index) => post(app, ctx, `${DEMO_ORIGIN}/post`, { ...validListing, title: `Flood ${index}` })));
+    expect(burst.every((response) => response.status === 303 || response.status === 429)).toBe(true);
+
+    // Each later save trims a few of the newest extra rows until the demo is
+    // back under the cap; then saves go through again.
+    const statuses: number[] = [];
+    while (statuses.at(-1) !== 303 && statuses.length < 25) {
+      statuses.push((await post(app, ctx, `${DEMO_ORIGIN}/post`, { ...validListing, title: "Later visitor" })).status);
+    }
+    expect(statuses.at(-1)).toBe(303);
+    expect(statuses.every((status) => status === 303 || status === 429)).toBe(true);
+    expect(active(ctx)).toBeLessThanOrEqual(200);
+    // The burst took back its own extra rows instead of wiping out everyone
+    // else's; only the last save's usual "drop the oldest" touched them.
+    expect(ctx.state["demo-listings"].filter((row) => row.title === "Earlier").length).toBeGreaterThanOrEqual(148);
+  }, 20_000);
+
   it("keeps each visitor to 30 saved changes", async () => {
     const ctx = makeCtx();
     const alice = await visitorPosts(ctx, "Alice goat herder");
