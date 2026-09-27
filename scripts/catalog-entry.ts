@@ -1,33 +1,18 @@
 // Validation rules for catalog.json entries and examples/<slug>/example.json.
 // Shared by scripts/validate-catalog.ts and its tests.
-import { computePlanMetadata, manifestCapabilities, RESOURCE_CAPABILITIES } from "./plan-entitlements.js";
+import { computePlanMetadata, manifestCapabilities, paidFeatureKeys, RESOURCE_CAPABILITIES, SELF_SERVE_PLANS, type PlanMetadata } from "./plan-entitlements.js";
 
 export const allowedCapabilities = new Set(["static", "server", "auth", "data", "files", "secrets", "jobs", "webhooks", "rollback", "transactions"]);
 const allowedDifficulty = new Set(["beginner", "intermediate", "advanced"]);
-// Lowest self-serve plan that can publish the example manifest. "internal" is never valid here.
-export const allowedPlans = new Set(["free", "starter", "business", "business_plus", "agency"]);
+// Lowest self-serve plan that can publish the example (from the CLI's plan
+// data, schemas/plans-v0.json). Plans that are not on sale and the
+// operator-assigned "internal" plan are never valid here.
+export const allowedPlans = new Set(SELF_SERVE_PLANS);
 export const allowedLaunchRoles = new Set(["launch-example", "capability-fixture"]);
-// Manifest feature and limit keys that Userland plan entitlements can require
-// above the free plan. These are the feature_key / limit_key values a publish
-// 402 entitlement_required or plan_limit_exceeded error reports.
-export const allowedPaidFeatures = new Set([
-  "private_apps",
-  "auth.public_signup",
-  "files.private_stores",
-  "jobs.scheduled",
-  "webhooks.enabled",
-  "webhooks.provider.generic_hmac",
-  "webhooks.provider.github",
-  "auth.roles.max",
-  "data.collections.max",
-  "data.indexes_per_collection.max",
-  "files.stores.max",
-  "files.max_upload_size_bytes.max",
-  "secrets.required.max",
-  "jobs.declared.max",
-  "jobs.schedule.allowed",
-  "webhooks.declared.max"
-]);
+// Manifest feature and limit keys that plans above Free unlock. These are the
+// feature_key / limit_key values `userland validate` lists under plan_gated and
+// a publish 402 entitlement_required or plan_limit_exceeded error reports.
+export const allowedPaidFeatures = paidFeatureKeys();
 const requiredKeys = [
   "slug",
   "title",
@@ -81,9 +66,13 @@ export function assertCatalogEntry(value: unknown): asserts value is CatalogEntr
 }
 
 // Checks that the entry's plan metadata and resource capabilities agree with
-// the example's manifest, using the plan rules snapshot in plan-entitlements.ts.
-export function assertEntryMatchesManifest(entry: CatalogEntry, manifest: Record<string, unknown>): void {
-  const computed = computePlanMetadata(manifest);
+// the example's manifest. `computed` defaults to the CLI's plan analysis of the
+// manifest alone; validate-catalog passes the full `userland validate` result,
+// which also counts release size and file count.
+export function assertEntryMatchesManifest(entry: CatalogEntry, manifest: Record<string, unknown>, computed: PlanMetadata = computePlanMetadata(manifest)): void {
+  if (!allowedPlans.has(computed.required_plan)) {
+    throw new Error(`${entry.slug} uses something no self-serve plan includes (${computed.paid_features.join(", ")}); catalog examples must publish on a self-serve plan.`);
+  }
   if (entry.required_plan !== computed.required_plan) {
     throw new Error(`${entry.slug} required_plan is ${entry.required_plan}, but its manifest needs ${computed.required_plan} (because of ${computed.paid_features.join(", ") || "nothing paid"}).`);
   }

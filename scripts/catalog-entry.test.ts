@@ -33,11 +33,13 @@ it("accepts capability fixtures and launch examples", () => {
   expect(() => assertCatalogEntry(fixture)).not.toThrow();
   expect(() => assertCatalogEntry({ ...fixture, required_plan: "free", paid_features: [] })).not.toThrow();
   expect(() => assertCatalogEntry(launch)).not.toThrow();
+  expect(() => assertCatalogEntry({ ...fixture, required_plan: "business_plus" })).not.toThrow();
 });
 
 it.each([
   ["missing required_plan", { ...fixture, required_plan: undefined }, /required_plan/u],
   ["internal plan", { ...fixture, required_plan: "internal" }, /required_plan/u],
+  ["retired agency plan", { ...fixture, required_plan: "agency" }, /required_plan/u],
   ["unknown plan alias", { ...fixture, required_plan: "pro" }, /required_plan/u],
   ["missing paid_features", { ...fixture, paid_features: undefined }, /paid_features/u],
   ["unknown paid feature", { ...fixture, paid_features: ["webhooks"] }, /Unknown paid feature/u],
@@ -83,6 +85,11 @@ describe("assertEntryMatchesManifest", () => {
   it("rejects a required_plan that does not match the manifest", () => {
     expect(() => assertEntryMatchesManifest({ ...entry, required_plan: "business" }, manifest)).toThrow(/needs starter/u);
     expect(() => assertEntryMatchesManifest({ ...entry, required_plan: "free", paid_features: [] }, manifest)).toThrow(/needs starter/u);
+  });
+
+  it("rejects a manifest no self-serve plan can publish", () => {
+    const tooManyRoles = { ...manifest, resources: { ...manifest.resources, auth: { mode: "app_users", roles: Array.from({ length: 51 }, (_, index) => `r${index}`) } } };
+    expect(() => assertEntryMatchesManifest({ ...entry, capabilities: [...entry.capabilities, "auth"], required_plan: "business_plus" }, tooManyRoles)).toThrow(/no self-serve plan/u);
   });
 
   it("rejects missing or extra paid_features", () => {

@@ -1,6 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { validateAppDirectory } from "../cli/src/validation.js";
 import { assertCatalogEntry, assertEntryMatchesManifest } from "./catalog-entry.js";
+import { planMetadataFromReport } from "./plan-entitlements.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const catalog = await readJson(path.join(root, "catalog.json"));
@@ -28,7 +30,13 @@ for (const entry of catalog.examples) {
   }
   const manifest = await readJson(path.join(absoluteExamplePath, "manifest.userland.json"));
   assertObject(manifest, `${entry.path}/manifest.userland.json must be an object.`);
-  assertEntryMatchesManifest(entry, manifest);
+  // Same analysis as `userland validate <dir> --strict`: the catalog's plan
+  // metadata must be what the CLI reports for the example.
+  const report = await validateAppDirectory(absoluteExamplePath, { strict: true });
+  if (report.errors.length > 0) {
+    throw new Error(`${entry.path} fails userland validate:\n- ${report.errors.map((error) => `${error.manifest_path || error.file || "(app)"}: ${error.message}`).join("\n- ")}`);
+  }
+  assertEntryMatchesManifest(entry, manifest, planMetadataFromReport(report));
 }
 
 for (const examplePath of exampleDirs) {
