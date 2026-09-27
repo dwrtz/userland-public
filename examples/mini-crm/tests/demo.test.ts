@@ -1,12 +1,26 @@
 // Tests for the public demo's demo mode (server/demo.js). Delete this file
 // together with server/demo.js when you turn demo mode off (see README.md).
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { createApp } from "../server/index.js";
+import app, { createApp } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { DEMO_LIMITS, demo } from "../server/demo.js";
-import { ORIGIN, demoKey, get, makeCtx, post, request } from "./helpers.js";
+import { DEMO_HOSTS, DEMO_LIMITS, demo } from "../server/demo.js";
+import { DEMO_ORIGIN, at, demoKey, makeCtx, request } from "./helpers.js";
+
+// Demo mode only turns on at the public demo's addresses.
+const { get, post } = at(DEMO_ORIGIN);
 
 describe("demo mode", () => {
+  it("turns on in the published app only at the demo's addresses", async () => {
+    expect([...DEMO_HOSTS]).toContain(new URL(DEMO_ORIGIN).hostname);
+    for (const host of DEMO_HOSTS) {
+      const ctx = makeCtx();
+      const board = await at(`https://${host}`).get(app, ctx, "/admin");
+      expect(board.status, host).toBe(200);
+      expect(await board.text(), host).toContain("Maya Okafor");
+      expect(ctx.auth.currentUser).not.toHaveBeenCalled();
+    }
+  });
+
   it("shows sample leads to visitors without signing in, marked noindex with a link back", async () => {
     const app = createApp({ demo });
     const ctx = makeCtx();

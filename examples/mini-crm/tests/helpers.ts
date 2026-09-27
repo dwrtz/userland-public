@@ -4,6 +4,8 @@ export type Row = Record<string, unknown> & { id: string; created_at: string; up
 export type User = { id: string; email: string; roles: string[] } | null;
 
 export const ORIGIN = "https://crm.example.test";
+/** The public demo's address, where demo mode turns on (DEMO_HOSTS in server/demo.js). */
+export const DEMO_ORIGIN = "https://mini-crm-demo.apps.userland.fun";
 
 /** In-memory stand-in for the Userland runtime ctx: data, auth, and log. */
 export function makeCtx({ user = null as User } = {}) {
@@ -54,20 +56,26 @@ export function makeCtx({ user = null as User } = {}) {
 
 export type Ctx = ReturnType<typeof makeCtx>;
 
-export function get(app: any, ctx: Ctx, path: string) {
-  return app.fetch(new Request(`${ORIGIN}${path}`), ctx) as Promise<Response>;
+/** Request helpers for one origin. */
+export function at(origin: string) {
+  return {
+    get(app: any, ctx: Ctx, path: string) {
+      return app.fetch(new Request(`${origin}${path}`), ctx) as Promise<Response>;
+    },
+    post(app: any, ctx: Ctx, path: string, fields: Record<string, string>, headers: Record<string, string> = {}) {
+      return app.fetch(
+        new Request(`${origin}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded", origin, ...headers },
+          body: new URLSearchParams(fields).toString()
+        }),
+        ctx
+      ) as Promise<Response>;
+    }
+  };
 }
 
-export function post(app: any, ctx: Ctx, path: string, fields: Record<string, string>, headers: Record<string, string> = {}) {
-  return app.fetch(
-    new Request(`${ORIGIN}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, ...headers },
-      body: new URLSearchParams(fields).toString()
-    }),
-    ctx
-  ) as Promise<Response>;
-}
+export const { get, post } = at(ORIGIN);
 
 export const request = {
   name: "Jordan Pike",

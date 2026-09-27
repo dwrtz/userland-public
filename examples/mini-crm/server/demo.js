@@ -20,7 +20,11 @@
 //   taking new entries once it holds DEMO_LIMITS.everyone rows, so the public
 //   demo can't grow without bound. Clear old demo rows by hand to reopen it.
 //
-// To turn demo mode off for a real business:
+// Demo mode only turns on for the hostnames in DEMO_HOSTS, so a copy of this
+// app published anywhere else runs the real, signed-in owner board and saves
+// every lead where the owner sees it.
+//
+// To remove the demo code from your own copy:
 // 1. Delete this file.
 // 2. In server/index.js, delete the `import { demo } from "./demo.js";` line and
 //    change the last line to `export default createApp();`.
@@ -31,6 +35,11 @@
 // ---------------------------------------------------------------------------
 
 import { byNewest, normalizeActivity, normalizeLead } from "./leads.js";
+
+// The public demo's named address and the demo app's own address. Both belong
+// to the Userland demo deployment only; replace them if you publish your own
+// demo.
+export const DEMO_HOSTS = new Set(["mini-crm-demo.apps.userland.fun", "4ismmfcftg3tn4d41mf.apps.userland.fun"]);
 
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
@@ -268,6 +277,10 @@ function openStore(ctx, key, now = new Date()) {
 }
 
 export const demo = {
+  /** True when this request is for the public demo (one of DEMO_HOSTS). */
+  activeFor(url) {
+    return DEMO_HOSTS.has(url.hostname);
+  },
   /** The visitor key from ?demo= or a hidden form field, or "" when absent or malformed. */
   keyFrom(url, form = {}) {
     const value = String(form.demo || url.searchParams.get("demo") || "");

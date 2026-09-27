@@ -4,8 +4,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createFakeRuntime, readExampleManifest } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { createApp } from "../server/index.js";
-import { ORIGIN, get, makeCtx, post, request } from "./helpers.js";
+import app, { createApp } from "../server/index.js";
+import { ORIGIN, at, get, makeCtx, post, request } from "./helpers.js";
 
 describe("public estimate form", () => {
   it("renders the form without demo notices when demo mode is off", async () => {
@@ -122,6 +122,37 @@ describe("owner routes with demo mode off", () => {
     const quoted = await (await get(app, ctx, "/admin?stage=quoted")).text();
     expect(quoted).not.toContain('class="lead-link"');
     expect(quoted).toContain("No quoted leads right now.");
+  });
+});
+
+describe("the published app outside the demo's addresses", () => {
+  // server/index.js exports createApp({ demo }), but demo mode only turns on at
+  // the public demo's addresses. A copy published anywhere else, before or
+  // after removing demo.js, runs the signed-in owner board.
+  const copy = at("https://my-plumbing.apps.userland.fun");
+
+  it("requires sign-in for the owner board and saves real leads where the owner sees them", async () => {
+    const ctx = makeCtx();
+    const home = await (await copy.get(app, ctx, "/")).text();
+    expect(home).not.toContain("Demo app");
+    expect(home).not.toContain('name="robots"');
+
+    const board = await copy.get(app, ctx, "/admin");
+    expect(board.status).toBe(303);
+    expect(board.headers.get("location")).toBe("/_userland/auth/login?return_to=%2Fadmin");
+
+    const sent = await copy.post(app, ctx, "/estimate", request);
+    expect(sent.status).toBe(303);
+    expect(sent.headers.get("location")).toBe("/thanks");
+    expect(ctx.state.leads).toHaveLength(1);
+    expect(ctx.state.leads[0]!.demo_visitor ?? "").toBe("");
+    expect(ctx.state.activity[0]!.demo_visitor ?? "").toBe("");
+
+    const owner = makeCtx({ user: { id: "u_1", email: "owner@example.com", roles: ["owner"] } });
+    Object.assign(owner.state, ctx.state);
+    const ownerBoard = await (await copy.get(app, owner, "/admin")).text();
+    expect(ownerBoard).toContain("Jordan Pike");
+    expect(ownerBoard).not.toContain("Maya Okafor");
   });
 });
 

@@ -107,9 +107,18 @@ function notFound(rc, area = "public") {
   return html(messagePage(rc, { title: "Page not found", message: "That page doesn't exist or was moved.", area, action: { href: rc.href(area === "owner" ? "/admin" : "/"), label: area === "owner" ? "Back to leads" : "Back to the home page" } }), 404);
 }
 
-export function createApp({ demo: demoMode = null } = {}) {
+/**
+ * createApp() returns the Userland server module. Pass `{ demo }` from
+ * server/demo.js to allow demo mode; it then turns on only for requests to
+ * the public demo's addresses (DEMO_HOSTS in server/demo.js). Everywhere else
+ * the owner routes require a signed-in owner.
+ */
+export function createApp({ demo = null } = {}) {
+  const demoFor = (url) => (demo?.activeFor(url) ? demo : null);
+
   async function handle(request, ctx) {
     const url = new URL(request.url);
+    const demoMode = demoFor(url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const isPost = request.method === "POST";
     const isRead = request.method === "GET" || request.method === "HEAD";
@@ -219,7 +228,8 @@ export function createApp({ demo: demoMode = null } = {}) {
       try {
         return await handle(request, ctx);
       } catch (error) {
-        const rc = requestContext(new URL(request.url), {}, demoMode);
+        const url = new URL(request.url);
+        const rc = requestContext(url, {}, demoFor(url));
         // Only server/demo.js throws this, when a demo visitor (or the demo as
         // a whole) has saved as much as it allows.
         if (error?.code === "demo_limit") {
@@ -229,7 +239,7 @@ export function createApp({ demo: demoMode = null } = {}) {
               : { title: "That's plenty for a demo", message: "This demo has saved as many entries as it can for you. Start fresh from the home page to keep exploring.", action: { href: "/", label: "Start fresh" } };
           return html(messagePage(rc, page), 429);
         }
-        await ctx.log.error("request failed", { path: new URL(request.url).pathname, message: error instanceof Error ? error.message : String(error) });
+        await ctx.log.error("request failed", { path: url.pathname, message: error instanceof Error ? error.message : String(error) });
         return html(messagePage(rc, { title: "Something went wrong", message: "We couldn't finish that. Please try again in a minute." }), 500);
       }
     }

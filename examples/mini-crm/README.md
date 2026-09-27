@@ -31,7 +31,7 @@ Free. The manifest uses the server runtime, app-user auth with one role, two col
 | `server/demo.js` | Demo mode for the public demo only (see below) |
 | `public/assets/crm.css` | Brand and layout |
 | `public/fonts/` | Barlow Condensed and IBM Plex Sans Condensed, self-hosted (SIL Open Font License) |
-| `tests/mini-crm.test.ts` | Form validation, the owner gate, and turning demo mode off |
+| `tests/mini-crm.test.ts` | Form validation, the owner gate, demo mode staying off outside the demo's addresses, and removing the demo code |
 | `tests/demo.test.ts` | Demo mode only: demo privacy and limits |
 
 ## Routes
@@ -59,6 +59,8 @@ Both collections are `server_only`. Public routes can create a lead but never re
 
 ## Publish
 
+Demo mode only turns on at the public demo's addresses, so a copy you publish anywhere else runs the signed-in owner board. For a real business, still remove the demo code before the first publish (see [Demo mode](#demo-mode)); removing its fields later is a resource change.
+
 Install the CLI and sign in. `userland login` opens your browser to approve the CLI; it does not ask for or store a password.
 
 ```sh
@@ -85,18 +87,18 @@ The owner opens the invite link, sets a password, and signs in at `/_userland/au
 
 ## Demo mode
 
-`server/demo.js` exists for the public demo. It lets visitors see the owner side without signing in and keeps visitors' entries apart: each visitor gets a random key in the page address, and the owner view shows the sample leads plus only rows saved with that key. Changes to a sample lead are saved as history for that visitor only.
+`server/demo.js` exists for the public demo. It only turns on for requests to the hostnames in `DEMO_HOSTS` (`mini-crm-demo.apps.userland.fun` and the demo app's own address). Anywhere else the owner routes require a signed-in owner and leads are saved normally, even with `demo.js` still in place. On the demo addresses it lets visitors see the owner side without signing in and keeps visitors' entries apart: each visitor gets a random key in the page address, and the owner view shows the sample leads plus only rows saved with that key. Changes to a sample lead are saved as history for that visitor only.
 
 The key is the only thing tying entries to a visitor, so anyone who has a visitor's link sees that visitor's entries. The demo pages say this plainly and ask visitors to use made-up details. Each visitor can save up to 25 leads and 90 history entries, and the whole demo stops taking new entries at 1,500 history rows (`DEMO_LIMITS` in `server/demo.js`). Visitors who only look around save nothing.
 
-To turn it off for a real business, before the first publish:
+To remove the demo code for a real business, before the first publish:
 
 1. Delete `server/demo.js`.
 2. In `server/index.js`, delete the `import { demo } from "./demo.js";` line and change the last line to `export default createApp();`.
 3. In `manifest.userland.json`, remove the `demo_visitor` fields and the `by_demo_visitor` indexes.
 4. Delete `tests/demo.test.ts` (the demo-mode tests).
 
-The owner routes then require a signed-in app user with the `owner` role. The "turning demo mode off" test in `tests/mini-crm.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that the form and the owner board still work.
+The owner routes require a signed-in app user with the `owner` role. The "the published app outside the demo's addresses" test in `tests/mini-crm.test.ts` checks that a copy published elsewhere keeps the owner board behind sign-in, and the "turning demo mode off" test in `tests/mini-crm.test.ts` runs steps 1 to 3 on a copy of `server/` and the manifest and checks that the form and the owner board still work.
 
 ## Verify
 
@@ -108,7 +110,7 @@ After publishing:
 
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' <origin>/                 # 200
-curl -s -o /dev/null -w '%{http_code}\n' <origin>/admin            # 303 to sign-in when demo mode is off
+curl -s -o /dev/null -w '%{http_code}\n' <origin>/admin            # 303 to sign-in
 curl -s -X POST <origin>/estimate \
   --data-urlencode name='Test Lead' --data-urlencode email=test@example.com \
   --data-urlencode project=kitchen --data-urlencode budget=not_sure \
