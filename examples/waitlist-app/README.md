@@ -152,7 +152,7 @@ userland validate . --plan free --strict
 - Status changes to sample signups save a private copy for that visitor.
 - The invite link on the private page only credits a friend inside the same demo, so the page links to a version with the visitor's demo key and says so.
 - Signups go to the separate `demo-signups` collection, never to `signups`.
-- Deleting for good is turned off; the owner view explains that the demo clears out visitor signups after a day instead.
+- Deleting for good is turned off; pressing **Delete** shows a page that explains the demo clears out visitor signups after a day instead.
 - The demo stays small on its own. Each visitor row carries `demo_expires_at`, a day after it was saved, and every demo write first deletes a batch of expired rows (listed oldest first by that indexed field). Each visitor can add up to 30 signups, and the whole demo holds at most 400 visitor rows; past that, visitors see a friendly "The demo is busy right now" page instead of an error. The cap has no rate limit behind it, so a script that posts a few hundred fake signups can keep the demo busy for everyone for up to a day. That is an accepted trade-off for a demo that holds no real data; a real waitlist never uses this cap.
 - Every page gets `<meta name="robots" content="noindex,follow">` and a "Built with Userland" note.
 
