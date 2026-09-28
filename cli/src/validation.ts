@@ -79,6 +79,12 @@ export interface ValidationReport {
     file_count: number;
     bundle_bytes: number;
   };
+  /**
+   * The other sites allowed to show the app in a frame (runtime.embed_origins), as the API stores
+   * them: lowercase, without repeats. Empty when none are listed; null when manifest errors prevent
+   * the check.
+   */
+  embed_origins: string[] | null;
 }
 
 export interface ValidateOptions {
@@ -220,7 +226,8 @@ export async function analyzeAppDirectory(rootDir: string, options: { strict?: b
     errors: [],
     warnings: [],
     manifest_file: null,
-    release: { file_count: 0, bundle_bytes: 0 }
+    release: { file_count: 0, bundle_bytes: 0 },
+    embed_origins: null
   };
   const absoluteRoot = path.resolve(rootDir);
   const stat = await fs.stat(absoluteRoot).catch(() => null);
@@ -278,6 +285,7 @@ export async function analyzeAppDirectory(rootDir: string, options: { strict?: b
     ];
     report.required_plan_key = minimumPlanFor(requirements);
     report.plan_gated = evaluateRequirements(requirements, "free", planData().plans.free);
+    report.embed_origins = embedOriginList(input.runtime.embed_origins);
   }
 
   return { report: finish(report), requirements };
@@ -401,8 +409,8 @@ export function checkManifestDocument(document: Record<string, unknown>): Manife
     return { errors: semanticManifestErrors(document), schema_strict: [], normalized: document };
   }
   const normalized = normalizeLikeApi(document);
-  const apiErrors = schemaErrors(normalized, schema).filter((error) => !apiToleratesSchemaError(error));
-  const errors = preferApiMessages(apiErrors.map(toIssue), normalized);
+  const apiErrors = schemaErrors(normalized, schema).filter((error) => !apiToleratesSchemaError(error, normalized));
+  const errors = withEveryEmbedOriginError(preferApiMessages(apiErrors.map(toIssue), normalized), normalized);
   const blockingPaths = new Set(errors.map((error) => error.manifest_path));
   const schemaStrict = strictErrors
     .map(toIssue)
@@ -423,7 +431,9 @@ export function checkManifestDocument(document: Record<string, unknown>): Manife
  * The schema and the API's cross-field rules can flag the same field (for example a signed
  * webhook without a secret). The cross-field message says why ("is required when provider is
  * github"), so it replaces the schema's generic one for that path. Cross-field rules assume a
- * well-formed document, so any failure there keeps the schema messages as they are.
+ * well-formed document, so any failure there keeps the schema messages as they are. Several schema
+ * rules can fail on one value (a runtime.embed_origins entry that is too long and not an origin), so
+ * a replacement is reported once.
  */
 function preferApiMessages(errors: ValidationIssue[], document: Record<string, unknown>): ValidationIssue[] {
   let semantic: ValidationIssue[];
@@ -433,7 +443,20 @@ function preferApiMessages(errors: ValidationIssue[], document: Record<string, u
     return errors;
   }
   const byPath = new Map(semantic.map((issue) => [issue.manifest_path, issue]));
-  return errors.map((issue) => byPath.get(issue.manifest_path) ?? issue);
+  const replaced = errors.map((issue) => byPath.get(issue.manifest_path) ?? issue);
+  return replaced.filter((issue, index) => replaced.indexOf(issue) === index);
+}
+
+/**
+ * Other cross-field rules wait until the schema errors are fixed, but runtime.embed_origins entries
+ * are checked one at a time, so when there are schema errors every bad entry is still reported, in
+ * list order, after the other errors.
+ */
+function withEveryEmbedOriginError(errors: ValidationIssue[], document: Record<string, unknown>): ValidationIssue[] {
+  if (errors.length === 0) return errors;
+  const embedErrors = embedOriginErrors(isPlainObject(document.runtime) ? document.runtime.embed_origins : undefined);
+  const embedPaths = new Set(embedErrors.map((issue) => issue.manifest_path));
+  return [...errors.filter((issue) => !embedPaths.has(issue.manifest_path)), ...embedErrors];
 }
 
 /** Applies the API's lenient parsing so only the rules it enforces remain for the schema. */
@@ -483,11 +506,20 @@ function normalizeLikeApi(document: Record<string, unknown>): Record<string, unk
   return copy;
 }
 
-/** Schema rules with no API counterpart: reserved data index names and empty enum values. */
-function apiToleratesSchemaError(error: SchemaError): boolean {
+/**
+ * Schema rules with no API counterpart: reserved data index names, empty enum values, repeated
+ * runtime.embed_origins entries (the API drops repeats), and embed origins the API accepts in a form
+ * the schema does not (such as `HTTPS://` in capital letters, which the API stores in lowercase).
+ */
+function apiToleratesSchemaError(error: SchemaError, document: Record<string, unknown>): boolean {
   const at = error.path;
   const last = at[at.length - 1];
   const parent = at[at.length - 2];
+  if (at[0] === "runtime" && at[1] === "embed_origins") {
+    if (at.length === 2) return error.keyword === "uniqueItems";
+    const origins = isPlainObject(document.runtime) ? document.runtime.embed_origins : undefined;
+    return at.length === 3 && typeof last === "number" && Array.isArray(origins) && checkEmbedOrigin(origins[last]).ok;
+  }
   if (at[0] !== "resources" || at[1] !== "data") return false;
   if (last === "name" && typeof parent === "number" && at[at.length - 3] === "indexes") {
     return error.keyword === "not";
@@ -569,6 +601,7 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
       errors.push({ code: "unsafe_path", manifest_path: `runtime.${key}`, message: `${value}: ${pathError}` });
     }
   }
+  errors.push(...embedOriginErrors(runtime.embed_origins));
 
   const resources = (document.resources as Record<string, unknown> | undefined) ?? {};
   const collections = objectEntries((resources.data as Record<string, unknown> | undefined)?.collections);
@@ -619,6 +652,110 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
     }
   }
   return errors;
+}
+
+// ---------------------------------------------------------------------------
+// runtime.embed_origins (mirrors checkEmbedOrigin and validateEmbedOrigins in the API)
+// ---------------------------------------------------------------------------
+
+// The other sites allowed to show the app in a frame on its *.apps.userland.fun addresses. Apps
+// there share one site in browsers (apps.userland.fun is not on the Public Suffix List), so by
+// default only the app's own pages may frame it. The API writes each entry into the app's
+// `Content-Security-Policy: frame-ancestors` header, so an entry must be exactly one https origin.
+
+/** runtime.embed_origins can list at most this many sites. */
+export const EMBED_ORIGINS_MAX_COUNT = 20;
+export const EMBED_ORIGIN_MAX_LENGTH = 255;
+/** Every host under this domain is Userland's (apps, the product site, docs, the console, the API). */
+const USERLAND_DOMAIN = "userland.fun";
+const DNS_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+// Two labels at least: a single label (`localhost`) is not a site, and a wildcard over one (`*.com`)
+// would allow every site under a top-level domain.
+const EMBED_ORIGIN_PATTERN = new RegExp(`^https://(\\*\\.)?((?:${DNS_LABEL}\\.)+${DNS_LABEL})(?::([1-9][0-9]{0,4}))?$`, "u");
+const EMBED_ORIGIN_EXAMPLE = "for example https://example.com or https://*.example.com";
+
+export type EmbedOriginCheck = { ok: true; origin: string } | { ok: false; reason: string };
+
+/**
+ * Checks one runtime.embed_origins entry the way the API does, with the API's wording. The origin
+ * is returned in lowercase, as the API stores it. The API also refuses its own deployment's domains;
+ * for Userland that is every host under userland.fun, which is refused here too.
+ */
+export function checkEmbedOrigin(value: unknown): EmbedOriginCheck {
+  if (typeof value !== "string") {
+    return { ok: false, reason: `must be a text value such as "https://example.com"` };
+  }
+  if (value.length > EMBED_ORIGIN_MAX_LENGTH) {
+    return { ok: false, reason: `must be at most ${EMBED_ORIGIN_MAX_LENGTH} characters` };
+  }
+  const shown = JSON.stringify(value);
+  if (value.trim().toLowerCase() === "'self'") {
+    return { ok: false, reason: `(${shown}) is not needed: the app's own pages can always show it in a frame` };
+  }
+  if (/[\s'";,]/u.test(value)) {
+    return { ok: false, reason: `(${shown}) must be one origin, without spaces, quotes, commas or semicolons, ${EMBED_ORIGIN_EXAMPLE}` };
+  }
+  const origin = value.toLowerCase();
+  if (origin === "*" || origin === "https://*" || origin === "https:") {
+    return { ok: false, reason: `(${shown}) must name a site: allowing every site is not supported` };
+  }
+  if (!origin.startsWith("https://")) {
+    return { ok: false, reason: origin.startsWith("http://") ? `(${shown}) must use https://` : `(${shown}) must start with https://, ${EMBED_ORIGIN_EXAMPLE}` };
+  }
+  if (/[/?#]/u.test(origin.slice("https://".length))) {
+    return { ok: false, reason: `(${shown}) must be an origin without a path, query or fragment (no trailing slash), ${EMBED_ORIGIN_EXAMPLE}` };
+  }
+  const match = EMBED_ORIGIN_PATTERN.exec(origin);
+  if (match === null) {
+    return { ok: false, reason: `(${shown}) must be https:// and a domain name with an optional port, and may start with *. to cover its subdomains, ${EMBED_ORIGIN_EXAMPLE}` };
+  }
+  const [, , host, port] = match;
+  if (/^[0-9]+$/u.test(host.slice(host.lastIndexOf(".") + 1))) {
+    return { ok: false, reason: `(${shown}) must use a domain name, not an IP address` };
+  }
+  if (port !== undefined && Number(port) > 65535) {
+    return { ok: false, reason: `(${shown}) has a port above 65535` };
+  }
+  // A wildcard over userland.fun's own base (`*.fun`) is already refused by the pattern.
+  if (host === USERLAND_DOMAIN || host.endsWith(`.${USERLAND_DOMAIN}`)) {
+    return { ok: false, reason: `(${shown}) cannot be a Userland address: other apps and Userland sites can never show this app in a frame` };
+  }
+  return { ok: true, origin };
+}
+
+/**
+ * The API's `400 invalid_runtime_manifest` errors for runtime.embed_origins, one per problem (the API
+ * stops at the first). Messages are the API's own, so local and published errors read the same.
+ */
+function embedOriginErrors(value: unknown): ValidationIssue[] {
+  if (value === undefined) return [];
+  const issue = (manifestPath: string, message: string): ValidationIssue => ({ code: "invalid_runtime_manifest", manifest_path: manifestPath, message });
+  if (!Array.isArray(value)) {
+    return [issue("runtime.embed_origins", 'runtime.embed_origins must be a list of https origins, for example ["https://example.com"].')];
+  }
+  const errors: ValidationIssue[] = [];
+  if (value.length > EMBED_ORIGINS_MAX_COUNT) {
+    errors.push(issue("runtime.embed_origins", `runtime.embed_origins can list at most ${EMBED_ORIGINS_MAX_COUNT} sites.`));
+  }
+  value.forEach((entry, index) => {
+    const check = checkEmbedOrigin(entry);
+    if (!check.ok) {
+      errors.push(issue(`runtime.embed_origins[${index}]`, `runtime.embed_origins[${index}] ${check.reason}.`));
+    }
+  });
+  return errors;
+}
+
+/** The sites a valid runtime.embed_origins allows, as the API stores them: lowercase, without repeats. */
+export function embedOriginList(value: unknown): string[] {
+  const origins: string[] = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    const check = checkEmbedOrigin(entry);
+    if (check.ok && !origins.includes(check.origin)) {
+      origins.push(check.origin);
+    }
+  }
+  return origins;
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,7 +1278,8 @@ export function validationJson(report: ValidationReport): Record<string, unknown
     errors: report.errors,
     warnings: report.warnings,
     manifest_file: report.manifest_file,
-    release: report.release
+    release: report.release,
+    embed_origins: report.embed_origins
   };
 }
 
@@ -1160,6 +1298,9 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
   }
   lines.push(`release_files=${report.release.file_count}`);
   lines.push(`release_bytes=${report.release.bundle_bytes}`);
+  if (report.embed_origins !== null && report.embed_origins.length > 0) {
+    lines.push(`embed_origins=${report.embed_origins.join(",")}`);
+  }
   for (const warning of report.warnings) {
     lines.push(formatWarning(warning));
   }
@@ -1257,6 +1398,8 @@ const PATTERN_DESCRIPTIONS: Record<string, string> = {
   "^(?!/)(?!.*\\\\)(?!_userland(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//).+$": "must be a relative path without a leading /, backslashes, . or .. segments, empty segments, or _userland/",
   "^role:[a-z][a-z0-9-]{0,63}$": "must look like role:<role-name>",
   "^job:[a-z][a-z0-9-]{0,63}$": "must look like job:<job-name>",
+  "^https://(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[1-9][0-9]{0,4})?$":
+    "must start with https:// in lowercase letters, then a domain name and an optional port (a leading *. covers subdomains)",
   "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+(?:\\s*;\\s*[!#$%&'*+\\-.^_`|~0-9A-Za-z]+=(?:\\\"[^\\\"]*\\\"|[!#$%&'*+\\-.^_`|~0-9A-Za-z]+))*$": "must be a MIME type such as text/html or image/png"
 };
 
@@ -1278,6 +1421,7 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   "propertyNames",
   "items",
   "minItems",
+  "maxItems",
   "uniqueItems",
   "minLength",
   "maxLength",
@@ -1347,6 +1491,9 @@ function validateNode(value: unknown, schema: unknown, root: JsonSchema, at: Arr
   if (Array.isArray(value)) {
     if (typeof node.minItems === "number" && value.length < node.minItems) {
       errors.push({ path: at, keyword: "minItems", message: `must contain at least ${node.minItems} item${node.minItems === 1 ? "" : "s"}` });
+    }
+    if (typeof node.maxItems === "number" && value.length > node.maxItems) {
+      errors.push({ path: at, keyword: "maxItems", message: `must contain at most ${node.maxItems} item${node.maxItems === 1 ? "" : "s"}` });
     }
     if (node.uniqueItems === true) {
       const seen = new Set<string>();

@@ -27,7 +27,7 @@ Use this skill when turning an app idea into a Userland bundle.
 
 1. Read https://docs.userland.fun/llms.txt.
 2. Choose the smallest matching example from `catalog.json`.
-3. Create or adapt the manifest first.
+3. Create or adapt the manifest first. If the user's own website will show the app in an `<iframe>`, add that site to `runtime.embed_origins`; other sites cannot frame the app otherwise (see the `userland-manifest-resources` skill).
 4. Add static UI files under `public/`.
 5. Add `server/index.js` only when dynamic behavior is required.
 6. Validate the manifest and referenced files.
@@ -46,6 +46,7 @@ userland apps publish examples/<example-slug>
 
 - Manifest has `app.name`.
 - Runtime paths exist.
+- `runtime.embed_origins` is left out unless the user's own website embeds the app.
 - Release files do not include `_userland/`.
 - Frontend code does not contain API keys or app secrets.
 - Publish report includes `app_id`, origin, release id, activation status, and rollback instructions.

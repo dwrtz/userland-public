@@ -1253,7 +1253,7 @@ describe("public CLI", () => {
 
     expect(result.code).toBe(2);
     const output = JSON.parse(result.stdout) as Record<string, unknown>;
-    expect(Object.keys(output)).toEqual(["ok", "plan", "plan_source", "required_plan_key", "violations", "plan_gated", "errors", "warnings", "manifest_file", "release"]);
+    expect(Object.keys(output)).toEqual(["ok", "plan", "plan_source", "required_plan_key", "violations", "plan_gated", "errors", "warnings", "manifest_file", "release", "embed_origins"]);
     expect(output).toMatchObject({ ok: false, plan: "starter", plan_source: "flag", required_plan_key: "business", errors: [], manifest_file: "manifest.userland.json" });
     expect(output.violations).toEqual([
       {
@@ -1302,6 +1302,81 @@ describe("public CLI", () => {
     const output = JSON.parse(json.stdout) as { ok: boolean; errors: Array<{ code: string; manifest_path: string }> };
     expect(output.ok).toBe(false);
     expect(output.errors.map((error) => error.manifest_path)).toEqual(["app.visibility", "runtime.static_root", "resources.jobs.nightly.schedule"]);
+  });
+
+  test("shows the sites allowed to embed the app, and the API's errors for bad ones", async () => {
+    const dir = await temporaryAppDir({
+      app: { name: "Embed" },
+      runtime: { static_root: "public", fallback: "index.html", embed_origins: ["https://WWW.Example.com", "https://*.example.com", "https://www.example.com"] }
+    });
+    const human = await runCli(["validate", dir], "http://127.0.0.1:1", { apiKey: null });
+    expect(human.code).toBe(0);
+    expect(human.stdout).toMatch(/\nrelease_bytes=\d+\nembed_origins=https:\/\/www\.example\.com,https:\/\/\*\.example\.com\n/u);
+    const json = JSON.parse((await runCli(["validate", dir, "--json"], "http://127.0.0.1:1", { apiKey: null })).stdout);
+    expect(json).toMatchObject({ ok: true, errors: [], embed_origins: ["https://www.example.com", "https://*.example.com"] });
+
+    // Without a list, the human output says nothing and the JSON has an empty list.
+    const plain = await temporaryAppDir({ app: { name: "Plain" }, runtime: { static_root: "public" } });
+    expect((await runCli(["validate", plain], "http://127.0.0.1:1", { apiKey: null })).stdout).not.toContain("embed_origins");
+    expect(JSON.parse((await runCli(["validate", plain, "--json"], "http://127.0.0.1:1", { apiKey: null })).stdout).embed_origins).toEqual([]);
+
+    const bad = await temporaryAppDir({
+      app: { name: "Embed" },
+      runtime: { static_root: "public", embed_origins: ["https://www.example.com/", "https://shop.apps.userland.fun", "https://127.0.0.1"] }
+    });
+    const badHuman = await runCli(["validate", bad], "http://127.0.0.1:1", { apiKey: null });
+    expect(badHuman.code).toBe(1);
+    expect(badHuman.stdout).toContain(
+      [
+        "error=invalid_runtime_manifest",
+        "manifest_path=runtime.embed_origins[0]",
+        'message=runtime.embed_origins[0] ("https://www.example.com/") must be an origin without a path, query or fragment (no trailing slash), for example https://example.com or https://*.example.com.',
+        "",
+        "error=invalid_runtime_manifest",
+        "manifest_path=runtime.embed_origins[1]",
+        'message=runtime.embed_origins[1] ("https://shop.apps.userland.fun") cannot be a Userland address: other apps and Userland sites can never show this app in a frame.',
+        "",
+        "error=invalid_runtime_manifest",
+        "manifest_path=runtime.embed_origins[2]",
+        'message=runtime.embed_origins[2] ("https://127.0.0.1") must use a domain name, not an IP address.'
+      ].join("\n")
+    );
+    expect(badHuman.stdout).not.toContain("\nembed_origins=");
+    const badJson = JSON.parse((await runCli(["validate", bad, "--json"], "http://127.0.0.1:1", { apiKey: null })).stdout);
+    expect(badJson).toMatchObject({ ok: false, embed_origins: null, required_plan_key: null });
+    expect(badJson.errors.map((error: { manifest_path: string }) => error.manifest_path)).toEqual(["runtime.embed_origins[0]", "runtime.embed_origins[1]", "runtime.embed_origins[2]"]);
+  });
+
+  test("publishes runtime.embed_origins as written, and blocks a bad one before uploading", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
+      "PUT /v0/apps": {
+        status: "created",
+        app_id: "app_embed",
+        release_id: "rel_embed",
+        origin: "https://app_embed.apps.userland.fun/",
+        previous_release_id: null,
+        activation: { status: "active", reasons: [], previous_release_id: null }
+      }
+    });
+
+    const origins = ["https://WWW.Example.com", "https://*.example.com"];
+    const good = await temporaryAppDir({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins: origins } });
+    const published = await runCli(["apps", "publish", good], api.baseUrl);
+    expect(published.code).toBe(0);
+    expect(published.stdout).toContain("local_validation=passed\nlocal_validation_plan=free");
+    const body = requests.filter((request) => request.method === "PUT").at(-1)?.body as { runtime?: Record<string, unknown> };
+    // The API checks the list again and stores it in lowercase.
+    expect(body.runtime).toEqual({ static_root: "public", embed_origins: origins });
+
+    const bad = await temporaryAppDir({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins: ["http://www.example.com"] } });
+    const blocked = await runCli(["apps", "publish", bad], api.baseUrl);
+    expect(blocked.code).toBe(1);
+    expect(blocked.stderr).toContain("Local validation blocked this publish; nothing was uploaded.");
+    expect(blocked.stderr).toContain('error=invalid_runtime_manifest\nmanifest_path=runtime.embed_origins[0]\nmessage=runtime.embed_origins[0] ("http://www.example.com") must use https://.');
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
   });
 
   test("accepts a top-level release message, including with --strict", async () => {
