@@ -51,6 +51,7 @@ userland apps unpublish <app-id> --yes [--account <account-id>]
 - Required secrets are set.
 - Activation status is reported.
 - Rollback release id is recorded.
+- An app that the user's website embeds keeps its `runtime.embed_origins` in every release. The list belongs to the release: publishing without it stops the embed, and a rollback brings back the list of the release rolled back to.
 
 ## Safety rules
 

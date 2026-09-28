@@ -29,6 +29,7 @@ Use this skill when activation, runtime behavior, resources, jobs, webhooks, or 
 1. Read events for the app.
 2. Compare manifest resource declarations with runtime code.
 3. Check missing files, bad runtime paths, missing secrets, invalid jobs, and invalid webhooks.
+   If the app shows as blank or blocked inside another site's `<iframe>`, check that the live release's `runtime.embed_origins` lists that site exactly (`https://` and the host, no path), and that the page is not on another Userland app, which can never frame it.
 4. Prefer a small forward fix when state is compatible.
 5. Roll back when the live release is broken and a known-good release exists.
 
