@@ -87,6 +87,12 @@ interface EventsOptions {
   limit?: string;
 }
 
+interface UnpublishOptions {
+  account?: string;
+  json?: boolean;
+  yes?: boolean;
+}
+
 interface DowngradePreviewOptions {
   account?: string;
   to?: string;
@@ -224,6 +230,20 @@ interface AppsResponse {
     live_release_id: string | null;
     updated_at: string;
   }>;
+}
+
+interface AppResponse {
+  app_id: string;
+  account_id?: string | null;
+  name: string;
+  origin: string;
+  production?: boolean;
+}
+
+interface UnpublishResponse {
+  app_id: string;
+  status: string;
+  deleted_at: string;
 }
 
 interface RollbackResponse {
@@ -392,6 +412,7 @@ const FILE_SAFETY_ERROR_CODES = new Set(["unsafe_path", "symlink", "missing_file
 const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/u;
 const ANALYTICS_USAGE = "Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]";
 const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics";
+const UNPUBLISH_USAGE = "Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]";
 
 interface SupportRequestResponse {
   status: "sent";
@@ -485,6 +506,10 @@ async function appsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "rollback") {
     await rollbackCommand(rest);
+    return;
+  }
+  if (subcommand === "unpublish") {
+    await unpublishCommand(rest);
     return;
   }
   if (subcommand === "secrets" && rest[0] === "set") {
@@ -1350,6 +1375,82 @@ async function rollbackCommand(args: string[]): Promise<void> {
   console.log(`status=${response.status}`);
 }
 
+/**
+ * DELETE /v0/apps/:app_id. The API takes the app offline, removes its slugs and custom domains, and
+ * marks it deleted; its release history is kept. In a terminal the CLI first shows the app's name,
+ * address, and account and asks for the app id or y. Without a terminal it needs --yes and sends
+ * nothing otherwise.
+ *
+ * The API finds the app by id alone and ignores the selected account, so when an account is selected
+ * (--account, USERLAND_ACCOUNT_ID, or the saved account) the CLI reads the app first, even with --yes,
+ * and stops before the DELETE when the app belongs to a different account.
+ */
+async function unpublishCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (appId === undefined || appId.startsWith("-")) {
+    console.error(UNPUBLISH_USAGE);
+    process.exit(1);
+  }
+  const options = parseUnpublishOptions(args.slice(1));
+  // Checked before anything is sent, like every other app command.
+  const appPath = `/v0/apps/${pathSegment(appId, "app id")}`;
+  if (!options.yes && !process.stdin.isTTY) {
+    console.error("Unpublishing takes the app offline and removes its slugs and custom domains.");
+    console.error(
+      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish ${terminalSafe(appId)} --yes`
+    );
+    console.error(UNPUBLISH_USAGE);
+    process.exit(1);
+  }
+
+  const accountId = selectedAccountId(options.account, await readCredentials());
+  let app: AppResponse | undefined;
+  if (!options.yes || accountId) {
+    // Read as sent so the account check compares the real ids; `app` is the copy safe to print.
+    const rawApp = await apiFetch<AppResponse>(appPath, {
+      method: "GET"
+    }, { accountId, accountScoped: true, raw: true });
+    app = terminalSafeValue(rawApp);
+    if (accountId && rawApp.account_id && rawApp.account_id !== accountId) {
+      console.error(`${terminalSafe(appId)} belongs to account ${app.account_id}, not ${terminalSafe(accountId)}. Nothing was unpublished.`);
+      console.error(`Check the app id with \`userland apps list\`. If you meant the other account, pass --account ${app.account_id}.`);
+      process.exit(1);
+    }
+    if (!options.yes && !(await confirmUnpublish(appId, app))) {
+      console.error(`Cancelled. ${terminalSafe(appId)} was not unpublished.`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const response = await apiFetch<UnpublishResponse>(appPath, {
+    method: "DELETE"
+  }, { accountId, accountScoped: true, raw: options.json === true });
+
+  if (options.json) {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+  console.log(app?.origin ? `Unpublished ${app.name ? `${app.name} ` : ""}(${app.origin})` : `Unpublished ${response.app_id}`);
+  console.log(`app_id=${response.app_id}`);
+  console.log(`status=${response.status}`);
+  console.log(`deleted_at=${response.deleted_at}`);
+  console.log("The app is offline and its slugs and custom domains are removed. Its release history is kept.");
+}
+
+/** Shows what will be unpublished on stderr (stdout stays clean for --json) and reads the answer. */
+async function confirmUnpublish(appId: string, app: AppResponse): Promise<boolean> {
+  console.error("You are about to unpublish this app:");
+  console.error(`  Name:        ${app.name || "(no name)"}`);
+  console.error(`  Address:     ${app.origin ?? ""}`);
+  console.error(`  App id:      ${app.app_id ?? terminalSafe(appId)}`);
+  console.error(`  Account:     ${app.account_id || "(none)"}`);
+  console.error(`  Production:  ${app.production === true ? "yes" : "no"}`);
+  console.error("Unpublishing takes the app offline and removes its slugs and custom domains. Its release history is kept.");
+  const answer = await promptLine(`Type the app id (${terminalSafe(appId)}) or y to unpublish it: `, process.stderr);
+  return answer === appId || answer === app.app_id || ["y", "yes"].includes(answer.toLowerCase());
+}
+
 async function setSecretCommand(args: string[]): Promise<void> {
   const [appId, name, ...optionArgs] = args;
   if (!appId || !name) {
@@ -2210,6 +2311,23 @@ function parseEventsOptions(args: string[]): EventsOptions {
   return options;
 }
 
+function parseUnpublishOptions(args: string[]): UnpublishOptions {
+  const options: UnpublishOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--yes" || arg === "-y") {
+      options.yes = true;
+    } else if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function parseDowngradePreviewOptions(args: string[]): DowngradePreviewOptions {
   const options: DowngradePreviewOptions = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -2271,10 +2389,34 @@ async function promptHidden(prompt: string): Promise<string> {
   }
 }
 
-async function promptLine(prompt: string): Promise<string> {
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
+/**
+ * Reads one line from the terminal. Returns "" when input ends before a line is entered (Ctrl-D),
+ * which callers treat as "no", instead of leaving the question open and exiting without a word.
+ */
+async function promptLine(prompt: string, output: NodeJS.WritableStream = process.stdout): Promise<string> {
+  const readline = createInterface({ input: process.stdin, output });
+  readline.on("SIGINT", () => {
+    readline.close();
+    output.write("\n");
+    process.exit(130);
+  });
+  let answered = false;
   try {
-    return (await readline.question(prompt)).trim();
+    return await new Promise<string>((resolve, reject) => {
+      readline.once("close", () => {
+        // Checked a turn later, so a line typed right before the input ended still counts.
+        setImmediate(() => {
+          if (!answered) {
+            output.write("\n");
+            resolve("");
+          }
+        });
+      });
+      readline.question(prompt).then((answer) => {
+        answered = true;
+        resolve(answer.trim());
+      }, reject);
+    });
   } finally {
     readline.close();
   }
@@ -2469,6 +2611,7 @@ function usage(exitCode: number): never {
   userland apps status <app-id> [--account <account-id>]
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
+  userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]
   userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
   userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
@@ -2512,6 +2655,13 @@ Publishing a folder:
   Names that start with a dot (.env, .npmrc, .git/, and so on) are left out, except .well-known/
   and dot-folders named in runtime.static_root or runtime.server_entry. Symlinks are never followed.
   Private keys (such as id_rsa or a .pem file holding a private key) stop the publish.
+
+Unpublishing:
+  apps unpublish takes an app offline, removes its slugs and custom domains, and removes it from
+  apps list. Its release history is kept. In a terminal it shows the app's name, address, and account
+  and asks you to type the app id or y. Without a terminal (scripts, CI, agents) check with the app's
+  owner, then pass --yes. When an account is selected (--account, USERLAND_ACCOUNT_ID, or the saved
+  account), an app that belongs to a different account is not unpublished.
 
 Docs:
   https://docs.userland.fun/reference/cli
