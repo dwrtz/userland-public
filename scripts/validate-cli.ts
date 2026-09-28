@@ -99,7 +99,9 @@ const forbiddenSourcePatterns = [
 const forbiddenReadmeSnippets = [
   operatorApiPrefix,
   operatorCliPrefix,
-  "Internal/platform-admin only operations"
+  "Internal/platform-admin only operations",
+  // File-safety checks still run with --skip-local-validation, so the README must not say it skips every check.
+  "sends the directory to the API without local checks"
 ];
 
 // Agency was retired from sale on 2026-09-27 and `internal` is operator-assigned: neither may be

@@ -1,5 +1,6 @@
 import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
+import { terminalSafe } from "./terminal.js";
 
 // Local, offline validation for `userland validate` and the `apps publish` preflight.
 // The Userland API stays authoritative: these checks mirror the public manifest schema
@@ -115,6 +116,13 @@ const LEGACY_MANIFEST_FILE = "manifest.json";
 // Top-level keys the CLI reads itself (never sent to the API as manifest fields). `$schema`
 // is the editor hint for schemas/resource-manifest-v0.schema.json and is ignored.
 const CLI_MANIFEST_KEYS = new Set(["$schema", "files", "message", "provenance"]);
+// A top-level manifest.json is read as the (older) Userland manifest only when it has one of these keys.
+const USERLAND_MANIFEST_KEYS = ["app", "runtime", "resources", "files"];
+// Dot-folders a directory publish still includes: /.well-known/ URLs are part of the web.
+const ALLOWED_DOT_DIRECTORIES = new Set([".well-known"]);
+const PRIVATE_KEY_NAME = /^id_(?:rsa|dsa|ecdsa|ed25519)(?:[._-].*)?$/u;
+const KEY_STORE_EXTENSIONS = new Set([".p12", ".pfx"]);
+const PEM_EXTENSIONS = new Set([".pem", ".key"]);
 const RESERVED_RESOURCE_NAMES = new Set(["_userland", "system", "auth", "session", "sessions", "secrets", "runtime"]);
 const CONTENT_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9a-z]+\/[!#$%&'*+\-.^_`|~0-9a-z]+(?:\s*;\s*[!#$%&'*+\-.^_`|~0-9a-z]+=(?:"[^"]*"|[!#$%&'*+\-.^_`|~0-9a-z]+))*$/iu;
 
@@ -253,7 +261,7 @@ export async function analyzeAppDirectory(rootDir: string, options: { strict?: b
     report.warnings.push(...schemaStrict);
   }
 
-  const releaseFiles = await collectReleaseFiles(absoluteRoot, document, report);
+  const releaseFiles = await collectReleaseFiles(absoluteRoot, document, loaded.file, report);
   await checkRuntimePaths(absoluteRoot, check.normalized, releaseFiles, report);
 
   let requirements: Requirement[] | null = null;
@@ -296,36 +304,73 @@ function finish(report: ValidationReport): ValidationReport {
 }
 
 async function loadManifestFile(rootDir: string, report: ValidationReport): Promise<{ document: Record<string, unknown>; file: string | null } | undefined> {
+  const found = await findManifest(rootDir);
+  report.manifest_file = found.file;
+  if (found.file === LEGACY_MANIFEST_FILE) {
+    report.warnings.push({ code: "legacy_manifest", manifest_path: "", message: `Using legacy ${LEGACY_MANIFEST_FILE}; rename it to ${MANIFEST_FILE}.` });
+  }
+  if (!found.ok) {
+    report.errors.push({ code: found.code, manifest_path: "", message: found.message });
+    return undefined;
+  }
+  if (found.file === null) {
+    if (found.webAppManifest) {
+      report.warnings.push({
+        code: "web_app_manifest",
+        manifest_path: "",
+        file: LEGACY_MANIFEST_FILE,
+        message: `has no app, runtime, resources, or files keys, so it is treated as an ordinary file (such as a web app manifest) and uploaded, not read as the Userland manifest.`
+      });
+    }
+    report.warnings.push({
+      code: "missing_manifest",
+      manifest_path: "",
+      message: `No ${MANIFEST_FILE} found; the CLI publishes every file with default app and runtime settings.`
+    });
+  }
+  return { document: found.document, file: found.file };
+}
+
+export type ManifestLookup =
+  | {
+      ok: true;
+      document: Record<string, unknown>;
+      /** The manifest file name at the top of the app folder, or null when there is none. */
+      file: string | null;
+      /** A top-level manifest.json was found but is not a Userland manifest, so it is an ordinary release file. */
+      webAppManifest: boolean;
+    }
+  | { ok: false; file: string; code: "invalid_json" | "invalid_manifest"; message: string };
+
+/**
+ * Finds the Userland manifest: manifest.userland.json, or else a top-level manifest.json (the older
+ * name) that holds Userland keys. A manifest.json without app, runtime, resources, or files (such as a
+ * web app manifest) is not the Userland manifest; `apps publish` uploads it like any other file.
+ */
+export async function findManifest(rootDir: string): Promise<ManifestLookup> {
+  let webAppManifest = false;
   for (const name of [MANIFEST_FILE, LEGACY_MANIFEST_FILE]) {
-    const filePath = path.join(rootDir, name);
-    const contents = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+    const contents = await fs.readFile(path.join(rootDir, name), "utf8").catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT" || error.code === "EISDIR") return undefined;
       throw error;
     });
     if (contents === undefined) continue;
-    report.manifest_file = name;
-    if (name === LEGACY_MANIFEST_FILE) {
-      report.warnings.push({ code: "legacy_manifest", manifest_path: "", message: `Using legacy ${LEGACY_MANIFEST_FILE}; rename it to ${MANIFEST_FILE}.` });
-    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(contents);
     } catch (error) {
-      report.errors.push({ code: "invalid_json", manifest_path: "", message: `${name} is not valid JSON: ${(error as Error).message}` });
-      return undefined;
+      return { ok: false, file: name, code: "invalid_json", message: `${name} is not valid JSON: ${(error as Error).message}` };
+    }
+    if (name === LEGACY_MANIFEST_FILE && !(isPlainObject(parsed) && USERLAND_MANIFEST_KEYS.some((key) => key in parsed))) {
+      webAppManifest = true;
+      continue;
     }
     if (!isPlainObject(parsed)) {
-      report.errors.push({ code: "invalid_manifest", manifest_path: "", message: `${name} must contain a JSON object.` });
-      return undefined;
+      return { ok: false, file: name, code: "invalid_manifest", message: `${name} must contain a JSON object.` };
     }
-    return { document: parsed, file: name };
+    return { ok: true, document: parsed, file: name, webAppManifest: false };
   }
-  report.warnings.push({
-    code: "missing_manifest",
-    manifest_path: "",
-    message: `No ${MANIFEST_FILE} found; the CLI publishes every file with default app and runtime settings.`
-  });
-  return { document: {}, file: null };
+  return { ok: true, document: {}, file: null, webAppManifest };
 }
 
 /** Schema validation plus the cross-field rules the API enforces for app, runtime, and resources. */
@@ -580,44 +625,157 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
 // Release files and runtime paths
 // ---------------------------------------------------------------------------
 
-/** Lists the files `apps publish` would upload, mirroring its selection rules. */
-export async function listReleaseFiles(rootDir: string, document: Record<string, unknown>, skippedSymlinks?: string[]): Promise<ReleaseFileEntry[]> {
+export interface ReleaseFileListing {
+  files: ReleaseFileEntry[];
+  /** True when the list comes from the manifest's `files`; otherwise the folder was walked. */
+  fromManifest: boolean;
+  /** Symlinks the folder walk did not follow or upload. */
+  skippedSymlinks: string[];
+  /** Dotfiles and dot-folders (folders end in "/") the folder walk left out, such as .env, .npmrc, and .git/. */
+  skippedDotfiles: string[];
+  /** Private keys the folder walk found; publishing refuses to upload them. */
+  privateKeys: string[];
+}
+
+/**
+ * Lists the files `apps publish` would upload. With manifest `files`, exactly those paths (check each
+ * with releaseFileProblem before reading it). Otherwise every regular file under the folder except the
+ * Userland manifest itself, symlinks, private keys, and dotfiles and dot-folders (other than .well-known/
+ * and dot-folders that runtime.static_root or runtime.server_entry name). `manifestFile` is the manifest
+ * findManifest loaded; only that top-level file is left out, so a web app manifest.json is uploaded.
+ */
+export async function listReleaseFiles(rootDir: string, document: Record<string, unknown>, options: { manifestFile: string | null }): Promise<ReleaseFileListing> {
+  const listing: ReleaseFileListing = { files: [], fromManifest: false, skippedSymlinks: [], skippedDotfiles: [], privateKeys: [] };
   const manifestFiles = Array.isArray(document.files) ? document.files : null;
   if (manifestFiles && manifestFiles.length > 0) {
-    return manifestFiles
+    listing.fromManifest = true;
+    listing.files = manifestFiles
       .filter((entry): entry is { path: string; content_type?: unknown } => isPlainObject(entry) && typeof entry.path === "string")
       .map((entry) => ({
         path: entry.path,
         absolutePath: path.join(rootDir, entry.path),
         ...(typeof entry.content_type === "string" ? { contentType: entry.content_type } : {})
       }));
+    return listing;
   }
-  const skipped: string[] = [];
-  const files = (await walk(rootDir, skipped))
-    .filter((filePath) => !isManifestFile(filePath))
-    .sort()
-    .map((filePath) => ({
-      path: toReleasePath(rootDir, filePath),
-      absolutePath: filePath
-    }));
-  skippedSymlinks?.push(...skipped.map((filePath) => toReleasePath(rootDir, filePath)).sort());
-  return files;
+  const walked = await walk(rootDir, { keepDotFolders: manifestDotFolders(document) });
+  listing.skippedSymlinks = walked.symlinks.map((filePath) => toReleasePath(rootDir, filePath)).sort();
+  listing.skippedDotfiles = walked.dotfiles
+    .map((filePath) => `${toReleasePath(rootDir, filePath)}${filePath.endsWith(path.sep) ? "/" : ""}`)
+    .sort();
+  for (const filePath of walked.files.sort()) {
+    const releasePath = toReleasePath(rootDir, filePath);
+    if (options.manifestFile !== null && releasePath === options.manifestFile) {
+      continue;
+    }
+    if (await isPrivateKeyFile(filePath)) {
+      listing.privateKeys.push(releasePath);
+      continue;
+    }
+    listing.files.push({ path: releasePath, absolutePath: filePath });
+  }
+  return listing;
 }
 
 function toReleasePath(rootDir: string, filePath: string): string {
   return path.relative(rootDir, filePath).split(path.sep).join("/");
 }
 
-async function collectReleaseFiles(rootDir: string, document: Record<string, unknown>, report: ValidationReport): Promise<Set<string>> {
+/**
+ * Checks a release path before its file is read: the API's path rules, then that it is a regular file
+ * inside the app folder and that neither it nor any folder above it (below the app folder) is a symlink.
+ * Returns the file's stats when it is safe to read.
+ */
+export async function releaseFileProblem(
+  rootDir: string,
+  releasePath: string
+): Promise<{ ok: true; size: number } | { ok: false; code: "unsafe_path" | "symlink" | "missing_file"; message: string }> {
+  const pathError = releasePathError(releasePath);
+  if (pathError) {
+    return { ok: false, code: "unsafe_path", message: pathError };
+  }
+  const parts = releasePath.split("/");
+  let current = path.resolve(rootDir);
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part);
+    const entryStat = await fs.lstat(current).catch(() => null);
+    const last = index === parts.length - 1;
+    if (entryStat?.isSymbolicLink()) {
+      const where = last ? "is a symlink" : `is inside ${parts.slice(0, index + 1).join("/")}/, which is a symlink`;
+      return { ok: false, code: "symlink", message: `${where}. Userland only uploads regular files that are inside the app folder; copy the file into place instead.` };
+    }
+    if (!entryStat || (last && !entryStat.isFile())) {
+      return { ok: false, code: "missing_file", message: "does not exist or is not a file" };
+    }
+    if (last) {
+      return { ok: true, size: entryStat.size };
+    }
+  }
+  return { ok: false, code: "missing_file", message: "does not exist or is not a file" };
+}
+
+/** Private SSH keys by name, key stores, and .pem or .key files that hold a private key. */
+async function isPrivateKeyFile(filePath: string): Promise<boolean> {
+  const basename = path.basename(filePath);
+  const extension = path.extname(basename).toLowerCase();
+  if (PRIVATE_KEY_NAME.test(basename) && extension !== ".pub") return true;
+  if (KEY_STORE_EXTENSIONS.has(extension)) return true;
+  if (!PEM_EXTENSIONS.has(extension)) return false;
+  const handle = await fs.open(filePath, "r").catch(() => null);
+  if (!handle) return false;
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString("latin1").includes("PRIVATE KEY-----");
+  } finally {
+    await handle.close();
+  }
+}
+
+function summarizePaths(paths: string[]): string {
+  const shown = paths.slice(0, 5).join(", ");
+  return paths.length > 5 ? `${shown}, and ${paths.length - 5} more` : shown;
+}
+
+/** Plain-language warnings for what a folder publish leaves out (shared by validate and publish). */
+export function releaseListingWarnings(listing: ReleaseFileListing): ValidationIssue[] {
+  const warnings: ValidationIssue[] = [];
+  if (listing.skippedDotfiles.length > 0) {
+    const count = listing.skippedDotfiles.length;
+    warnings.push({
+      code: "dotfiles_skipped",
+      manifest_path: "",
+      message: `${count} dotfile${count === 1 ? " or dot-folder is" : "s and dot-folders are"} not uploaded (${summarizePaths(listing.skippedDotfiles)}). Files such as .env, .npmrc, and .git/ can hold passwords and keys, so publishing a folder leaves out every name that starts with a dot (except .well-known/). To upload one on purpose, list every release file in manifest.userland.json files.`
+    });
+  }
+  if (listing.skippedSymlinks.length > 0) {
+    const count = listing.skippedSymlinks.length;
+    warnings.push({
+      code: "symlinks_skipped",
+      manifest_path: "",
+      message: `${count} symlink${count === 1 ? " is" : "s are"} not uploaded (${summarizePaths(listing.skippedSymlinks)}); copy the files into the app directory instead.`
+    });
+  }
+  return warnings;
+}
+
+/** The error publishing reports when a folder walk finds private keys. */
+export function privateKeyMessage(): string {
+  return "looks like a private key, so it is not uploaded. Move it out of the app folder, or publish a build folder that does not contain it. If the file is meant to be public, list every release file in manifest.userland.json files.";
+}
+
+async function collectReleaseFiles(rootDir: string, document: Record<string, unknown>, manifestFile: string | null, report: ValidationReport): Promise<Set<string>> {
   const bundle = planData().bundle_limits;
-  const skippedSymlinks: string[] = [];
-  const entries = await listReleaseFiles(rootDir, document, skippedSymlinks);
-  const fromManifest = Array.isArray(document.files) && document.files.length > 0;
-  const realRoot = await fs.realpath(rootDir);
+  const listing = await listReleaseFiles(rootDir, document, { manifestFile });
+  const entries = listing.files;
+  const fromManifest = listing.fromManifest;
   const seen = new Set<string>();
   let totalBytes = 0;
   let fileCount = 0;
 
+  for (const privateKey of listing.privateKeys) {
+    report.errors.push({ code: "private_key", manifest_path: "", file: privateKey, message: privateKeyMessage() });
+  }
   for (const [index, entry] of entries.entries()) {
     const entryPath = fromManifest ? `files[${index}].path` : "";
     const pathError = releasePathError(entry.path);
@@ -630,20 +788,10 @@ async function collectReleaseFiles(rootDir: string, document: Record<string, unk
       continue;
     }
     seen.add(entry.path);
-    const fileStat = await fs.stat(entry.absolutePath).catch(() => null);
-    if (!fileStat?.isFile()) {
-      report.errors.push({ code: "missing_file", manifest_path: entryPath, file: entry.path, message: "does not exist or is not a file" });
+    const fileStat = await releaseFileProblem(rootDir, entry.path);
+    if (!fileStat.ok) {
+      report.errors.push({ code: fileStat.code, manifest_path: entryPath, file: entry.path, message: fileStat.message });
       continue;
-    }
-    const realFile = await fs.realpath(entry.absolutePath).catch(() => entry.absolutePath);
-    const fromRoot = path.relative(realRoot, realFile);
-    if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot)) {
-      report.warnings.push({
-        code: "outside_app_directory",
-        manifest_path: entryPath,
-        file: entry.path,
-        message: `is a symlink (or under a symlinked directory) that resolves outside the app directory; publish uploads the contents of ${realFile}.`
-      });
     }
     fileCount += 1;
     totalBytes += fileStat.size;
@@ -661,20 +809,9 @@ async function collectReleaseFiles(rootDir: string, document: Record<string, unk
   if (totalBytes > bundle["bundle_bytes.max"]) {
     report.errors.push({ code: "bundle_too_large", manifest_path: "release.bundle_bytes", message: `Release is ${totalBytes} bytes; the maximum is ${bundle["bundle_bytes.max"]}` });
   }
-  if (skippedSymlinks.length > 0) {
-    const shown = skippedSymlinks.slice(0, 5).join(", ");
-    report.warnings.push({
-      code: "symlinks_skipped",
-      manifest_path: "",
-      message: `${skippedSymlinks.length} symlink${skippedSymlinks.length === 1 ? " is" : "s are"} not uploaded (${shown}${skippedSymlinks.length > 5 ? ", ..." : ""}); copy the files into the app directory or list them in manifest.userland.json files.`
-    });
-  }
-  if (!fromManifest) {
-    for (const directory of [".git", "node_modules"]) {
-      if (Array.from(seen).some((filePath) => filePath === directory || filePath.startsWith(`${directory}/`))) {
-        report.warnings.push({ code: "unexpected_release_files", manifest_path: "", message: `${directory}/ would be uploaded; publish a build directory or list files in manifest.userland.json files.` });
-      }
-    }
+  report.warnings.push(...releaseListingWarnings(listing));
+  if (!fromManifest && Array.from(seen).some((filePath) => filePath === "node_modules" || filePath.startsWith("node_modules/"))) {
+    report.warnings.push({ code: "unexpected_release_files", manifest_path: "", message: "node_modules/ would be uploaded; publish a build directory or list files in manifest.userland.json files." });
   }
 
   report.release = { file_count: fileCount, bundle_bytes: totalBytes };
@@ -725,33 +862,62 @@ export function releasePathError(releasePath: string): string | undefined {
   return undefined;
 }
 
-export function isManifestFile(filePath: string): boolean {
-  const basename = path.basename(filePath);
-  return basename === MANIFEST_FILE || basename === LEGACY_MANIFEST_FILE;
+interface WalkResult {
+  files: string[];
+  symlinks: string[];
+  dotfiles: string[];
 }
 
 /**
- * Lists regular files under dir. Symlinks are never followed or uploaded; pass `skipped`
- * to collect their paths.
+ * Lists regular files under rootDir. Symlinks are never followed or uploaded, and names that start
+ * with a dot are left out without being read, except .well-known folders and the dot-folders on the
+ * way to `keepDotFolders` (release paths such as `.output` for a runtime.static_root of
+ * `.output/public`). Skipped entries are collected so callers can say what was left out; dot-folders
+ * end with a path separator.
  */
-export async function walk(dir: string, skipped?: string[]): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        return await walk(entryPath, skipped);
-      }
-      if (entry.isFile()) {
-        return [entryPath];
-      }
-      if (entry.isSymbolicLink()) {
-        skipped?.push(entryPath);
-      }
-      return [];
-    })
-  );
-  return files.flat();
+export async function walk(rootDir: string, options: { keepDotFolders?: Set<string> } = {}): Promise<WalkResult> {
+  const found: WalkResult = { files: [], symlinks: [], dotfiles: [] };
+  const keep = options.keepDotFolders ?? new Set<string>();
+  const visit = async (dir: string, releaseDir: string): Promise<void> => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = path.join(dir, entry.name);
+        const releasePath = releaseDir ? `${releaseDir}/${entry.name}` : entry.name;
+        if (entry.isSymbolicLink()) {
+          found.symlinks.push(entryPath);
+          return;
+        }
+        const keptDotFolder = entry.isDirectory() && (ALLOWED_DOT_DIRECTORIES.has(entry.name) || keep.has(releasePath));
+        if (entry.name.startsWith(".") && !keptDotFolder) {
+          found.dotfiles.push(entry.isDirectory() ? `${entryPath}${path.sep}` : entryPath);
+          return;
+        }
+        if (entry.isDirectory()) {
+          await visit(entryPath, releasePath);
+        } else if (entry.isFile()) {
+          found.files.push(entryPath);
+        }
+      })
+    );
+  };
+  await visit(rootDir, "");
+  return found;
+}
+
+/** Dot-folders the manifest names on purpose in runtime.static_root or runtime.server_entry. */
+function manifestDotFolders(document: Record<string, unknown>): Set<string> {
+  const folders = new Set<string>();
+  const runtime = isPlainObject(document.runtime) ? document.runtime : {};
+  for (const [key, value] of Object.entries(runtime)) {
+    if ((key !== "static_root" && key !== "server_entry") || typeof value !== "string" || releasePathError(value)) continue;
+    const parts = value.replace(/\/$/u, "").split("/");
+    const folderCount = key === "server_entry" ? parts.length - 1 : parts.length;
+    for (let index = 0; index < folderCount; index += 1) {
+      if (parts[index].startsWith(".")) folders.add(parts.slice(0, index + 1).join("/"));
+    }
+  }
+  return folders;
 }
 
 function isValidContentType(value: string): boolean {
@@ -1044,11 +1210,12 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
     );
     lines.push(`Docs: ${LIMITS_DOCS_URL}`);
   }
-  return `${lines.join("\n")}\n`;
+  // File names come from the app folder, so show any control characters in them as visible escapes.
+  return `${lines.map(terminalSafe).join("\n")}\n`;
 }
 
 export function formatWarning(warning: ValidationIssue): string {
-  return `warning=${warning.code}${warning.manifest_path ? ` manifest_path=${warning.manifest_path}` : ""}${warning.file !== undefined ? ` file=${warning.file}` : ""} ${warning.message}`;
+  return terminalSafe(`warning=${warning.code}${warning.manifest_path ? ` manifest_path=${warning.manifest_path}` : ""}${warning.file !== undefined ? ` file=${warning.file}` : ""} ${warning.message}`);
 }
 
 function findingLines(finding: ValidationFinding, includeAllowed: boolean): string[] {
