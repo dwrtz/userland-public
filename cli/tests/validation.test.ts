@@ -7,7 +7,10 @@ import {
   analyzeAppDirectory,
   analyzeManifestRequirements,
   applyPlan,
+  checkEmbedOrigin,
   checkManifestDocument,
+  EMBED_ORIGINS_MAX_COUNT,
+  embedOriginList,
   evaluateRequirements,
   findManifest,
   formatWarning,
@@ -362,6 +365,207 @@ describe("manifest schema validation", () => {
   });
 });
 
+describe("runtime.embed_origins", () => {
+  const withOrigins = (embed_origins: unknown) => checkManifestDocument({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins } });
+
+  // The same values and reasons as the API's checkEmbedOrigin tests.
+  const accepted: Array<[string, string]> = [
+    ["https://example.com", "https://example.com"],
+    ["https://*.example.com", "https://*.example.com"],
+    ["https://shop.example.co.uk:8443", "https://shop.example.co.uk:8443"],
+    ["https://example.com:443", "https://example.com:443"],
+    ["HTTPS://WWW.Example.COM", "https://www.example.com"],
+    ["https://xn--bcher-kva.example", "https://xn--bcher-kva.example"],
+    ["https://my-site.example.org", "https://my-site.example.org"],
+    ["https://userland.fun.example.com", "https://userland.fun.example.com"],
+    ["https://notuserland.fun", "https://notuserland.fun"]
+  ];
+
+  const refused: Array<[string, unknown, string]> = [
+    // Anything that could end the source list, the directive, or the policy in the header.
+    ["a second directive", "https://example.com; script-src *", "without spaces, quotes, commas or semicolons"],
+    ["a directive without a space", "https://example.com;script-src", "without spaces, quotes, commas or semicolons"],
+    ["a second policy", "https://example.com,frame-ancestors *", "without spaces, quotes, commas or semicolons"],
+    ["a second source", "https://example.com https://other.example", "without spaces, quotes, commas or semicolons"],
+    ["a keyword", "https://example.com 'unsafe-inline'", "without spaces, quotes, commas or semicolons"],
+    ["'none'", "'none'", "without spaces, quotes, commas or semicolons"],
+    ["a double quote", 'https://example.com"', "without spaces, quotes, commas or semicolons"],
+    ["a leading space", " https://example.com", "without spaces, quotes, commas or semicolons"],
+    ["a trailing newline", "https://example.com\n", "without spaces, quotes, commas or semicolons"],
+    ["a header line break", "https://example.com\r\nx-frame-options: ALLOWALL", "without spaces, quotes, commas or semicolons"],
+    ["a tab", "https://exa\tmple.com", "without spaces, quotes, commas or semicolons"],
+    ["a non-breaking space", "https://example.com ", "without spaces, quotes, commas or semicolons"],
+    ["'self'", "'self'", "is not needed"],
+    ["'SELF' with spaces", " 'SELF' ", "is not needed"],
+    // Sources wider than one site.
+    ["every site", "*", "allowing every site is not supported"],
+    ["every https site", "https://*", "allowing every site is not supported"],
+    ["a scheme source", "https:", "allowing every site is not supported"],
+    ["data:", "data:", "must start with https://"],
+    ["blob:", "blob:", "must start with https://"],
+    ["a wildcard over a top-level domain", "https://*.com", "must be https:// and a domain name"],
+    ["a wildcard port", "https://example.com:*", "must be https:// and a domain name"],
+    ["a wildcard inside the host", "https://a.*.example.com", "must be https:// and a domain name"],
+    ["a wildcard without a dot", "https://*example.com", "must be https:// and a domain name"],
+    ["two wildcards", "https://*.*.example.com", "must be https:// and a domain name"],
+    // Not an https origin.
+    ["http", "http://example.com", "must use https://"],
+    ["no scheme", "example.com", "must start with https://"],
+    ["another scheme", "wss://example.com", "must start with https://"],
+    ["a scheme-relative source", "//example.com", "must start with https://"],
+    ["a trailing slash", "https://example.com/", "without a path, query or fragment"],
+    ["a path", "https://example.com/embed", "without a path, query or fragment"],
+    ["a query", "https://example.com?frame=1", "without a path, query or fragment"],
+    ["a fragment", "https://example.com#top", "without a path, query or fragment"],
+    ["a backslash", "https://example.com\\embed", "must be https:// and a domain name"],
+    ["userinfo", "https://user@example.com", "must be https:// and a domain name"],
+    ["a percent-encoded host", "https://exa%6dple.com", "must be https:// and a domain name"],
+    ["a non-ASCII host", "https://bücher.example", "must be https:// and a domain name"],
+    ["a single label", "https://localhost", "must be https:// and a domain name"],
+    ["a trailing dot", "https://example.com.", "must be https:// and a domain name"],
+    ["a label starting with a hyphen", "https://-shop.example.com", "must be https:// and a domain name"],
+    ["a label longer than 63 characters", `https://${"a".repeat(64)}.example.com`, "must be https:// and a domain name"],
+    ["an empty label", "https://shop..example.com", "must be https:// and a domain name"],
+    ["an IPv4 address", "https://127.0.0.1", "not an IP address"],
+    ["an IPv6 address", "https://[::1]", "must be https:// and a domain name"],
+    ["port 0", "https://example.com:0", "must be https:// and a domain name"],
+    ["a port with a leading zero", "https://example.com:0443", "must be https:// and a domain name"],
+    ["a port above 65535", "https://example.com:65536", "port above 65535"],
+    ["an empty value", "", "must start with https://"],
+    ["a value that is too long", `https://${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.example`, "must be at most 255 characters"],
+    ["a number", 443, "must be a text value"],
+    ["null", null, "must be a text value"],
+    ["a list", ["https://example.com"], "must be a text value"]
+  ];
+
+  const userlandHosts = [
+    "https://userland.fun",
+    "https://www.userland.fun",
+    "https://docs.userland.fun",
+    "https://console.userland.fun",
+    "https://api.userland.fun",
+    "https://apps.userland.fun",
+    "https://evil00000001.apps.userland.fun",
+    "https://shop.apps.userland.fun",
+    "https://shop.apps.userland.fun:8443",
+    "https://*.userland.fun",
+    "https://*.apps.userland.fun",
+    "https://*.shop.apps.userland.fun",
+    "HTTPS://Shop.Apps.Userland.Fun",
+    "https://Shop.Apps.Userland.Fun"
+  ];
+
+  test.each(accepted)("accepts %s as %s", (value, origin) => {
+    expect(checkEmbedOrigin(value)).toEqual({ ok: true, origin });
+    expect(withOrigins([value]).errors).toEqual([]);
+  });
+
+  test.each(refused)("refuses %s with the API's message", (_name, value, reason) => {
+    const check = checkEmbedOrigin(value);
+    expect(check.ok).toBe(false);
+    const message = (check as { reason: string }).reason;
+    expect(message).toContain(reason);
+    // The bundled schema catches some of these and the CLI's copy of the API rules catches the
+    // rest; either way the error is reported once, with the API's code and message.
+    expect(withOrigins(["https://www.example.com", value]).errors).toEqual([
+      { code: "invalid_runtime_manifest", manifest_path: "runtime.embed_origins[1]", message: `runtime.embed_origins[1] ${message}.` }
+    ]);
+  });
+
+  test.each(userlandHosts)("refuses the Userland address %s", (value) => {
+    expect(checkEmbedOrigin(value)).toMatchObject({ ok: false, reason: expect.stringContaining("cannot be a Userland address") });
+    expect(withOrigins([value]).errors).toEqual([
+      {
+        code: "invalid_runtime_manifest",
+        manifest_path: "runtime.embed_origins[0]",
+        message: `runtime.embed_origins[0] (${JSON.stringify(value)}) cannot be a Userland address: other apps and Userland sites can never show this app in a frame.`
+      }
+    ]);
+  });
+
+  test("uses the API's exact wording", () => {
+    expect(withOrigins(["https://example.com", "https://example.com; script-src *"]).errors).toEqual([
+      {
+        code: "invalid_runtime_manifest",
+        manifest_path: "runtime.embed_origins[1]",
+        message: 'runtime.embed_origins[1] ("https://example.com; script-src *") must be one origin, without spaces, quotes, commas or semicolons, for example https://example.com or https://*.example.com.'
+      }
+    ]);
+    expect(withOrigins(["https://shop.apps.userland.fun"]).errors[0].message).toBe(
+      'runtime.embed_origins[0] ("https://shop.apps.userland.fun") cannot be a Userland address: other apps and Userland sites can never show this app in a frame.'
+    );
+  });
+
+  test("checks the list: an array of at most 20 sites, with every bad entry reported", () => {
+    for (const value of ["https://example.com", "", null, 42, { "https://example.com": true }]) {
+      expect(withOrigins(value).errors, JSON.stringify(value)).toEqual([
+        { code: "invalid_runtime_manifest", manifest_path: "runtime.embed_origins", message: 'runtime.embed_origins must be a list of https origins, for example ["https://example.com"].' }
+      ]);
+    }
+
+    const sites = Array.from({ length: EMBED_ORIGINS_MAX_COUNT }, (_, index) => `https://site${index}.example.com`);
+    expect(withOrigins(sites).errors).toEqual([]);
+    expect(withOrigins([...sites, "https://one-more.example.com"]).errors).toEqual([
+      { code: "invalid_runtime_manifest", manifest_path: "runtime.embed_origins", message: "runtime.embed_origins can list at most 20 sites." }
+    ]);
+
+    expect(withOrigins([]).errors).toEqual([]);
+    expect(withOrigins([]).schema_strict).toEqual([]);
+
+    // The API stops at the first bad entry; the CLI lists them all, each at its own index.
+    const several = withOrigins(["http://example.com", "https://example.com", "https://127.0.0.1", "https://shop.apps.userland.fun"]);
+    expect(several.errors.map((error) => [error.code, error.manifest_path])).toEqual([
+      ["invalid_runtime_manifest", "runtime.embed_origins[0]"],
+      ["invalid_runtime_manifest", "runtime.embed_origins[2]"],
+      ["invalid_runtime_manifest", "runtime.embed_origins[3]"]
+    ]);
+
+    // Other cross-field rules wait for schema errors to be fixed; bad entries are still all listed.
+    const withSchemaError = checkManifestDocument({ app: { name: "Embed", visibility: "secret" }, runtime: { static_root: "public", embed_origins: ["https://127.0.0.1", "http://example.com"] } });
+    expect(withSchemaError.errors.map((error) => [error.code, error.manifest_path])).toEqual([
+      ["schema", "app.visibility"],
+      ["invalid_runtime_manifest", "runtime.embed_origins[0]"],
+      ["invalid_runtime_manifest", "runtime.embed_origins[1]"]
+    ]);
+  });
+
+  test("warns about what the API accepts but the published schema does not", () => {
+    // The API drops repeats and stores lowercase; the schema asks for neither.
+    const repeated = withOrigins(["https://example.com", "https://example.com"]);
+    expect(repeated.errors).toEqual([]);
+    expect(repeated.schema_strict).toEqual([
+      expect.objectContaining({ code: "schema_strict", manifest_path: "runtime.embed_origins", message: expect.stringContaining("must not contain duplicates (https://example.com)") })
+    ]);
+
+    const capitals = withOrigins(["HTTPS://www.example.com", "https://WWW.example.com"]);
+    expect(capitals.errors).toEqual([]);
+    expect(capitals.schema_strict).toEqual([
+      expect.objectContaining({ code: "schema_strict", manifest_path: "runtime.embed_origins[0]", message: expect.stringContaining('"HTTPS://www.example.com" must start with https:// in lowercase letters') })
+    ]);
+
+    // A warning elsewhere does not hide the API's rules the schema does not cover.
+    const mixed = checkManifestDocument({ app: { name: "Embed", description: "d" }, runtime: { static_root: "public", embed_origins: ["HTTPS://example.com", "https://127.0.0.1", "https://example.com:65536"] } });
+    expect(mixed.errors.map((error) => error.manifest_path)).toEqual(["runtime.embed_origins[1]", "runtime.embed_origins[2]"]);
+    expect(mixed.schema_strict.map((issue) => issue.manifest_path)).toEqual(["app.description", "runtime.embed_origins[0]"]);
+  });
+
+  test("returns the list as the API stores it: lowercase, without repeats", () => {
+    expect(embedOriginList(["https://Example.com", "https://*.example.com", "https://example.com", "HTTPS://EXAMPLE.COM"])).toEqual(["https://example.com", "https://*.example.com"]);
+    expect(embedOriginList(undefined)).toEqual([]);
+    expect(embedOriginList([])).toEqual([]);
+  });
+
+  test("the bundled schema accepts every lowercase origin the API accepts", () => {
+    const schema = manifestSchema() as { $defs: { RuntimeManifest: { properties: Record<string, { items: { pattern: string; not: { pattern: string }; maxLength: number } }> } } };
+    const item = schema.$defs.RuntimeManifest.properties.embed_origins.items;
+    for (const [, origin] of accepted) {
+      expect(new RegExp(item.pattern, "u").test(origin), origin).toBe(true);
+      expect(new RegExp(item.not.pattern, "u").test(origin), origin).toBe(false);
+      expect(origin.length).toBeLessThanOrEqual(item.maxLength);
+    }
+  });
+});
+
 describe("validateAppDirectory", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -460,6 +664,35 @@ describe("validateAppDirectory", () => {
     // Malformed files change what is uploaded, so they still block.
     const badFiles = await validateAppDirectory(await appDir({ ...manifest, files: "public", extra: undefined }));
     expect(badFiles.errors).toEqual([{ code: "schema", manifest_path: "files", message: "must be an array of { path, content_type } objects" }]);
+  });
+
+  test("reports the sites allowed to embed the app, and blocks on a bad one", async () => {
+    const listed = await validateAppDirectory(
+      await appDir({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins: ["https://WWW.Example.com", "https://*.example.com", "https://www.example.com"] } }),
+      { planKey: "free" }
+    );
+    expect(listed.ok).toBe(true);
+    expect(listed.embed_origins).toEqual(["https://www.example.com", "https://*.example.com"]);
+    // Embedding is on every plan.
+    expect(listed.required_plan_key).toBe("free");
+    expect(listed.violations).toEqual([]);
+
+    const none = await validateAppDirectory(await appDir({ app: { name: "Embed" }, runtime: { static_root: "public" } }));
+    expect(none.embed_origins).toEqual([]);
+    const defaults = await validateAppDirectory(await appDir(undefined));
+    expect(defaults.embed_origins).toEqual([]);
+
+    const bad = await validateAppDirectory(await appDir({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins: ["https://shop.apps.userland.fun"] } }));
+    expect(bad.ok).toBe(false);
+    expect(bad.embed_origins).toBeNull();
+    expect(bad.required_plan_key).toBeNull();
+    expect(bad.errors).toEqual([
+      {
+        code: "invalid_runtime_manifest",
+        manifest_path: "runtime.embed_origins[0]",
+        message: 'runtime.embed_origins[0] ("https://shop.apps.userland.fun") cannot be a Userland address: other apps and Userland sites can never show this app in a frame.'
+      }
+    ]);
   });
 
   test("refuses symlinks listed in files and skips symlinks when walking the folder", async () => {
