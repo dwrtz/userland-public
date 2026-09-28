@@ -1020,7 +1020,7 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/limits/");
   });
 
-  test("prints why a rollback's server did not start, and says to run the command again", async () => {
+  test("prints why a rollback's server did not start, says the rollback did not happen, and to run the command again", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "POST /v0/apps/app_ops/rollback": [
@@ -1052,13 +1052,13 @@ describe("public CLI", () => {
         "reason=runtime_unavailable",
         "status=503",
         "attempts=10",
-        "Your app's server is still being updated. Run the same command again in a minute.",
-        "Docs: https://docs.userland.fun/guides/troubleshooting",
+        "The rollback did not happen: your app is still on its current release. Run the same command again in a minute.",
+        "Docs: https://docs.userland.fun/guides/rollback",
         ""
       ].join("\n")
     );
 
-    // Running the same command again is what the hint asks for.
+    // Running the same command again is what the error asks for.
     const retried = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
     expect(retried.code).toBe(0);
     expect(retried.stdout).toContain("Rolled back https://app_ops.apps.userland.fun/\napp_id=app_ops\nrelease_id=rel_old\nprevious_release_id=rel_new");
@@ -1067,7 +1067,54 @@ describe("public CLI", () => {
     expect(requests.map((request) => request.body)).toEqual([{ release_id: "rel_old" }, { release_id: "rel_old" }]);
   });
 
-  test("prints the details a failed server update has, and the hint even without details", async () => {
+  test("does not say to run a rollback again when the host refused the upload or it could not be checked", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_x/rollback": [
+        {
+          __status: 502,
+          error: {
+            code: "platform_deploy_failed",
+            message: "User Worker upload failed.",
+            details: { status: 400, errors: [{ code: 10027, message: "Your Worker exceeded the size limit of 10 MiB." }] }
+          }
+        },
+        { __status: 502, error: { code: "platform_deploy_failed", message: "User Worker upload could not be probed." } }
+      ]
+    });
+    const support = 'Running the same command again will not fix this. Send this output to support: userland support open --subject "Rollback failed" --app app_x';
+
+    const refused = await runCli(["apps", "rollback", "app_x", "rel_old"], api.baseUrl);
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toBe("");
+    expect(refused.stderr).toBe(
+      [
+        "API 502: User Worker upload failed.",
+        "error=platform_deploy_failed",
+        "status=400",
+        'upload_error="Your Worker exceeded the size limit of 10 MiB." code=10027',
+        `The rollback did not happen: your app is still on its current release. ${support}`,
+        "Docs: https://docs.userland.fun/guides/rollback",
+        ""
+      ].join("\n")
+    );
+    expect(refused.stderr).not.toContain("in a minute");
+
+    const unchecked = await runCli(["apps", "rollback", "app_x", "rel_old"], api.baseUrl);
+    expect(unchecked.code).toBe(1);
+    expect(unchecked.stderr).toBe(
+      [
+        "API 502: User Worker upload could not be probed.",
+        "error=platform_deploy_failed",
+        `The rollback did not happen: your app is still on its current release. ${support}`,
+        "Docs: https://docs.userland.fun/guides/rollback",
+        ""
+      ].join("\n")
+    );
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /v0/apps/app_x/rollback", "POST /v0/apps/app_x/rollback"]);
+  });
+
+  test("prints the details a failed server update has, and says to run a rollback again only when that can work", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "PUT /v0/apps/app_ops": {
@@ -1087,7 +1134,10 @@ describe("public CLI", () => {
             details: { status: 500, errors: [{ code: 10000, message: "Internal error" }] }
           }
         },
-        { __status: 502, error: { code: "platform_deploy_failed", message: "User Worker upload could not be probed." } },
+        {
+          __status: 502,
+          error: { code: "platform_deploy_failed", message: "User Worker upload failed.", details: { status: 429, errors: [] } }
+        },
         {
           __status: 502,
           error: {
@@ -1098,28 +1148,31 @@ describe("public CLI", () => {
         }
       ]
     });
-    const hint = "Your app's server is still being updated. Run the same command again in a minute.";
+    const retry = "The rollback did not happen: your app is still on its current release. Run the same command again in a minute.";
 
+    // A publish gets the details but no advice: running a first publish again would create a second app.
     const publish = await runCli(["apps", "publish", "examples/hello-static", "--app", "app_ops", "--skip-local-validation"], api.baseUrl);
     expect(publish.code).toBe(1);
     expect(publish.stdout).toBe("local_validation=skipped\n");
-    expect(publish.stderr).toContain(
-      ["API 502: User Worker activation probe failed.", "error=platform_deploy_failed", "reason=fetch_failed", "attempts=10", hint, "Docs: "].join("\n")
-    );
+    expect(publish.stderr).toContain(["API 502: User Worker activation probe failed.", "error=platform_deploy_failed", "reason=fetch_failed", "attempts=10", "Docs: "].join("\n"));
+    expect(publish.stderr).not.toContain("status=");
+    expect(publish.stderr).not.toContain("rollback did not happen");
+    expect(publish.stderr).not.toContain("Run the same command again");
 
     const upload = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
     expect(upload.code).toBe(1);
-    expect(upload.stderr).toContain(["API 502: User Worker upload failed.", "error=platform_deploy_failed", "status=500", hint, "Docs: "].join("\n"));
-    expect(upload.stderr).not.toContain("Internal error");
+    expect(upload.stderr).toContain(
+      ["API 502: User Worker upload failed.", "error=platform_deploy_failed", "status=500", 'upload_error="Internal error" code=10000', retry, "Docs: "].join("\n")
+    );
 
-    const bare = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
-    expect(bare.code).toBe(1);
-    expect(bare.stderr).toContain(["API 502: User Worker upload could not be probed.", "error=platform_deploy_failed", hint, "Docs: "].join("\n"));
+    const busy = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(busy.code).toBe(1);
+    expect(busy.stderr).toContain(["API 502: User Worker upload failed.", "error=platform_deploy_failed", "status=429", retry, "Docs: "].join("\n"));
 
     // A reason with a line break stays on one quoted line, and a non-number attempts is left out.
     const odd = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
     expect(odd.code).toBe(1);
-    expect(odd.stderr).toContain(["error=platform_deploy_failed", 'reason="not ok\\nstatus=200"', "status=503", hint, "Docs: "].join("\n"));
+    expect(odd.stderr).toContain(["error=platform_deploy_failed", 'reason="not ok\\nstatus=200"', "status=503", retry, "Docs: "].join("\n"));
     expect(odd.stderr).not.toContain("attempts=");
   });
 

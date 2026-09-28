@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- CLI: when the app's server does not start in time during a rollback (`error=platform_deploy_failed`, which can happen when you roll back seconds after publishing a newer release), the error now shows the `reason`, `status`, and `attempts` the API reports and a line saying the app's server is still being updated and to run the same command again in a minute. Before, it showed only the message and the error code. The app stays on the release it was on. Other errors print as before.
+- CLI: when a rollback cannot update the app's server (`error=platform_deploy_failed`), the error now shows the `reason`, `status`, and `attempts` the API reports, the upload errors (`upload_error`) when the upload failed, and a line saying the rollback did not happen and the app is still on its current release. When the server did not start in time (which can happen when you roll back seconds after publishing a newer release) or the upload could not be taken just then (a 5xx or 429), that line says to run the same command again in a minute. When the upload was refused (another 4xx, such as server code that is too large) or could not be checked, running it again fails the same way, so the line says to send the output to support with `userland support open` instead. Before, the error showed only the message and the error code. Other commands print only these details for this error, with no advice, and other errors print as before.
 
 ## 0.8.0 - 2026-09-28
 

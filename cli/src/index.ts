@@ -1363,10 +1363,15 @@ async function rollbackCommand(args: string[]): Promise<void> {
   }
   const options = parseAccountOptions(args.slice(2));
 
-  const response = await apiFetch<RollbackResponse>(`/v0/apps/${pathSegment(appId, "app id")}/rollback`, {
-    method: "POST",
-    body: JSON.stringify({ release_id: releaseId })
-  }, { accountId: options.account, accountScoped: true });
+  let response: RollbackResponse;
+  try {
+    response = await apiFetch<RollbackResponse>(`/v0/apps/${pathSegment(appId, "app id")}/rollback`, {
+      method: "POST",
+      body: JSON.stringify({ release_id: releaseId })
+    }, { accountId: options.account, accountScoped: true });
+  } catch (error) {
+    throw withRollbackOutcome(error, appId);
+  }
 
   console.log(`Rolled back ${response.origin}`);
   console.log(`app_id=${response.app_id}`);
@@ -2493,24 +2498,78 @@ function errorMessage(body: unknown): string | undefined {
 }
 
 /**
- * platform_deploy_failed: the app's server code was uploaded but did not answer its health check in
- * time (details: reason, status, attempts), or the upload failed (details: status). Rolling back
- * seconds after a newer publish removed the target release's earlier copy, that copy can keep
- * answering for a short while, and running the command again a minute later usually works, so the
- * hint says so. The app stays on the release it was on. Other errors print as before.
+ * platform_deploy_failed details: why the app's server code did not answer its health check in time
+ * (reason, status, attempts), or why the upload failed (status, and the host's errors as
+ * upload_error lines). Only strings and finite numbers are printed. What to do next depends on the
+ * command, so the command adds it (withRollbackOutcome). Other errors print as before.
  */
 function deployFailureLines(details: unknown): string[] {
+  if (!isPlainObject(details)) {
+    return [];
+  }
   const lines: string[] = [];
-  if (isPlainObject(details)) {
-    for (const key of ["reason", "status", "attempts"]) {
-      const value = details[key];
-      if (typeof value === "string" || (typeof value === "number" && Number.isFinite(value))) {
-        lines.push(`${key}=${formatFieldValue(value)}`);
-      }
+  for (const key of ["reason", "status", "attempts"]) {
+    const value = details[key];
+    if (isPrintableScalar(value)) {
+      lines.push(`${key}=${formatFieldValue(value)}`);
     }
   }
-  lines.push("Your app's server is still being updated. Run the same command again in a minute.");
+  const errors = Array.isArray(details.errors) ? details.errors : [];
+  for (const entry of errors) {
+    if (isPlainObject(entry) && typeof entry.message === "string" && entry.message.trim() !== "") {
+      lines.push(`upload_error=${formatFieldValue(entry.message)}${isPrintableScalar(entry.code) ? ` code=${formatFieldValue(entry.code)}` : ""}`);
+    }
+  }
   return lines;
+}
+
+function isPrintableScalar(value: unknown): value is string | number {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+}
+
+/**
+ * Whether running a failed server update again can work. The API sends platform_deploy_failed when
+ * the uploaded server code did not answer its health check in time ("User Worker activation probe
+ * failed.", with attempts), when the upload failed ("User Worker upload failed.", with the host's
+ * status), or when the upload could not be checked at all ("User Worker upload could not be
+ * probed.", no details). A late health check, which happens when a rollback runs seconds after a
+ * newer publish, and an upload the host could not take just then (a 5xx, a 429, or no status)
+ * usually work a minute later. An upload the host refused (any other 4xx, such as code that is too
+ * large or fails at startup) and an upload that could not be checked fail the same way every time.
+ */
+function deployFailureRetryHelps(message: string | undefined, details: unknown): boolean {
+  const fields = isPlainObject(details) ? details : {};
+  if (fields.attempts !== undefined || message === "User Worker activation probe failed.") {
+    return true;
+  }
+  if (message === "User Worker upload failed." || fields.status !== undefined) {
+    const status = fields.status;
+    return !(typeof status === "number" && status >= 400 && status < 500 && status !== 429);
+  }
+  return false;
+}
+
+/**
+ * A rollback uploads the target release's server code again and checks that it answers before the
+ * app moves to that release, so a platform_deploy_failed rollback left the app where it was. The
+ * error says so in plain words, then says to run the command again when that can work, or to send
+ * the output to support when it cannot. Other errors are returned unchanged.
+ */
+function withRollbackOutcome(error: unknown, appId: string): unknown {
+  if (!(error instanceof ApiError) || error.code !== "platform_deploy_failed") {
+    return error;
+  }
+  const apiMessage = isPlainObject(error.body) ? parseApiError(error.body).message : undefined;
+  const next = deployFailureRetryHelps(apiMessage, error.details)
+    ? "Run the same command again in a minute."
+    : `Running the same command again will not fix this. Send this output to support: userland support open --subject "Rollback failed" --app ${terminalSafe(appId)}`;
+  return new ApiError(
+    `${error.message}\nThe rollback did not happen: your app is still on its current release. ${next}`,
+    error.status,
+    error.code,
+    error.details,
+    error.body
+  );
 }
 
 function parseApiError(body: Record<string, unknown>): { code?: string; message?: string; details?: unknown } {
