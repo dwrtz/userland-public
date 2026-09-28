@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 
 interface RequestRecord {
@@ -18,6 +18,7 @@ const servers: Array<{ close: () => Promise<void> }> = [];
 const tempDirs: string[] = [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPackageJsonPath = path.join(repoRoot, "cli", "package.json");
+const stdinIsTtyPreload = path.join(repoRoot, "cli", "tests", "fixtures", "stdin-is-tty.mjs");
 const plansArtifact = JSON.parse(await fs.readFile(path.join(repoRoot, "schemas", "plans-v0.json"), "utf8")) as {
   plans: Record<string, { features: Record<string, boolean>; manifest_limits: Record<string, unknown>; release_limits: Record<string, number | null> }>;
 };
@@ -40,6 +41,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("--skip-local-validation");
     expect(result.stdout).toContain("userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]");
     expect(result.stdout).toContain("userland analytics <app-id>");
+    expect(result.stdout).toContain("userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
   });
@@ -175,6 +177,177 @@ describe("public CLI", () => {
     expect(secretResult.stdout).toContain("secret=API_TOKEN");
     expect(secretResult.stdout).not.toContain("super-secret");
     expect(requests.find((request) => request.url === "/v0/apps/app_ops/secrets/API_TOKEN")?.body).toEqual({ value: "super-secret" });
+  });
+
+  test("unpublishes an app with --yes without asking", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "DELETE /v0/apps/app_dummy": unpublishResponse("app_dummy")
+    });
+
+    const result = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--account", "acct_team"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(
+      "Unpublished app_dummy\napp_id=app_dummy\nstatus=unpublished\ndeleted_at=2026-09-28T00:00:00.000Z\n" +
+        "The app is offline and its slugs and custom domains are removed. Its release history is kept.\n"
+    );
+    expect(result.stderr).toBe("");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["DELETE /v0/apps/app_dummy"]);
+    expect(requests[0].authorization).toBe("Bearer test_api_key");
+    expect(requests[0].accountId).toBe("acct_team");
+
+    // -y is the short form; --json prints the API response unchanged.
+    const json = await runCli(["apps", "unpublish", "app_dummy", "-y", "--json"], api.baseUrl);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(unpublishResponse("app_dummy"));
+    expect(json.stderr).toBe("");
+    expect(requests).toHaveLength(2);
+  });
+
+  test("refuses to unpublish without --yes when there is no terminal to confirm in", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy app"),
+      "DELETE /v0/apps/app_dummy": unpublishResponse("app_dummy")
+    });
+
+    // Piping an answer is not a terminal either: scripts and agents must pass --yes.
+    for (const stdin of [undefined, "y\n", "app_dummy\n"]) {
+      const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { stdin });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Unpublishing an app needs confirmation. Without a terminal to confirm in, pass --yes: userland apps unpublish app_dummy --yes");
+      expect(result.stderr).toContain("Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
+    }
+
+    for (const args of [["apps", "unpublish"], ["apps", "unpublish", "--yes"], ["apps", "unpublish", "-y", "app_dummy"]]) {
+      const result = await runCli(args, api.baseUrl);
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain("Usage: userland apps unpublish <app-id>");
+    }
+
+    const unknown = await runCli(["apps", "unpublish", "app_dummy", "--force"], api.baseUrl);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain("Unknown option: --force");
+
+    const emptyAccount = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--account", ""], api.baseUrl);
+    expect(emptyAccount.code).toBe(1);
+    expect(emptyAccount.stderr).toContain("--account requires a value, but it was empty.");
+
+    expect(requests).toHaveLength(0);
+  });
+
+  test("asks for the app id or y before unpublishing in a terminal", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy app"),
+      "DELETE /v0/apps/app_dummy": unpublishResponse("app_dummy")
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+
+    const byId = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { tty: true, stdin: "app_dummy\n" });
+    expect(byId.code).toBe(0);
+    expect(byId.stderr).toBe(
+      "You are about to unpublish this app:\n" +
+        "  Name:     Dummy app\n" +
+        "  Address:  https://app_dummy.apps.userland.fun/\n" +
+        "  App id:   app_dummy\n" +
+        "Unpublishing takes the app offline and removes its slugs and custom domains. Its release history is kept.\n" +
+        "Type the app id (app_dummy) or y to unpublish it: "
+    );
+    expect(byId.stdout).toContain("Unpublished Dummy app (https://app_dummy.apps.userland.fun/)\napp_id=app_dummy\nstatus=unpublished\n");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "DELETE /v0/apps/app_dummy"]);
+
+    for (const answer of ["y\n", "Y\n", "yes\n", "  app_dummy  \n"]) {
+      requests.length = 0;
+      const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { tty: true, stdin: answer });
+      expect(result.code, JSON.stringify(answer)).toBe(0);
+      expect(calls(), JSON.stringify(answer)).toEqual(["GET /v0/apps/app_dummy", "DELETE /v0/apps/app_dummy"]);
+    }
+
+    // Anything else, including no answer at all (input closed), cancels without sending the DELETE.
+    for (const answer of ["n\n", "\n", "app_other\n", "APP_DUMMY\n", "", "y"]) {
+      requests.length = 0;
+      const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { tty: true, stdin: answer });
+      expect(result.code, JSON.stringify(answer)).toBe(1);
+      expect(result.stdout, JSON.stringify(answer)).toBe("");
+      expect(result.stderr, JSON.stringify(answer)).toContain("Cancelled. app_dummy was not unpublished.");
+      expect(calls(), JSON.stringify(answer)).toEqual(["GET /v0/apps/app_dummy"]);
+    }
+
+    // With --json the prompt stays on stderr, so stdout is only the API response.
+    requests.length = 0;
+    const json = await runCli(["apps", "unpublish", "app_dummy", "--json", "--account", "acct_team"], api.baseUrl, { tty: true, stdin: "y\n" });
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(unpublishResponse("app_dummy"));
+    expect(json.stderr).toContain("Type the app id (app_dummy) or y to unpublish it: ");
+    expect(requests.map((request) => request.accountId)).toEqual(["acct_team", "acct_team"]);
+  });
+
+  test("asks before revoking an API key in a terminal and treats closed input as no", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "DELETE /v0/auth/api-keys/key_1": { ok: true, revoked: true, api_key_id: "key_1" }
+    });
+
+    const confirmed = await runCli(["auth", "api-keys", "revoke", "key_1"], api.baseUrl, { tty: true, stdin: "yes\n" });
+    expect(confirmed.code).toBe(0);
+    expect(confirmed.stdout).toContain("Revoke API key key_1? Type yes to continue: ");
+    expect(confirmed.stdout).toContain("Revoked API key key_1");
+
+    const closed = await runCli(["auth", "api-keys", "revoke", "key_1"], api.baseUrl, { tty: true, stdin: "" });
+    expect(closed.code).toBe(0);
+    expect(closed.stdout).toContain("revocation=cancelled");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["DELETE /v0/auth/api-keys/key_1"]);
+  });
+
+  test("shows app names from the API with control characters escaped in the unpublish prompt", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy\u001b[2J app")
+    });
+
+    const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { tty: true, stdin: "n\n" });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("  Name:     Dummy\\x1b[2J app\n");
+    expect(result.stderr).not.toContain("\u001b");
+  });
+
+  test("reports not found, forbidden, and takedown errors when unpublishing", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "DELETE /v0/apps/app_missing": { __status: 404, error: { code: "not_found", message: "App not found." } },
+      "DELETE /v0/apps/app_viewer": { __status: 403, error: { code: "forbidden", message: "Your account role cannot perform this operation." } },
+      "DELETE /v0/apps/app_legal": {
+        __status: 451,
+        error: { code: "app_takedown", message: "This app is unavailable for legal reasons.", details: { app_id: "app_legal", reasons: [] } }
+      },
+      "GET /v0/apps/app_missing": { __status: 404, error: { code: "not_found", message: "App not found." } }
+    });
+
+    const cases = [
+      { appId: "app_missing", message: "API 404: App not found.\nerror=not_found" },
+      { appId: "app_viewer", message: "API 403: Your account role cannot perform this operation.\nerror=forbidden" },
+      { appId: "app_legal", message: "API 451: This app is unavailable for legal reasons.\nerror=app_takedown" }
+    ];
+    for (const { appId, message } of cases) {
+      for (const extra of [[], ["--json"]]) {
+        const result = await runCli(["apps", "unpublish", appId, "--yes", ...extra], api.baseUrl);
+        expect(result.code, `${appId} ${extra.join(" ")}`).toBe(1);
+        expect(result.stdout, `${appId} ${extra.join(" ")}`).toBe("");
+        expect(result.stderr, `${appId} ${extra.join(" ")}`).toContain(message);
+      }
+    }
+
+    // In a terminal, an app that cannot be read stops before the prompt and before any DELETE.
+    requests.length = 0;
+    const missing = await runCli(["apps", "unpublish", "app_missing"], api.baseUrl, { tty: true, stdin: "y\n" });
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain("API 404: App not found.\nerror=not_found");
+    expect(missing.stderr).not.toContain("You are about to unpublish");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/apps/app_missing"]);
   });
 
   test("supports account selection from env, saved credentials, and --account", async () => {
@@ -1472,7 +1645,8 @@ recent_errors:
       "GET /v0/apps/app%3Fx%3D1/events": { events: [], cursor: null },
       "POST /v0/apps/app%23frag/rollback": { app_id: "app#frag", release_id: "rel_1", previous_release_id: null, origin: "https://x.apps.userland.fun/", status: "live" },
       "PUT /v0/apps/app%2Fx/secrets/API_TOKEN": { name: "API_TOKEN", present: true, updated_at: "2026-05-05T00:00:00.000Z" },
-      "PUT /v0/apps/app%20one": publishResponse("app one")
+      "PUT /v0/apps/app%20one": publishResponse("app one"),
+      "DELETE /v0/apps/app%2F..%2Fother": unpublishResponse("app/../other")
     });
 
     await expectCommand(["apps", "releases", "app/../other"], api.baseUrl, "");
@@ -1481,6 +1655,7 @@ recent_errors:
     const secret = await runCli(["apps", "secrets", "set", "app/x", "API_TOKEN"], api.baseUrl, { stdin: "value" });
     expect(secret.code).toBe(0);
     await expectCommand(["apps", "publish", "examples/hello-static", "--app", "app one", "--plan", "free"], api.baseUrl, "Published");
+    await expectCommand(["apps", "unpublish", "app/../other", "--yes"], api.baseUrl, "Unpublished app/../other");
 
     const badName = await runCli(["apps", "secrets", "set", "app_1", "FOO?x=1#"], api.baseUrl, { stdin: "value" });
     expect(badName.code).toBe(1);
@@ -1490,7 +1665,8 @@ recent_errors:
       "GET /v0/apps/app%3Fx%3D1/events",
       "POST /v0/apps/app%23frag/rollback",
       "PUT /v0/apps/app%2Fx/secrets/API_TOKEN",
-      "PUT /v0/apps/app%20one"
+      "PUT /v0/apps/app%20one",
+      "DELETE /v0/apps/app%2F..%2Fother"
     ]);
   });
 
@@ -1512,6 +1688,11 @@ recent_errors:
       { args: ["apps", "secrets", "set", "..", "MODEL_KEY"], stdin: "v", message: 'Invalid app id: "..".' },
       { args: ["apps", "status", "."], message: 'Invalid app id: ".".' },
       { args: ["apps", "rollback", "..", "rel_1"], message: 'Invalid app id: "..".' },
+      // `apps unpublish .` would otherwise become DELETE /v0/apps/, and `..` DELETE /v0/.
+      { args: ["apps", "unpublish", ".", "--yes"], message: 'Invalid app id: ".".' },
+      { args: ["apps", "unpublish", "..", "--yes"], message: 'Invalid app id: "..".' },
+      { args: ["apps", "unpublish", ".."], message: 'Invalid app id: "..".' },
+      { args: ["apps", "unpublish", "", "--yes"], message: 'Invalid app id: "".' },
       { args: ["apps", "analytics", ".."], message: 'Invalid app id: "..".' },
       { args: ["apps", "publish", "examples/hello-static", "--app", "."], message: 'Invalid app id: ".".' },
       { args: ["apps", "publish", "examples/hello-static", "--app", "..", "--plan", "free"], message: 'Invalid app id: "..".' },
@@ -1841,6 +2022,28 @@ function publishResponse(appId: string): Record<string, unknown> {
   };
 }
 
+/** GET /v0/apps/:app_id, as the API returns it. */
+function appResponse(appId: string, name: string): Record<string, unknown> {
+  return {
+    app_id: appId,
+    account_id: "acct_owner",
+    name,
+    summary: null,
+    visibility: "public",
+    production: false,
+    origin: `https://${appId}.apps.userland.fun/`,
+    live_release_id: "rel_live",
+    operational_state: null,
+    created_at: "2026-09-01T00:00:00.000Z",
+    updated_at: "2026-09-01T00:00:00.000Z"
+  };
+}
+
+/** DELETE /v0/apps/:app_id, as the API returns it. */
+function unpublishResponse(appId: string): Record<string, unknown> {
+  return { app_id: appId, status: "unpublished", deleted_at: "2026-09-28T00:00:00.000Z" };
+}
+
 function analyticsResponse() {
   const dimension = (key: string, label: string, requestCount: number) => ({ key, label, dimensions: {}, request_count: requestCount, error_count: 0, total_response_bytes: 0 });
   return {
@@ -1901,7 +2104,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; env?: Record<string, string | undefined> } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; tty?: boolean; env?: Record<string, string | undefined> } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
@@ -1929,17 +2132,19 @@ async function runCli(
       }
     }
 
-    const child = spawn(process.execPath, ["--import", "tsx", path.join("cli", "src", "index.ts"), ...args], {
+    // With tty, piped stdin looks like a terminal, so a test can answer confirmation prompts.
+    const ttyImport = options.tty ? ["--import", pathToFileURL(stdinIsTtyPreload).href] : [];
+    const child = spawn(process.execPath, ["--import", "tsx", ...ttyImport, path.join("cli", "src", "index.ts"), ...args], {
       cwd: repoRoot,
       env,
-      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
+      stdio: [options.stdin === undefined && !options.tty ? "ignore" : "pipe", "pipe", "pipe"]
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    if (options.stdin !== undefined) {
-      child.stdin?.end(options.stdin);
+    if (options.stdin !== undefined || options.tty) {
+      child.stdin?.end(options.stdin ?? "");
     }
     child.on("close", (code) => {
       resolve({

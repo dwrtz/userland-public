@@ -47,6 +47,7 @@ userland apps status <app-id>
 userland apps releases <app-id>
 userland versions <app-id>
 userland apps rollback <app-id> <release-id>
+userland apps unpublish <app-id>
 printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
 userland apps events <app-id>
 userland apps analytics <app-id>
@@ -89,6 +90,7 @@ npm run userland -- apps status <app-id>
 npm run userland -- apps releases <app-id>
 npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
+npm run userland -- apps unpublish <app-id>
 printf '%s' "$VALUE" | npm run userland -- apps secrets set <app-id> <NAME>
 npm run userland -- apps events <app-id>
 npm run userland -- apps analytics <app-id> --range 30d
@@ -387,6 +389,34 @@ limit=10000
 current=10000
 upgrade_required=true
 ```
+
+## Unpublish an app
+
+`userland apps unpublish` removes an app you no longer need, such as a test or demo app, with `DELETE /v0/apps/:app_id`:
+
+```sh
+userland apps list
+userland apps unpublish <app-id>
+userland apps unpublish <app-id> --account <account-id>
+userland apps unpublish <app-id> --yes
+userland apps unpublish <app-id> --yes --json
+```
+
+Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Its release history is kept, and `userland apps releases <app-id>` still lists it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
+
+In a terminal, the command first shows the app's name, address, and id, and asks you to type the app id or `y`. Any other answer, or closing the input, cancels: it prints `Cancelled. <app-id> was not unpublished.` and exits `1`. Without a terminal (scripts, CI, and coding agents), pass `--yes`. Without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming.
+
+Output:
+
+```text
+Unpublished Old test app (https://<app_id>.apps.userland.fun/)
+app_id=<app_id>
+status=unpublished
+deleted_at=2026-09-28T00:00:00.000Z
+The app is offline and its slugs and custom domains are removed. Its release history is kept.
+```
+
+With `--yes` there is no prompt, and the first line is `Unpublished <app_id>`. `--json` prints the API response unchanged (`app_id`, `status`, and `deleted_at`); a prompt, when there is one, goes to stderr so stdout stays JSON. Errors print like other app commands and exit `1`: `API 404` for an app id that does not exist or is already unpublished, `API 403` when your account role cannot remove apps (only owners and admins can) or the app or account is suspended, and `API 451` for an app that is unavailable for legal reasons.
 
 ## Validation
 
