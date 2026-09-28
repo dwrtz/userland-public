@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI: when the app's server does not start in time during a rollback (`error=platform_deploy_failed`, which can happen when you roll back seconds after publishing a newer release), the error now shows the `reason`, `status`, and `attempts` the API reports and a line saying the app's server is still being updated and to run the same command again in a minute. Before, it showed only the message and the error code. The app stays on the release it was on. Other errors print as before.
+
 ## 0.8.0 - 2026-09-28
 
 - CLI: add `userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]` for removing apps you no longer need, such as test or demo apps. It takes the app offline, removes its slugs and custom domains, and removes it from `apps list`; its release history is kept. In a terminal it shows the app's name, address, account, and whether it is a production app, and asks you to type the app id or `y`; any other answer cancels and exits `1`. Without a terminal it needs `--yes` and otherwise stops with a usage error before sending anything, asking you to check with the app's owner first. When an account is selected (`--account`, `USERLAND_ACCOUNT_ID`, or the saved account), it reads the app first, even with `--yes`, and does not unpublish an app that belongs to a different account. `--json` prints the API response (`app_id`, `status`, `deleted_at`). The app id is URL-encoded, and an empty id, `.`, or `..` is refused before anything is sent. The `userland-publish-operate` skill lists the command, mentions unpublishing in its description so agents asked to remove apps find it, and says to unpublish only apps the user named.

@@ -1020,6 +1020,135 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/limits/");
   });
 
+  test("prints why a rollback's server did not start, and says to run the command again", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_ops/rollback": [
+        {
+          __status: 502,
+          error: {
+            code: "platform_deploy_failed",
+            message: "User Worker activation probe failed.",
+            details: { status: 503, reason: "runtime_unavailable", attempts: 10 }
+          }
+        },
+        {
+          status: "rolled_back",
+          app_id: "app_ops",
+          release_id: "rel_old",
+          origin: "https://app_ops.apps.userland.fun/",
+          previous_release_id: "rel_new"
+        }
+      ]
+    });
+
+    const failed = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(failed.code).toBe(1);
+    expect(failed.stdout).toBe("");
+    expect(failed.stderr).toBe(
+      [
+        "API 502: User Worker activation probe failed.",
+        "error=platform_deploy_failed",
+        "reason=runtime_unavailable",
+        "status=503",
+        "attempts=10",
+        "Your app's server is still being updated. Run the same command again in a minute.",
+        "Docs: https://docs.userland.fun/guides/troubleshooting",
+        ""
+      ].join("\n")
+    );
+
+    // Running the same command again is what the hint asks for.
+    const retried = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(retried.code).toBe(0);
+    expect(retried.stdout).toContain("Rolled back https://app_ops.apps.userland.fun/\napp_id=app_ops\nrelease_id=rel_old\nprevious_release_id=rel_new");
+    expect(retried.stderr).toBe("");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /v0/apps/app_ops/rollback", "POST /v0/apps/app_ops/rollback"]);
+    expect(requests.map((request) => request.body)).toEqual([{ release_id: "rel_old" }, { release_id: "rel_old" }]);
+  });
+
+  test("prints the details a failed server update has, and the hint even without details", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps/app_ops": {
+        __status: 502,
+        error: {
+          code: "platform_deploy_failed",
+          message: "User Worker activation probe failed.",
+          details: { status: null, reason: "fetch_failed", attempts: 10 }
+        }
+      },
+      "POST /v0/apps/app_ops/rollback": [
+        {
+          __status: 502,
+          error: {
+            code: "platform_deploy_failed",
+            message: "User Worker upload failed.",
+            details: { status: 500, errors: [{ code: 10000, message: "Internal error" }] }
+          }
+        },
+        { __status: 502, error: { code: "platform_deploy_failed", message: "User Worker upload could not be probed." } },
+        {
+          __status: 502,
+          error: {
+            code: "platform_deploy_failed",
+            message: "User Worker activation probe failed.",
+            details: { status: 503, reason: "not ok\nstatus=200", attempts: { count: 10 } }
+          }
+        }
+      ]
+    });
+    const hint = "Your app's server is still being updated. Run the same command again in a minute.";
+
+    const publish = await runCli(["apps", "publish", "examples/hello-static", "--app", "app_ops", "--skip-local-validation"], api.baseUrl);
+    expect(publish.code).toBe(1);
+    expect(publish.stdout).toBe("local_validation=skipped\n");
+    expect(publish.stderr).toContain(
+      ["API 502: User Worker activation probe failed.", "error=platform_deploy_failed", "reason=fetch_failed", "attempts=10", hint, "Docs: "].join("\n")
+    );
+
+    const upload = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(upload.code).toBe(1);
+    expect(upload.stderr).toContain(["API 502: User Worker upload failed.", "error=platform_deploy_failed", "status=500", hint, "Docs: "].join("\n"));
+    expect(upload.stderr).not.toContain("Internal error");
+
+    const bare = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(bare.code).toBe(1);
+    expect(bare.stderr).toContain(["API 502: User Worker upload could not be probed.", "error=platform_deploy_failed", hint, "Docs: "].join("\n"));
+
+    // A reason with a line break stays on one quoted line, and a non-number attempts is left out.
+    const odd = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(odd.code).toBe(1);
+    expect(odd.stderr).toContain(["error=platform_deploy_failed", 'reason="not ok\\nstatus=200"', "status=503", hint, "Docs: "].join("\n"));
+    expect(odd.stderr).not.toContain("attempts=");
+  });
+
+  test("keeps the output of other API errors unchanged when their details have reason or status", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_ops/rollback": {
+        __status: 409,
+        error: {
+          code: "incompatible_release",
+          message: "Target release is not compatible with current app state.",
+          details: { reasons: ["collection.notes is missing."], reason: "schema", status: 409, attempts: 1 }
+        }
+      }
+    });
+
+    const result = await runCli(["apps", "rollback", "app_ops", "rel_old"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      [
+        "API 409: Target release is not compatible with current app state.",
+        "error=incompatible_release",
+        "Docs: https://docs.userland.fun/guides/troubleshooting",
+        ""
+      ].join("\n")
+    );
+  });
+
   test("validates an app directory offline", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {});

@@ -390,6 +390,17 @@ current=10000
 upgrade_required=true
 ```
 
+When the app's server does not start in time during a rollback (for example, right after publishing a newer release), the error says why and what to do. The app stays on the release it was on, so run the same command again:
+
+```text
+API 502: User Worker activation probe failed.
+error=platform_deploy_failed
+reason=runtime_unavailable
+status=503
+attempts=10
+Your app's server is still being updated. Run the same command again in a minute.
+```
+
 ## Unpublish an app
 
 `userland apps unpublish` removes an app you no longer need, such as a test or demo app, with `DELETE /v0/apps/:app_id`:

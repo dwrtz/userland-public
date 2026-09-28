@@ -2486,7 +2486,31 @@ function errorMessage(body: unknown): string | undefined {
     lines.push(`error=${parsed.code}`);
   }
   lines.push(...structuredDetailLines(parsed.details));
+  if (parsed.code === "platform_deploy_failed") {
+    lines.push(...deployFailureLines(parsed.details));
+  }
   return lines.filter(Boolean).join("\n");
+}
+
+/**
+ * platform_deploy_failed: the app's server code was uploaded but did not answer its health check in
+ * time (details: reason, status, attempts), or the upload failed (details: status). Rolling back
+ * seconds after a newer publish removed the target release's earlier copy, that copy can keep
+ * answering for a short while, and running the command again a minute later usually works, so the
+ * hint says so. The app stays on the release it was on. Other errors print as before.
+ */
+function deployFailureLines(details: unknown): string[] {
+  const lines: string[] = [];
+  if (isPlainObject(details)) {
+    for (const key of ["reason", "status", "attempts"]) {
+      const value = details[key];
+      if (typeof value === "string" || (typeof value === "number" && Number.isFinite(value))) {
+        lines.push(`${key}=${formatFieldValue(value)}`);
+      }
+    }
+  }
+  lines.push("Your app's server is still being updated. Run the same command again in a minute.");
+  return lines;
 }
 
 function parseApiError(body: Record<string, unknown>): { code?: string; message?: string; details?: unknown } {
