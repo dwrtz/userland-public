@@ -390,6 +390,27 @@ current=10000
 upgrade_required=true
 ```
 
+When a rollback cannot update the app's server (`error=platform_deploy_failed`), the rollback does not happen and the app stays on the release it was on. The error says why and what to do. When the server did not start in time, which can happen right after publishing a newer release, or the upload could not be taken just then, it says to run the same command again:
+
+```text
+API 502: User Worker activation probe failed.
+error=platform_deploy_failed
+reason=runtime_unavailable
+status=503
+attempts=10
+The rollback did not happen: your app is still on its current release. Run the same command again in a minute.
+```
+
+When the upload was refused (for example, the server code is too large) or could not be checked, running the command again fails the same way, so the error prints the reason for the refusal (`upload_error`) and says to send the output to support instead:
+
+```text
+API 502: User Worker upload failed.
+error=platform_deploy_failed
+status=400
+upload_error="Your Worker exceeded the size limit of 10 MiB." code=10027
+The rollback did not happen: your app is still on its current release. Running the same command again will not fix this. Send this output to support: userland support open --subject "Rollback failed" --app <app-id>
+```
+
 ## Unpublish an app
 
 `userland apps unpublish` removes an app you no longer need, such as a test or demo app, with `DELETE /v0/apps/:app_id`:
