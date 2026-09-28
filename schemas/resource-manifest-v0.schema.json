@@ -134,13 +134,14 @@
           "type": "array",
           "default": [],
           "uniqueItems": true,
+          "maxItems": 20,
           "description": "Other sites allowed to show the app in a frame on its *.apps.userland.fun addresses; the app's own pages always can. Each entry is https://, a domain name and an optional port, with an optional leading *. for its subdomains, and no path. At most 20. Userland addresses are refused. Custom domains are not affected.",
           "items": {
             "type": "string",
             "maxLength": 255,
             "pattern": "^https://(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[1-9][0-9]{0,4})?$",
             "not": {
-              "pattern": "(?:^https://(?:\\*\\.)?|\\.)userland\\.fun(?::[0-9]+)?$"
+              "pattern": "(?:^https://(?:\\*\\.)?|\\.)[Uu][Ss][Ee][Rr][Ll][Aa][Nn][Dd]\\.[Ff][Uu][Nn](?::[0-9]+)?$"
             }
           }
         }

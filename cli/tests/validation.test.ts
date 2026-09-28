@@ -27,6 +27,7 @@ import {
   releaseRequirements,
   SUPPORT_ONLY_PLAN_KEY,
   SUPPORTED_SCHEMA_KEYWORDS,
+  validateAgainstSchema,
   validateAppDirectory,
   validateManifestDocument,
   type ManifestInput
@@ -563,6 +564,31 @@ describe("runtime.embed_origins", () => {
       expect(new RegExp(item.not.pattern, "u").test(origin), origin).toBe(false);
       expect(origin.length).toBeLessThanOrEqual(item.maxLength);
     }
+  });
+
+  // Editors and other tools that only read the bundled schema (through `$schema`) must refuse the
+  // same Userland addresses and list length. JSON Schema patterns have no flag to ignore case, so the
+  // schema spells each letter of userland.fun in both cases.
+  test("the bundled schema refuses every Userland address in any letter case, and more than 20 sites", () => {
+    const schema = manifestSchema();
+    const schemaIssues = (embed_origins: unknown) => validateAgainstSchema({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins } }, schema);
+
+    expect(schemaIssues(["https://OTHER-APP.APPS.USERLAND.FUN"])).toEqual([{ code: "schema", manifest_path: "runtime.embed_origins[0]", message: "is not allowed" }]);
+    const lowercaseScheme = [...userlandHosts, "https://userland.FUN", "https://Docs.Userland.Fun", "https://*.USERLAND.fun", "https://Shop.Apps.UserLand.Fun:8443"].filter((host) => host.startsWith("https://"));
+    for (const host of lowercaseScheme) {
+      expect(schemaIssues([host]).map((issue) => issue.manifest_path), host).toEqual(["runtime.embed_origins[0]"]);
+    }
+    // Sites that only look like Userland stay allowed.
+    for (const host of ["https://notuserland.fun", "https://userland.fun.example.com", "https://USERLAND.FUN.example.com", "https://NotUserland.Fun"]) {
+      expect(schemaIssues([host]), host).toEqual([]);
+      expect(checkEmbedOrigin(host).ok, host).toBe(true);
+    }
+
+    const sites = Array.from({ length: EMBED_ORIGINS_MAX_COUNT }, (_, index) => `https://site${index}.example.com`);
+    expect(schemaIssues(sites)).toEqual([]);
+    expect(schemaIssues([...sites, "https://one-more.example.com"])).toEqual([
+      { code: "schema", manifest_path: "runtime.embed_origins", message: `must contain at most ${EMBED_ORIGINS_MAX_COUNT} items` }
+    ]);
   });
 });
 

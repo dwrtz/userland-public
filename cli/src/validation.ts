@@ -1421,6 +1421,7 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   "propertyNames",
   "items",
   "minItems",
+  "maxItems",
   "uniqueItems",
   "minLength",
   "maxLength",
@@ -1490,6 +1491,9 @@ function validateNode(value: unknown, schema: unknown, root: JsonSchema, at: Arr
   if (Array.isArray(value)) {
     if (typeof node.minItems === "number" && value.length < node.minItems) {
       errors.push({ path: at, keyword: "minItems", message: `must contain at least ${node.minItems} item${node.minItems === 1 ? "" : "s"}` });
+    }
+    if (typeof node.maxItems === "number" && value.length > node.maxItems) {
+      errors.push({ path: at, keyword: "maxItems", message: `must contain at most ${node.maxItems} item${node.maxItems === 1 ? "" : "s"}` });
     }
     if (node.uniqueItems === true) {
       const seen = new Set<string>();
