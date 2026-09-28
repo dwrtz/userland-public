@@ -185,7 +185,8 @@ describe("public CLI", () => {
       "DELETE /v0/apps/app_dummy": unpublishResponse("app_dummy")
     });
 
-    const result = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--account", "acct_team"], api.baseUrl);
+    // With no account selected there is nothing to check, so only the DELETE is sent.
+    const result = await runCli(["apps", "unpublish", "app_dummy", "--yes"], api.baseUrl);
 
     expect(result.code).toBe(0);
     expect(result.stdout).toBe(
@@ -195,7 +196,7 @@ describe("public CLI", () => {
     expect(result.stderr).toBe("");
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["DELETE /v0/apps/app_dummy"]);
     expect(requests[0].authorization).toBe("Bearer test_api_key");
-    expect(requests[0].accountId).toBe("acct_team");
+    expect(requests[0].accountId).toBeUndefined();
 
     // -y is the short form; --json prints the API response unchanged.
     const json = await runCli(["apps", "unpublish", "app_dummy", "-y", "--json"], api.baseUrl);
@@ -203,6 +204,70 @@ describe("public CLI", () => {
     expect(JSON.parse(json.stdout)).toEqual(unpublishResponse("app_dummy"));
     expect(json.stderr).toBe("");
     expect(requests).toHaveLength(2);
+  });
+
+  test("with an account selected, unpublishes only an app in that account, even with --yes", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy app"),
+      "DELETE /v0/apps/app_dummy": unpublishResponse("app_dummy"),
+      "GET /v0/apps/app_legacy": { ...appResponse("app_legacy", "Legacy app"), account_id: null },
+      "DELETE /v0/apps/app_legacy": { __status: 403, error: { code: "forbidden", message: "App account access is required." } }
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl, account_id: "acct_sandbox" }));
+
+    // The app belongs to acct_owner. Every way of selecting another account stops before the DELETE.
+    const mismatches: Array<{ label: string; args: string[]; options: Parameters<typeof runCli>[2] }> = [
+      { label: "--account with --yes", args: ["--yes", "--account", "acct_sandbox"], options: {} },
+      { label: "--account with --yes --json", args: ["--yes", "--json", "--account", "acct_sandbox"], options: {} },
+      { label: "USERLAND_ACCOUNT_ID with --yes", args: ["--yes"], options: { accountId: "acct_sandbox" } },
+      { label: "saved account with --yes", args: ["--yes"], options: { apiKey: null, credentialsFile } },
+      { label: "--account in a terminal", args: ["--account", "acct_sandbox"], options: { tty: true, stdin: "y\n" } }
+    ];
+    for (const { label, args, options } of mismatches) {
+      requests.length = 0;
+      const result = await runCli(["apps", "unpublish", "app_dummy", ...args], api.baseUrl, options);
+      expect(result.code, label).toBe(1);
+      expect(result.stdout, label).toBe("");
+      expect(result.stderr, label).toBe(
+        "app_dummy belongs to account acct_owner, not acct_sandbox. Nothing was unpublished.\n" +
+          "Check the app id with `userland apps list`. If you meant the other account, pass --account acct_owner.\n"
+      );
+      expect(calls(), label).toEqual(["GET /v0/apps/app_dummy"]);
+      expect(requests[0].accountId, label).toBe("acct_sandbox");
+    }
+
+    // --account wins over USERLAND_ACCOUNT_ID and the saved account, as in other commands.
+    requests.length = 0;
+    const matching = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--account", "acct_owner"], api.baseUrl, {
+      apiKey: null,
+      credentialsFile,
+      accountId: "acct_sandbox"
+    });
+    expect(matching.code).toBe(0);
+    expect(matching.stderr).toBe("");
+    expect(matching.stdout).toBe(
+      "Unpublished Dummy app (https://app_dummy.apps.userland.fun/)\napp_id=app_dummy\nstatus=unpublished\n" +
+        "deleted_at=2026-09-28T00:00:00.000Z\nThe app is offline and its slugs and custom domains are removed. Its release history is kept.\n"
+    );
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "DELETE /v0/apps/app_dummy"]);
+    expect(requests.map((request) => request.accountId)).toEqual(["acct_owner", "acct_owner"]);
+
+    requests.length = 0;
+    const matchingEnv = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--json"], api.baseUrl, { accountId: "acct_owner" });
+    expect(matchingEnv.code).toBe(0);
+    expect(JSON.parse(matchingEnv.stdout)).toEqual(unpublishResponse("app_dummy"));
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "DELETE /v0/apps/app_dummy"]);
+
+    // An app with no account is left to the API, which refuses to unpublish it.
+    requests.length = 0;
+    const legacy = await runCli(["apps", "unpublish", "app_legacy", "--yes", "--account", "acct_sandbox"], api.baseUrl);
+    expect(legacy.code).toBe(1);
+    expect(legacy.stderr).toContain("API 403: App account access is required.");
+    expect(calls()).toEqual(["GET /v0/apps/app_legacy", "DELETE /v0/apps/app_legacy"]);
   });
 
   test("refuses to unpublish without --yes when there is no terminal to confirm in", async () => {
@@ -217,7 +282,10 @@ describe("public CLI", () => {
       const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { stdin });
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
-      expect(result.stderr).toContain("Unpublishing an app needs confirmation. Without a terminal to confirm in, pass --yes: userland apps unpublish app_dummy --yes");
+      expect(result.stderr).toContain(
+        "Unpublishing takes the app offline and removes its slugs and custom domains.\n" +
+          "There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish app_dummy --yes\n"
+      );
       expect(result.stderr).toContain("Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
     }
 
@@ -250,9 +318,11 @@ describe("public CLI", () => {
     expect(byId.code).toBe(0);
     expect(byId.stderr).toBe(
       "You are about to unpublish this app:\n" +
-        "  Name:     Dummy app\n" +
-        "  Address:  https://app_dummy.apps.userland.fun/\n" +
-        "  App id:   app_dummy\n" +
+        "  Name:        Dummy app\n" +
+        "  Address:     https://app_dummy.apps.userland.fun/\n" +
+        "  App id:      app_dummy\n" +
+        "  Account:     acct_owner\n" +
+        "  Production:  no\n" +
         "Unpublishing takes the app offline and removes its slugs and custom domains. Its release history is kept.\n" +
         "Type the app id (app_dummy) or y to unpublish it: "
     );
@@ -278,11 +348,21 @@ describe("public CLI", () => {
 
     // With --json the prompt stays on stderr, so stdout is only the API response.
     requests.length = 0;
-    const json = await runCli(["apps", "unpublish", "app_dummy", "--json", "--account", "acct_team"], api.baseUrl, { tty: true, stdin: "y\n" });
+    const json = await runCli(["apps", "unpublish", "app_dummy", "--json", "--account", "acct_owner"], api.baseUrl, { tty: true, stdin: "y\n" });
     expect(json.code).toBe(0);
     expect(JSON.parse(json.stdout)).toEqual(unpublishResponse("app_dummy"));
     expect(json.stderr).toContain("Type the app id (app_dummy) or y to unpublish it: ");
-    expect(requests.map((request) => request.accountId)).toEqual(["acct_team", "acct_team"]);
+    expect(requests.map((request) => request.accountId)).toEqual(["acct_owner", "acct_owner"]);
+
+    // A production app says so in the prompt.
+    requests.length = 0;
+    const productionApi = await startMockApi(requests, {
+      "GET /v0/apps/app_live": { ...appResponse("app_live", "Live app"), production: true }
+    });
+    const production = await runCli(["apps", "unpublish", "app_live"], productionApi.baseUrl, { tty: true, stdin: "n\n" });
+    expect(production.code).toBe(1);
+    expect(production.stderr).toContain("  Account:     acct_owner\n  Production:  yes\n");
+    expect(calls()).toEqual(["GET /v0/apps/app_live"]);
   });
 
   test("asks before revoking an API key in a terminal and treats closed input as no", async () => {
@@ -311,8 +391,17 @@ describe("public CLI", () => {
     const result = await runCli(["apps", "unpublish", "app_dummy"], api.baseUrl, { tty: true, stdin: "n\n" });
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("  Name:     Dummy\\x1b[2J app\n");
+    expect(result.stderr).toContain("  Name:        Dummy\\x1b[2J app\n");
     expect(result.stderr).not.toContain("\u001b");
+
+    const oddAccountApi = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": { ...appResponse("app_dummy", "Dummy app"), account_id: "acct\u001b[2Jother" }
+    });
+    const mismatch = await runCli(["apps", "unpublish", "app_dummy", "--yes", "--account", "acct_sandbox"], oddAccountApi.baseUrl);
+    expect(mismatch.code).toBe(1);
+    expect(mismatch.stderr).toContain("app_dummy belongs to account acct\\x1b[2Jother, not acct_sandbox. Nothing was unpublished.");
+    expect(mismatch.stderr).not.toContain("\u001b");
+    expect(requests.map((request) => request.method)).not.toContain("DELETE");
   });
 
   test("reports not found, forbidden, and takedown errors when unpublishing", async () => {
