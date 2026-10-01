@@ -1463,7 +1463,7 @@ async function unpublishCommand(args: string[]): Promise<void> {
   if (!options.yes && !process.stdin.isTTY) {
     console.error("Unpublishing takes the app offline and removes its slugs and custom domains.");
     console.error(
-      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish ${terminalSafe(appId)} --yes`
+      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish ${terminalSafe(appId)} --yes${accountFlag(options.account)}`
     );
     console.error(UNPUBLISH_USAGE);
     process.exit(1);
@@ -1493,6 +1493,14 @@ async function unpublishCommand(args: string[]): Promise<void> {
   console.log(`status=${response.status}`);
   console.log(`deleted_at=${response.deleted_at}`);
   console.log("The app is offline and its slugs and custom domains are removed. Its release history is kept.");
+}
+
+/**
+ * The --account part of a command the CLI suggests running next, so copying the suggestion keeps the
+ * account the user chose (and with it the check that the app belongs to that account).
+ */
+function accountFlag(account: string | undefined): string {
+  return account === undefined ? "" : ` --account ${terminalSafe(account)}`;
 }
 
 /** Shows what will be unpublished on stderr (stdout stays clean for --json) and reads the answer. */
@@ -1624,7 +1632,7 @@ async function deleteSecretCommand(args: string[]): Promise<void> {
   if (!options.yes && !process.stdin.isTTY) {
     console.error("Deleting a secret removes its value from the app at once. It cannot be brought back, only set again.");
     console.error(
-      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps secrets delete ${terminalSafe(appId)} ${name} --yes`
+      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps secrets delete ${terminalSafe(appId)} ${name} --yes${accountFlag(options.account)}`
     );
     console.error(SECRETS_DELETE_USAGE);
     process.exit(1);
@@ -1658,7 +1666,7 @@ async function deleteSecretCommand(args: string[]): Promise<void> {
   console.log(`secret=${response.name}`);
   console.log(`present=${response.present}`);
   console.log(
-    `Server code that reads ${response.name} no longer gets it. If manifest.userland.json lists it under resources.secrets.required, remove it there too, or the next release you publish waits (pending_secrets) until it is set again.`
+    `Server code that reads ${response.name} no longer gets it. If manifest.userland.json lists it under resources.secrets.required, remove it there too, or the next release you publish does not go live (pending_secrets) until the secret is set and you publish again.`
   );
 }
 
@@ -1680,6 +1688,10 @@ async function confirmSecretDelete(appId: string, name: string, updatedAt: strin
  * POST /v0/apps/:app_id/admin-invites. Makes a sign-in invite for one person to use the app (an app
  * user, not a member of the Userland account) and prints only the invite link, which is all the
  * person needs. Works with the key saved by `userland login` as well as USERLAND_API_KEY.
+ *
+ * The API finds the app by id alone and ignores the selected account, so when an account is selected
+ * (--account, USERLAND_ACCOUNT_ID, or the saved account) the CLI reads the app first and creates no
+ * invite when the app belongs to a different account (see readAppInSelectedAccount).
  */
 async function createInviteCommand(args: string[]): Promise<void> {
   const appId = args[0];
@@ -1703,10 +1715,14 @@ async function createInviteCommand(args: string[]): Promise<void> {
   }
   const invitePath = `/v0/apps/${pathSegment(appId, "app id")}/admin-invites`;
 
+  const accountId = selectedAccountId(options.account, await readCredentials());
+  if (accountId) {
+    await readAppInSelectedAccount(appId, accountId, "No invite was created.");
+  }
   const response = await apiFetch<InviteResponse>(invitePath, {
     method: "POST",
     body: JSON.stringify(body)
-  }, { accountId: options.account, accountScoped: true, raw: options.json === true });
+  }, { accountId, accountScoped: true, raw: options.json === true });
 
   if (options.json) {
     console.log(JSON.stringify(response, null, 2));
@@ -3068,7 +3084,8 @@ Invites:
   has it can use it once to set a password. Pass --role once for each role, using roles the app's
   manifest declares; with no --role the person gets no special role. The link lasts 7 days, or 1 to
   30 days with --expires-in-days. It works with the key saved by userland login, so you do not need
-  to make another API key for it.
+  to make another API key for it. When an account is selected, no invite is made for an app in a
+  different account.
 
 Events:
   apps events lists the newest events first, up to 100 at a time (--limit). When there are more, the

@@ -295,6 +295,14 @@ describe("public CLI", () => {
       expect(result.stderr).toContain("Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
     }
 
+    // The suggested command keeps --account, so running it still checks the app's account.
+    const withAccount = await runCli(["apps", "unpublish", "app_dummy", "--account", "acct_owner"], api.baseUrl);
+    expect(withAccount.code).toBe(1);
+    expect(withAccount.stdout).toBe("");
+    expect(withAccount.stderr).toContain(
+      "There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish app_dummy --yes --account acct_owner\n"
+    );
+
     for (const args of [["apps", "unpublish"], ["apps", "unpublish", "--yes"], ["apps", "unpublish", "-y", "app_dummy"]]) {
       const result = await runCli(args, api.baseUrl);
       expect(result.code, args.join(" ")).toBe(1);
@@ -526,7 +534,7 @@ describe("public CLI", () => {
     expect(result.stdout).toBe(
       "Deleted secret OPENAI_API_KEY from app_dummy.\nsecret=OPENAI_API_KEY\npresent=false\n" +
         "Server code that reads OPENAI_API_KEY no longer gets it. If manifest.userland.json lists it under resources.secrets.required, " +
-        "remove it there too, or the next release you publish waits (pending_secrets) until it is set again.\n"
+        "remove it there too, or the next release you publish does not go live (pending_secrets) until the secret is set and you publish again.\n"
     );
     expect(result.stderr).toBe("");
     expect(calls()).toEqual(["GET /v0/apps/app_dummy/secrets", "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY"]);
@@ -564,6 +572,17 @@ describe("public CLI", () => {
           "Usage: userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]\n"
       );
     }
+
+    // The suggested command keeps --account, so running it still checks the app's account before the
+    // DELETE (with --yes and no account selected, the CLI does not read the app first).
+    const withAccount = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", "--account", "acct_owner"], api.baseUrl);
+    expect(withAccount.code).toBe(1);
+    expect(withAccount.stdout).toBe("");
+    expect(withAccount.stderr).toBe(
+      "Deleting a secret removes its value from the app at once. It cannot be brought back, only set again.\n" +
+        "There is no terminal to confirm in, so check with the app's owner first, then run: userland apps secrets delete app_dummy OPENAI_API_KEY --yes --account acct_owner\n" +
+        "Usage: userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]\n"
+    );
 
     for (const args of [
       ["apps", "secrets", "delete"],
@@ -714,8 +733,10 @@ describe("public CLI", () => {
   test("creates an app sign-in invite and prints only the link", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
+      "GET /v0/apps/app_portal": appResponse("app_portal", "Staff portal"),
       "POST /v0/apps/app_portal/admin-invites": [inviteResponse(["staff", "owner"]), inviteResponse([]), inviteResponse(["staff"]), inviteResponse(["staff"])]
     });
+    const posts = () => requests.filter((request) => request.method === "POST");
 
     // --role repeats; each role is sent once, in order. --expires-in-days becomes expires_in_seconds.
     const result = await runCli(
@@ -725,7 +746,9 @@ describe("public CLI", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toBe("https://app_portal.apps.userland.fun/_userland/auth/invite/inv_1?token=inv_abc\n");
     expect(result.stderr).toBe("");
-    expect(requests[0]).toMatchObject({
+    // With an account selected, the CLI first checks the app belongs to it.
+    expect(requests[0]).toMatchObject({ method: "GET", url: "/v0/apps/app_portal", accountId: "acct_owner" });
+    expect(requests[1]).toMatchObject({
       method: "POST",
       url: "/v0/apps/app_portal/admin-invites",
       authorization: "Bearer test_api_key",
@@ -741,18 +764,53 @@ describe("public CLI", () => {
     const saved = await runCli(["apps", "invites", "create", "app_portal", "--email", " jo@example.com "], api.baseUrl, { apiKey: null, credentialsFile });
     expect(saved.code).toBe(0);
     expect(saved.stdout).toBe("https://app_portal.apps.userland.fun/_userland/auth/invite/inv_1?token=inv_abc\n");
-    expect(requests[1]).toMatchObject({ authorization: "Bearer saved_key", accountId: "acct_owner", body: { email: "jo@example.com", roles: [] } });
+    expect(requests[2]).toMatchObject({ method: "GET", url: "/v0/apps/app_portal", authorization: "Bearer saved_key", accountId: "acct_owner" });
+    expect(requests[3]).toMatchObject({ method: "POST", authorization: "Bearer saved_key", accountId: "acct_owner", body: { email: "jo@example.com", roles: [] } });
 
+    // With no account selected there is nothing to check, so only the POST is sent.
     const oneDay = await runCli(["apps", "invites", "create", "app_portal", "--role", "staff", "--email", "jo@example.com", "--expires-in-days", "1"], api.baseUrl);
     expect(oneDay.code).toBe(0);
-    expect(requests[2].body).toEqual({ email: "jo@example.com", roles: ["staff"], expires_in_seconds: 86400 });
+    expect(requests).toHaveLength(5);
+    expect(requests[4]).toMatchObject({ method: "POST", accountId: undefined, body: { email: "jo@example.com", roles: ["staff"], expires_in_seconds: 86400 } });
 
     // --json prints the API response unchanged.
     const json = await runCli(["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role", "staff", "--json"], api.baseUrl);
     expect(json.code).toBe(0);
     expect(JSON.parse(json.stdout)).toEqual(inviteResponse(["staff"]));
     expect(json.stderr).toBe("");
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(6);
+    expect(posts()).toHaveLength(4);
+  });
+
+  test("with an account selected, creates an invite only for an app in that account", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_portal": appResponse("app_portal", "Staff portal"),
+      "POST /v0/apps/app_portal/admin-invites": inviteResponse([])
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl, account_id: "acct_sandbox" }));
+
+    // The app belongs to acct_owner. Every way of selecting another account stops before the POST.
+    const mismatches: Array<{ label: string; args: string[]; options: Parameters<typeof runCli>[2] }> = [
+      { label: "--account", args: ["--account", "acct_sandbox"], options: {} },
+      { label: "--account with --json", args: ["--account", "acct_sandbox", "--json"], options: {} },
+      { label: "USERLAND_ACCOUNT_ID", args: [], options: { accountId: "acct_sandbox" } },
+      { label: "saved account", args: [], options: { apiKey: null, credentialsFile } }
+    ];
+    for (const { label, args, options } of mismatches) {
+      requests.length = 0;
+      const result = await runCli(["apps", "invites", "create", "app_portal", "--email", "jo@example.com", ...args], api.baseUrl, options);
+      expect(result.code, label).toBe(1);
+      expect(result.stdout, label).toBe("");
+      expect(result.stderr, label).toBe(
+        "app_portal belongs to account acct_owner, not acct_sandbox. No invite was created.\n" +
+          "Check the app id with `userland apps list`. If you meant the other account, pass --account acct_owner.\n"
+      );
+      expect(calls(), label).toEqual(["GET /v0/apps/app_portal"]);
+    }
   });
 
   test("checks invite options before sending anything", async () => {
