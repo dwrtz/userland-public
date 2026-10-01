@@ -30,6 +30,7 @@ Use this skill when publishing, updating, inspecting, rolling back, or unpublish
 4. Inspect releases and events after publishing.
 5. Roll back if activation or runtime behavior is wrong.
 6. Unpublish test or demo apps the user no longer needs, only when the user asks.
+7. When the user asks, invite people to sign in to an app that has sign-in, or delete a secret the app no longer uses.
 
 ## Commands
 
@@ -37,13 +38,21 @@ Use this skill when publishing, updating, inspecting, rolling back, or unpublish
 userland auth status
 userland apps publish examples/<example-slug>
 userland apps publish examples/<example-slug> --app <app-id>
+userland apps secrets list <app-id>
 printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
+userland apps secrets delete <app-id> <NAME> --yes [--account <account-id>]
 userland apps releases <app-id>
-userland apps events <app-id>
+userland apps events <app-id> --severity error --limit 25
+userland apps events <app-id> --severity error --limit 25 --cursor <cursor>
 userland apps rollback <app-id> <release-id>
 userland apps list [--account <account-id>]
 userland apps unpublish <app-id> --yes [--account <account-id>]
+userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>]
 ```
+
+If `secrets list`, `secrets delete`, `invites create`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`.
+
+`apps events` prints the newest events first. When there are more, the last line is `cursor=<cursor>`; run the same command again with `--cursor <cursor>` to read the next, older page.
 
 ## Validation checklist
 
@@ -55,11 +64,13 @@ userland apps unpublish <app-id> --yes [--account <account-id>]
 
 ## Safety rules
 
-- Do not print API keys or secret values.
+- Do not print API keys or secret values. To check which secrets are set, use `userland apps secrets list <app-id>`, which shows only names and dates.
 - Pass secret values and API keys on stdin (as in the commands above), not with `--value` or `--api-key`, so they stay out of shell history, process lists, and transcripts.
 - Do not commit `.env` files. Publishing a folder leaves out dotfiles such as `.env`, `.npmrc`, and `.git/`, refuses private keys, and never follows symlinks; if the CLI reports `dotfiles_skipped`, `symlink`, or `private_key`, publish a build folder rather than working around it.
 - Always pass a non-empty `--app <app-id>` when updating an app; without `--app` the CLI creates a new app.
 - Unpublish only apps the user named or confirmed. Unpublishing takes the app offline and removes its slugs and custom domains, so check each app id and name with `userland apps list` and show the user the list before running `userland apps unpublish <app-id> --yes`. Without a terminal the command needs `--yes`; piping `y` does not confirm. If the user has more than one account, pass the same `--account <account-id>` to `apps list` and `apps unpublish`, so an app that belongs to another account is not removed.
+- Delete a secret only when the user asks. First check that the app's code no longer reads it and remove it from `resources.secrets.required`, or the next release you publish does not go live (`pending_secrets`) until the secret is set and you publish again. Without a terminal, `userland apps secrets delete` needs `--yes`. If the user has more than one account, pass `--account <account-id>`, so a secret of an app in another account is not deleted.
+- Invite people with `userland apps invites create`, not a new API key: it works with the key saved by `userland login`. Pass `--role` once for each role the manifest declares, and no `--role` for no special role. If the user has more than one account, pass `--account <account-id>`, so no invite is made for an app in another account. The link lets whoever has it set the person's password once, so give it only to the user who asked, and do not log it or commit it.
 - Do not commit `~/.userland` credential files.
 - Do not publish app aliases.
 - Use app origins for validation.

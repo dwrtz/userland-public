@@ -48,8 +48,12 @@ userland apps releases <app-id>
 userland versions <app-id>
 userland apps rollback <app-id> <release-id>
 userland apps unpublish <app-id>
+userland apps secrets list <app-id>
 printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
+userland apps secrets delete <app-id> <NAME>
+userland apps invites create <app-id> --email <email> --role <role>
 userland apps events <app-id>
+userland apps events <app-id> --cursor <cursor>
 userland apps analytics <app-id>
 userland apps analytics <app-id> --range 7d --json
 userland analytics <app-id>
@@ -91,8 +95,12 @@ npm run userland -- apps releases <app-id>
 npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
 npm run userland -- apps unpublish <app-id>
+npm run userland -- apps secrets list <app-id>
 printf '%s' "$VALUE" | npm run userland -- apps secrets set <app-id> <NAME>
+npm run userland -- apps secrets delete <app-id> <NAME>
+npm run userland -- apps invites create <app-id> --email <email> --role <role>
 npm run userland -- apps events <app-id>
+npm run userland -- apps events <app-id> --cursor <cursor>
 npm run userland -- apps analytics <app-id> --range 30d
 npm run userland -- apps routes list <app-id>
 npm run userland -- apps slugs add <app-id> <slug>
@@ -427,7 +435,7 @@ userland apps unpublish <app-id> --yes --json
 
 Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Its release history is kept, and `userland apps releases <app-id>` still lists it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
 
-In a terminal, the command first shows the app's name, address, id, account, and whether it is a production app, and asks you to type the app id or `y`. Any other answer, or closing the input, cancels: it prints `Cancelled. <app-id> was not unpublished.` and exits `1`. Without a terminal (scripts, CI, and coding agents), check with the app's owner first, then pass `--yes`. Without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming.
+In a terminal, the command first shows the app's name, address, id, account, and whether it is a production app, and asks you to type the app id or `y`. Any other answer, or closing the input, cancels: it prints `Cancelled. <app-id> was not unpublished.` and exits `1`. Without a terminal (scripts, CI, and coding agents), check with the app's owner first, then pass `--yes`. Without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming. The command it suggests running keeps the `--account` you passed.
 
 When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the account saved by `userland accounts use`), the command reads the app first, even with `--yes`, and only unpublishes it if it belongs to that account. An app in a different account is left alone: the command prints `<app-id> belongs to account <other-account-id>, not <account-id>. Nothing was unpublished.` and exits `1`. With no account selected, the command unpublishes the app in whichever of your accounts it belongs to, as long as your role there is owner or admin.
 
@@ -442,6 +450,86 @@ The app is offline and its slugs and custom domains are removed. Its release his
 ```
 
 With `--yes` there is no prompt. When the command has not read the app first (`--yes` with no account selected), the first line is `Unpublished <app_id>`. `--json` prints the API response unchanged (`app_id`, `status`, and `deleted_at`); a prompt, when there is one, goes to stderr so stdout stays JSON. Errors print like other app commands and exit `1`: `API 404` for an app id that does not exist or is already unpublished, `API 403` when your account role cannot remove apps (only owners and admins can) or the app or account is suspended, and `API 451` for an app that is unavailable for legal reasons.
+
+## Secrets
+
+```sh
+userland apps secrets list <app-id>
+userland apps secrets list <app-id> --json
+printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
+userland apps secrets delete <app-id> <NAME>
+userland apps secrets delete <app-id> <NAME> --yes --account <account-id>
+```
+
+`apps secrets list` prints one tab-separated line for each secret that is set: its name, when it was first set (`created_at`), and when it was last set (`updated_at`). It never shows values. The API does not return them, and the CLI prints only the name and the two dates, also with `--json`, which prints `{ "app_id", "secrets": [{ "name", "created_at", "updated_at" }] }`. When no secrets are set, stdout is empty and stderr says `No secrets are set for <app-id>.`
+
+```text
+MODEL_API_KEY	2026-09-01T00:00:00.000Z	2026-09-20T00:00:00.000Z
+STRIPE_SECRET_KEY	2026-09-01T00:00:00.000Z	2026-09-20T00:00:00.000Z
+```
+
+`apps secrets delete` removes a secret from the app. Server code that reads it stops getting it at once (`ctx.secrets.require` throws `missing_secret`), and the value cannot be shown or brought back; you can only set a new one. Before deleting, check that the app's code no longer reads the secret, and remove it from `resources.secrets.required` in `manifest.userland.json`: otherwise the next release you publish does not go live (its activation status is `pending_secrets`). Setting the secret again does not make that release live; you have to set it and then publish again.
+
+The command first checks that the name is set, and stops with `No secret named <NAME> is set for <app-id>, so nothing was deleted.` and exit code `1` when it is not, so a typo never looks like a success. In a terminal, it then shows the secret, when it was last set, and the app's name, address, id, and account, and asks you to type the secret's name or `y`; any other answer, or closing the input, prints `Cancelled. <NAME> was not deleted.` and exits `1`. Without a terminal (scripts, CI, and coding agents), check with the app's owner first, then pass `--yes`; without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming. When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the account saved by `userland accounts use`), the command reads the app first, even with `--yes`, and deletes nothing in an app that belongs to a different account, as `apps unpublish` does. When the command stops for want of `--yes`, the command it suggests keeps the `--account` you passed, so running it still checks the account.
+
+Output:
+
+```text
+Deleted secret OPENAI_API_KEY from <app_id>.
+secret=OPENAI_API_KEY
+present=false
+Server code that reads OPENAI_API_KEY no longer gets it. If manifest.userland.json lists it under resources.secrets.required, remove it there too, or the next release you publish does not go live (pending_secrets) until the secret is set and you publish again.
+```
+
+`apps secrets set` and `apps secrets delete` check the name before sending anything, with the API's rules: capital letters, numbers, and underscores, starting with a letter, at most 64 characters, and not starting with `USERLAND_`, `CF_`, or `CLOUDFLARE_`, which are kept for Userland. Setting and deleting secrets needs the owner or admin role in the app's account; anyone in the account can list them.
+
+## Invite people to sign in to an app
+
+For an app with sign-in (`resources.auth.mode` is `app_users`), `apps invites create` makes an invite for one person and prints only the invite link:
+
+```sh
+userland apps invites create <app-id> --email <email>
+userland apps invites create <app-id> --email <email> --role staff
+userland apps invites create <app-id> --email <email> --role staff --role owner --expires-in-days 30
+userland apps invites create <app-id> --email <email> --role owner --account <account-id> --json
+```
+
+```text
+https://<app_id>.apps.userland.fun/_userland/auth/invite/<invite_id>?token=inv_...
+```
+
+The person opens the link, sets a password, and can then sign in to the app with the roles you gave them. They become a user of that app only: the invite does not add them to your Userland account or let them use the CLI or API. Give the link only to that person, because whoever has it can use it once to set the password.
+
+- `--email` (required) is the person's email address.
+- `--role` gives the person one of the roles the app's manifest declares in `resources.auth.roles`. Pass it once for each role (`--role staff --role owner`, not `--role staff,owner`). Without `--role`, the person gets no special role.
+- `--expires-in-days` sets how long the link works, from `1` to `30` days. Without it the link works for 7 days.
+- `--json` prints the API response unchanged: `invite_id`, `email`, `roles`, `expires_at`, and `invite_url`.
+
+The command works with the key saved by `userland login` as well as with `USERLAND_API_KEY`, so you do not need to make another API key to invite someone. It needs the owner or admin role in the app's account. When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the account saved by `userland accounts use`), the command reads the app first and creates no invite for an app that belongs to a different account: it prints `<app-id> belongs to account <other-account-id>, not <account-id>. No invite was created.` and exits `1`, as `apps unpublish` does. Errors print like other app commands and exit `1`, with no link: `API 409` with `error=auth_disabled` when the app does not have sign-in, `API 400` with `error=invalid_role` for a role the app does not declare, and `API 402` with `error=quota_exceeded` and `metric=app_users.active.max` when the app has as many people as its plan allows:
+
+```text
+API 402: app_users.active.max quota exceeded for the current plan.
+error=quota_exceeded
+metric=app_users.active.max
+plan_key=free
+required_plan_key=starter
+limit=10
+current=10
+increment=1
+upgrade_required=true
+```
+
+## Read events
+
+```sh
+userland apps events <app-id>
+userland apps events <app-id> --severity error --limit 25
+userland apps events <app-id> --type job.failed
+userland apps events <app-id> --release <release-id>
+userland apps events <app-id> --severity error --limit 25 --cursor <cursor>
+```
+
+`apps events` prints one tab-separated line for each event, newest first: when it happened, its severity, its type, the release id, and the message. `--limit` takes `1` to `100` (the default is `100`). When there are more events than fit, the last line is `cursor=<cursor>`. To read the next, older page, run the same command again with `--cursor <cursor>` added, keeping the other options the same; the last page has no `cursor=` line.
 
 ## Validation
 
