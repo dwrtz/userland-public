@@ -79,12 +79,31 @@ interface SecretSetOptions {
   value?: string;
 }
 
+interface SecretsListOptions {
+  account?: string;
+  json?: boolean;
+}
+
+interface SecretDeleteOptions {
+  account?: string;
+  yes?: boolean;
+}
+
+interface InviteCreateOptions {
+  account?: string;
+  email?: string;
+  expiresInDays?: string;
+  json?: boolean;
+  roles: string[];
+}
+
 interface EventsOptions {
   account?: string;
   type?: string;
   severity?: string;
   releaseId?: string;
   limit?: string;
+  cursor?: string;
 }
 
 interface UnpublishOptions {
@@ -254,6 +273,28 @@ interface RollbackResponse {
   status: string;
 }
 
+interface SecretsListResponse {
+  app_id: string;
+  secrets: Array<{
+    name: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+}
+
+interface SecretDeleteResponse {
+  name: string;
+  present: boolean;
+}
+
+interface InviteResponse {
+  invite_id: string;
+  email: string;
+  roles: string[];
+  expires_at: string;
+  invite_url: string;
+}
+
 interface EventsResponse {
   events: Array<{
     app_event_id: string;
@@ -408,11 +449,19 @@ class ApiError extends Error {
 
 const ANALYTICS_RANGES = ["7d", "30d", "90d"];
 const FILE_SAFETY_ERROR_CODES = new Set(["unsafe_path", "symlink", "missing_file", "private_key"]);
-// The API's rule for app secret names (packages/shared SECRET_NAME_PATTERN).
+// The API's rules for app secret names (packages/shared SECRET_NAME_PATTERN and its reserved prefixes).
 const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/u;
+const RESERVED_SECRET_PREFIXES = ["USERLAND_", "CF_", "CLOUDFLARE_"];
 const ANALYTICS_USAGE = "Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]";
 const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics";
 const UNPUBLISH_USAGE = "Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]";
+const SECRETS_LIST_USAGE = "Usage: userland apps secrets list <app-id> [--account <account-id>] [--json]";
+const SECRETS_DELETE_USAGE = "Usage: userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]";
+const INVITES_CREATE_USAGE =
+  "Usage: userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>] [--json]";
+// The API's invite lifetime: 7 days unless expires_in_seconds asks for 1 second to 30 days.
+const INVITE_MAX_DAYS = 30;
+const SECONDS_PER_DAY = 60 * 60 * 24;
 
 interface SupportRequestResponse {
   status: "sent";
@@ -514,6 +563,18 @@ async function appsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "secrets" && rest[0] === "set") {
     await setSecretCommand(rest.slice(1));
+    return;
+  }
+  if (subcommand === "secrets" && rest[0] === "list") {
+    await listSecretsCommand(rest.slice(1));
+    return;
+  }
+  if (subcommand === "secrets" && rest[0] === "delete") {
+    await deleteSecretCommand(rest.slice(1));
+    return;
+  }
+  if (subcommand === "invites" && rest[0] === "create") {
+    await createInviteCommand(rest.slice(1));
     return;
   }
   if (subcommand === "events") {
@@ -1411,16 +1472,7 @@ async function unpublishCommand(args: string[]): Promise<void> {
   const accountId = selectedAccountId(options.account, await readCredentials());
   let app: AppResponse | undefined;
   if (!options.yes || accountId) {
-    // Read as sent so the account check compares the real ids; `app` is the copy safe to print.
-    const rawApp = await apiFetch<AppResponse>(appPath, {
-      method: "GET"
-    }, { accountId, accountScoped: true, raw: true });
-    app = terminalSafeValue(rawApp);
-    if (accountId && rawApp.account_id && rawApp.account_id !== accountId) {
-      console.error(`${terminalSafe(appId)} belongs to account ${app.account_id}, not ${terminalSafe(accountId)}. Nothing was unpublished.`);
-      console.error(`Check the app id with \`userland apps list\`. If you meant the other account, pass --account ${app.account_id}.`);
-      process.exit(1);
-    }
+    app = await readAppInSelectedAccount(appId, accountId, "Nothing was unpublished.");
     if (!options.yes && !(await confirmUnpublish(appId, app))) {
       console.error(`Cancelled. ${terminalSafe(appId)} was not unpublished.`);
       process.exitCode = 1;
@@ -1456,15 +1508,47 @@ async function confirmUnpublish(appId: string, app: AppResponse): Promise<boolea
   return answer === appId || answer === app.app_id || ["y", "yes"].includes(answer.toLowerCase());
 }
 
+/**
+ * Reads the app (GET /v0/apps/:app_id) before a change. The API finds an app by its id alone and
+ * ignores the selected account, so when an account is selected (--account, USERLAND_ACCOUNT_ID, or the
+ * saved account) and the app belongs to a different one, this stops with exit code 1 before anything
+ * changes; `nothingDone` says what did not happen. Returns the app with API text safe to print.
+ */
+async function readAppInSelectedAccount(appId: string, accountId: string | undefined, nothingDone: string): Promise<AppResponse> {
+  // Read as sent so the account check compares the real ids; `app` is the copy safe to print.
+  const rawApp = await apiFetch<AppResponse>(`/v0/apps/${pathSegment(appId, "app id")}`, {
+    method: "GET"
+  }, { accountId, accountScoped: true, raw: true });
+  const app = terminalSafeValue(rawApp);
+  if (accountId && rawApp.account_id && rawApp.account_id !== accountId) {
+    console.error(`${terminalSafe(appId)} belongs to account ${app.account_id}, not ${terminalSafe(accountId)}. ${nothingDone}`);
+    console.error(`Check the app id with \`userland apps list\`. If you meant the other account, pass --account ${app.account_id}.`);
+    process.exit(1);
+  }
+  return app;
+}
+
+/**
+ * Checks a secret name against the API's rules before it goes into a request path: capital letters,
+ * numbers, and underscores, starting with a letter, at most 64 characters, and not starting with a
+ * prefix Userland keeps for itself.
+ */
+function assertSecretName(name: string): void {
+  if (!SECRET_NAME_PATTERN.test(name)) {
+    throw new Error(`Invalid secret name: ${name}. Secret names use capital letters, numbers, and underscores, start with a letter, and are at most 64 characters (for example MODEL_API_KEY).`);
+  }
+  if (RESERVED_SECRET_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    throw new Error(`Invalid secret name: ${name}. Secret names cannot start with USERLAND_, CF_, or CLOUDFLARE_, which are kept for Userland.`);
+  }
+}
+
 async function setSecretCommand(args: string[]): Promise<void> {
   const [appId, name, ...optionArgs] = args;
   if (!appId || !name) {
     usage(1);
   }
   const options = parseSecretSetOptions(optionArgs);
-  if (!SECRET_NAME_PATTERN.test(name)) {
-    throw new Error(`Invalid secret name: ${name}. Secret names use capital letters, numbers, and underscores, start with a letter, and are at most 64 characters (for example MODEL_API_KEY).`);
-  }
+  assertSecretName(name);
   const secretPath = `/v0/apps/${pathSegment(appId, "app id")}/secrets/${pathSegment(name, "secret name")}`;
   if (options.value !== undefined) {
     console.error(`warning=secret_on_command_line A value passed with --value can be kept in shell history and seen by other programs on this computer. Pipe it on stdin instead: printf '%s' "$VALUE" | userland apps secrets set ${appId} ${name}`);
@@ -1484,6 +1568,163 @@ async function setSecretCommand(args: string[]): Promise<void> {
   console.log(`updated_at=${response.updated_at}`);
 }
 
+/**
+ * GET /v0/apps/:app_id/secrets. Prints the names of the secrets that are set and when each was first
+ * and last set. The API never returns values, and the CLI prints only the name and the two dates, in
+ * human output and in --json, so a value could not show up here even if a response carried one.
+ */
+async function listSecretsCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (appId === undefined || appId.startsWith("-")) {
+    console.error(SECRETS_LIST_USAGE);
+    process.exit(1);
+  }
+  const options = parseSecretsListOptions(args.slice(1));
+  const response = await apiFetch<SecretsListResponse>(`/v0/apps/${pathSegment(appId, "app id")}/secrets`, {
+    method: "GET"
+  }, { accountId: options.account, accountScoped: true, raw: options.json === true });
+  const secrets = (Array.isArray(response.secrets) ? response.secrets : []).map((secret) => ({
+    name: secret.name,
+    created_at: secret.created_at,
+    updated_at: secret.updated_at
+  }));
+
+  if (options.json) {
+    console.log(JSON.stringify({ app_id: response.app_id, secrets }, null, 2));
+    return;
+  }
+  for (const secret of secrets) {
+    console.log(`${secret.name}\t${secret.created_at}\t${secret.updated_at}`);
+  }
+  if (secrets.length === 0) {
+    // On stderr, so a script reading stdout sees an empty list.
+    console.error(`No secrets are set for ${terminalSafe(appId)}.`);
+  }
+}
+
+/**
+ * DELETE /v0/apps/:app_id/secrets/:NAME. The API removes the value at once, and answers the same
+ * whether or not the secret was set, so the CLI first checks the name is set (a typo then deletes
+ * nothing and says so, instead of reporting success). In a terminal it shows the secret and the app
+ * and asks for the name or y; without a terminal it needs --yes and sends nothing otherwise. When an
+ * account is selected, a secret in an app of a different account is not deleted (see
+ * readAppInSelectedAccount).
+ */
+async function deleteSecretCommand(args: string[]): Promise<void> {
+  const [appId, name] = args;
+  if (appId === undefined || appId.startsWith("-") || name === undefined || name.startsWith("-")) {
+    console.error(SECRETS_DELETE_USAGE);
+    process.exit(1);
+  }
+  const options = parseSecretDeleteOptions(args.slice(2));
+  // Checked before anything is sent, like every other app command.
+  assertSecretName(name);
+  const appSegment = pathSegment(appId, "app id");
+  const secretPath = `/v0/apps/${appSegment}/secrets/${pathSegment(name, "secret name")}`;
+  if (!options.yes && !process.stdin.isTTY) {
+    console.error("Deleting a secret removes its value from the app at once. It cannot be brought back, only set again.");
+    console.error(
+      `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps secrets delete ${terminalSafe(appId)} ${name} --yes`
+    );
+    console.error(SECRETS_DELETE_USAGE);
+    process.exit(1);
+  }
+
+  const accountId = selectedAccountId(options.account, await readCredentials());
+  let app: AppResponse | undefined;
+  if (!options.yes || accountId) {
+    app = await readAppInSelectedAccount(appId, accountId, "Nothing was deleted.");
+  }
+  const list = await apiFetch<SecretsListResponse>(`/v0/apps/${appSegment}/secrets`, {
+    method: "GET"
+  }, { accountId, accountScoped: true });
+  const secret = (Array.isArray(list.secrets) ? list.secrets : []).find((entry) => entry.name === name);
+  if (!secret) {
+    throw new Error(
+      `No secret named ${name} is set for ${appId}, so nothing was deleted. See the names that are set with: userland apps secrets list ${appId}`
+    );
+  }
+  if (app && !options.yes && !(await confirmSecretDelete(appId, name, secret.updated_at, app))) {
+    console.error(`Cancelled. ${name} was not deleted.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const response = await apiFetch<SecretDeleteResponse>(secretPath, {
+    method: "DELETE"
+  }, { accountId, accountScoped: true });
+
+  console.log(`Deleted secret ${response.name} from ${terminalSafe(appId)}.`);
+  console.log(`secret=${response.name}`);
+  console.log(`present=${response.present}`);
+  console.log(
+    `Server code that reads ${response.name} no longer gets it. If manifest.userland.json lists it under resources.secrets.required, remove it there too, or the next release you publish waits (pending_secrets) until it is set again.`
+  );
+}
+
+/** Shows what will be deleted on stderr and reads the answer: the secret's name or y. */
+async function confirmSecretDelete(appId: string, name: string, updatedAt: string, app: AppResponse): Promise<boolean> {
+  console.error("You are about to delete this secret:");
+  console.error(`  Secret:      ${name}`);
+  console.error(`  Last set:    ${updatedAt}`);
+  console.error(`  App:         ${app.name || "(no name)"}`);
+  console.error(`  Address:     ${app.origin ?? ""}`);
+  console.error(`  App id:      ${app.app_id ?? terminalSafe(appId)}`);
+  console.error(`  Account:     ${app.account_id || "(none)"}`);
+  console.error(`Server code that reads ${name} stops getting it at once. The value cannot be shown or brought back; you can only set a new one.`);
+  const answer = await promptLine(`Type the secret name (${name}) or y to delete it: `, process.stderr);
+  return answer === name || ["y", "yes"].includes(answer.toLowerCase());
+}
+
+/**
+ * POST /v0/apps/:app_id/admin-invites. Makes a sign-in invite for one person to use the app (an app
+ * user, not a member of the Userland account) and prints only the invite link, which is all the
+ * person needs. Works with the key saved by `userland login` as well as USERLAND_API_KEY.
+ */
+async function createInviteCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (appId === undefined || appId.startsWith("-")) {
+    console.error(INVITES_CREATE_USAGE);
+    process.exit(1);
+  }
+  const options = parseInviteCreateOptions(args.slice(1));
+  if (options.email === undefined) {
+    console.error("--email is required: the email address of the person to invite.");
+    console.error(INVITES_CREATE_USAGE);
+    process.exit(1);
+  }
+  const body: { email: string; roles: string[]; expires_in_seconds?: number } = {
+    email: options.email.trim(),
+    // Each role once, in the order given. No --role means no special role.
+    roles: [...new Set(options.roles)]
+  };
+  if (options.expiresInDays !== undefined) {
+    body.expires_in_seconds = inviteDays(options.expiresInDays) * SECONDS_PER_DAY;
+  }
+  const invitePath = `/v0/apps/${pathSegment(appId, "app id")}/admin-invites`;
+
+  const response = await apiFetch<InviteResponse>(invitePath, {
+    method: "POST",
+    body: JSON.stringify(body)
+  }, { accountId: options.account, accountScoped: true, raw: options.json === true });
+
+  if (options.json) {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+  console.log(response.invite_url);
+}
+
+/** --expires-in-days: a whole number of days from 1 to 30, the most the API allows. */
+function inviteDays(value: string): number {
+  if (!/^\d+$/u.test(value) || Number(value) < 1 || Number(value) > INVITE_MAX_DAYS) {
+    console.error(`--expires-in-days must be a whole number of days from 1 to ${INVITE_MAX_DAYS}, not ${terminalSafe(value)}. Without it the link lasts 7 days.`);
+    console.error(INVITES_CREATE_USAGE);
+    process.exit(1);
+  }
+  return Number(value);
+}
+
 async function eventsCommand(args: string[]): Promise<void> {
   const appId = args[0];
   if (!appId) {
@@ -1495,6 +1736,7 @@ async function eventsCommand(args: string[]): Promise<void> {
   if (options.severity) params.set("severity", options.severity);
   if (options.releaseId) params.set("release_id", options.releaseId);
   if (options.limit) params.set("limit", options.limit);
+  if (options.cursor) params.set("cursor", options.cursor);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await apiFetch<EventsResponse>(`/v0/apps/${pathSegment(appId, "app id")}/events${suffix}`, {
     method: "GET"
@@ -2165,7 +2407,9 @@ const CLI_OPTION_NAMES = new Set([
   "--api-key",
   "--app",
   "--console-url",
+  "--cursor",
   "--email",
+  "--expires-in-days",
   "--help",
   "--json",
   "--limit",
@@ -2178,6 +2422,7 @@ const CLI_OPTION_NAMES = new Set([
   "--range",
   "--release",
   "--revoke",
+  "--role",
   "--save=false",
   "--severity",
   "--skip-local-validation",
@@ -2307,8 +2552,65 @@ function parseEventsOptions(args: string[]): EventsOptions {
       options.releaseId = requireOptionValue(arg, args[++index]);
     } else if (arg === "--limit") {
       options.limit = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--cursor") {
+      options.cursor = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
       options.account = requireOptionValue(arg, args[++index]);
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseSecretsListOptions(args: string[]): SecretsListOptions {
+  const options: SecretsListOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseSecretDeleteOptions(args: string[]): SecretDeleteOptions {
+  const options: SecretDeleteOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--yes" || arg === "-y") {
+      options.yes = true;
+    } else if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseInviteCreateOptions(args: string[]): InviteCreateOptions {
+  const options: InviteCreateOptions = { roles: [] };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--email") {
+      options.email = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--role") {
+      const role = requireOptionValue(arg, args[++index]);
+      if (role.includes(",")) {
+        throw new Error(`Pass one role for each --role, for example --role staff --role owner, not --role ${role}.`);
+      }
+      options.roles.push(role);
+    } else if (arg === "--expires-in-days") {
+      options.expiresInDays = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--json") {
+      options.json = true;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -2655,6 +2957,9 @@ function docsUrlForError(message: string): string {
   if (message.includes("secrets") || message.includes("pending_secrets")) {
     return "https://docs.userland.fun/guides/secrets";
   }
+  if (message.includes("error=auth_disabled") || message.includes("error=invalid_role")) {
+    return "https://docs.userland.fun/guides/auth";
+  }
   if (message.includes("rollback")) {
     return "https://docs.userland.fun/guides/rollback";
   }
@@ -2695,8 +3000,11 @@ function usage(exitCode: number): never {
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
   userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]
+  userland apps secrets list <app-id> [--account <account-id>] [--json]
   userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
-  userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--account <account-id>]
+  userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]
+  userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>] [--json]
+  userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--cursor <cursor>] [--account <account-id>]
   userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
   userland apps routes list <app-id> [--account <account-id>]
   userland apps slugs list <app-id> [--account <account-id>]
@@ -2745,6 +3053,27 @@ Unpublishing:
   and asks you to type the app id or y. Without a terminal (scripts, CI, agents) check with the app's
   owner, then pass --yes. When an account is selected (--account, USERLAND_ACCOUNT_ID, or the saved
   account), an app that belongs to a different account is not unpublished.
+
+Secrets:
+  secrets list shows the name of each secret that is set, when it was first set, and when it was last
+  set. It never shows values. secrets delete removes a secret's value at once: server code that reads
+  it stops getting it, and the value cannot be brought back, only set again. It deletes only a name
+  that is set. In a terminal it asks you to type the name or y. Without a terminal (scripts, CI,
+  agents) check with the app's owner, then pass --yes. When an account is selected, a secret of an app
+  in a different account is not deleted.
+
+Invites:
+  invites create makes an invite for one person to sign in to the app (as a user of the app, not of
+  your Userland account) and prints only the invite link. Give the link to that person only: whoever
+  has it can use it once to set a password. Pass --role once for each role, using roles the app's
+  manifest declares; with no --role the person gets no special role. The link lasts 7 days, or 1 to
+  30 days with --expires-in-days. It works with the key saved by userland login, so you do not need
+  to make another API key for it.
+
+Events:
+  apps events lists the newest events first, up to 100 at a time (--limit). When there are more, the
+  last line is cursor=<cursor>. To read the next, older page, run the same command again with
+  --cursor <cursor> added.
 
 Docs:
   https://docs.userland.fun/reference/cli

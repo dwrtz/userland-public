@@ -42,6 +42,12 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]");
     expect(result.stdout).toContain("userland analytics <app-id>");
     expect(result.stdout).toContain("userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
+    expect(result.stdout).toContain("userland apps secrets list <app-id> [--account <account-id>] [--json]");
+    expect(result.stdout).toContain("userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]");
+    expect(result.stdout).toContain(
+      "userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>] [--json]"
+    );
+    expect(result.stdout).toContain("[--limit <n>] [--cursor <cursor>] [--account <account-id>]");
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
   });
@@ -437,6 +443,434 @@ describe("public CLI", () => {
     expect(missing.stderr).toContain("API 404: App not found.\nerror=not_found");
     expect(missing.stderr).not.toContain("You are about to unpublish");
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/apps/app_missing"]);
+  });
+
+  test("lists secret names and dates, never values", async () => {
+    const requests: RequestRecord[] = [];
+    // A response that carried a value must still never print it.
+    const listed = secretsResponse("app_ops", ["MODEL_API_KEY", "STRIPE_SECRET_KEY"]);
+    const withValues = {
+      ...listed,
+      secrets: listed.secrets.map((secret) => ({ ...secret, value: `leaked-${secret.name}`, encrypted_value: "ciphertext" }))
+    };
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops/secrets": [withValues, withValues, withValues],
+      "GET /v0/apps/app_empty/secrets": secretsResponse("app_empty", [])
+    });
+
+    const human = await runCli(["apps", "secrets", "list", "app_ops"], api.baseUrl);
+    expect(human.code).toBe(0);
+    expect(human.stdout).toBe(
+      "MODEL_API_KEY\t2026-09-01T00:00:00.000Z\t2026-09-20T00:00:00.000Z\n" +
+        "STRIPE_SECRET_KEY\t2026-09-01T00:00:00.000Z\t2026-09-20T00:00:00.000Z\n"
+    );
+    expect(human.stderr).toBe("");
+
+    const json = await runCli(["apps", "secrets", "list", "app_ops", "--json", "--account", "acct_owner"], api.baseUrl);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual({
+      app_id: "app_ops",
+      secrets: [
+        { name: "MODEL_API_KEY", created_at: "2026-09-01T00:00:00.000Z", updated_at: "2026-09-20T00:00:00.000Z" },
+        { name: "STRIPE_SECRET_KEY", created_at: "2026-09-01T00:00:00.000Z", updated_at: "2026-09-20T00:00:00.000Z" }
+      ]
+    });
+    expect(requests.at(-1)?.accountId).toBe("acct_owner");
+
+    // The key saved by `userland login` works as well as USERLAND_API_KEY.
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl }));
+    const saved = await runCli(["apps", "secrets", "list", "app_ops"], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(saved.code).toBe(0);
+    expect(requests.at(-1)?.authorization).toBe("Bearer saved_key");
+
+    for (const output of [human.stdout, json.stdout, saved.stdout]) {
+      expect(output).not.toContain("leaked-");
+      expect(output).not.toContain("ciphertext");
+    }
+
+    // No secrets: stdout stays empty for scripts, and stderr says so.
+    const empty = await runCli(["apps", "secrets", "list", "app_empty"], api.baseUrl);
+    expect(empty.code).toBe(0);
+    expect(empty.stdout).toBe("");
+    expect(empty.stderr).toBe("No secrets are set for app_empty.\n");
+    const emptyJson = await runCli(["apps", "secrets", "list", "app_empty", "--json"], api.baseUrl);
+    expect(JSON.parse(emptyJson.stdout)).toEqual({ app_id: "app_empty", secrets: [] });
+    expect(emptyJson.stderr).toBe("");
+
+    requests.length = 0;
+    for (const args of [["apps", "secrets", "list"], ["apps", "secrets", "list", "--json"]]) {
+      const result = await runCli(args, api.baseUrl);
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain("Usage: userland apps secrets list <app-id> [--account <account-id>] [--json]");
+    }
+    const unknown = await runCli(["apps", "secrets", "list", "app_ops", "--values"], api.baseUrl);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain("Unknown option: --values");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("deletes a secret with --yes without asking, only when it is set", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy/secrets": secretsResponse("app_dummy", ["MODEL_API_KEY", "OPENAI_API_KEY"]),
+      "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY": { name: "OPENAI_API_KEY", present: false },
+      "DELETE /v0/apps/app_dummy/secrets/OPENAI_KEY": { name: "OPENAI_KEY", present: false }
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+
+    // With no account selected there is nothing to check about the app; the CLI checks the name is set.
+    const result = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", "--yes"], api.baseUrl);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(
+      "Deleted secret OPENAI_API_KEY from app_dummy.\nsecret=OPENAI_API_KEY\npresent=false\n" +
+        "Server code that reads OPENAI_API_KEY no longer gets it. If manifest.userland.json lists it under resources.secrets.required, " +
+        "remove it there too, or the next release you publish waits (pending_secrets) until it is set again.\n"
+    );
+    expect(result.stderr).toBe("");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy/secrets", "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY"]);
+    expect(requests.map((request) => request.authorization)).toEqual(["Bearer test_api_key", "Bearer test_api_key"]);
+
+    // The API answers a DELETE the same way whether or not the name was set, so a name that is not set
+    // (such as a typo) is refused before the DELETE instead of reported as deleted.
+    requests.length = 0;
+    const typo = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_KEY", "-y"], api.baseUrl);
+    expect(typo.code).toBe(1);
+    expect(typo.stdout).toBe("");
+    expect(typo.stderr).toContain(
+      "No secret named OPENAI_KEY is set for app_dummy, so nothing was deleted. See the names that are set with: userland apps secrets list app_dummy"
+    );
+    expect(typo.stderr).toContain("Docs: https://docs.userland.fun/guides/secrets");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy/secrets"]);
+  });
+
+  test("refuses to delete a secret without --yes when there is no terminal to confirm in", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy app"),
+      "GET /v0/apps/app_dummy/secrets": secretsResponse("app_dummy", ["OPENAI_API_KEY"]),
+      "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY": { name: "OPENAI_API_KEY", present: false }
+    });
+
+    // Piping an answer is not a terminal either: scripts and agents must pass --yes.
+    for (const stdin of [undefined, "y\n", "OPENAI_API_KEY\n"]) {
+      const result = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY"], api.baseUrl, { stdin });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe(
+        "Deleting a secret removes its value from the app at once. It cannot be brought back, only set again.\n" +
+          "There is no terminal to confirm in, so check with the app's owner first, then run: userland apps secrets delete app_dummy OPENAI_API_KEY --yes\n" +
+          "Usage: userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]\n"
+      );
+    }
+
+    for (const args of [
+      ["apps", "secrets", "delete"],
+      ["apps", "secrets", "delete", "app_dummy"],
+      ["apps", "secrets", "delete", "app_dummy", "--yes"],
+      ["apps", "secrets", "delete", "--yes", "app_dummy", "OPENAI_API_KEY"]
+    ]) {
+      const result = await runCli(args, api.baseUrl);
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain("Usage: userland apps secrets delete <app-id> <NAME>");
+    }
+
+    const unknown = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", "--force"], api.baseUrl);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain("Unknown option: --force");
+
+    const emptyAccount = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", "--yes", "--account", ""], api.baseUrl);
+    expect(emptyAccount.code).toBe(1);
+    expect(emptyAccount.stderr).toContain("--account requires a value, but it was empty.");
+
+    expect(requests).toHaveLength(0);
+  });
+
+  test("asks for the secret name or y before deleting a secret in a terminal", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy\u001b[2J app"),
+      "GET /v0/apps/app_dummy/secrets": secretsResponse("app_dummy", ["OPENAI_API_KEY"]),
+      "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY": { name: "OPENAI_API_KEY", present: false }
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+
+    const byName = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY"], api.baseUrl, { tty: true, stdin: "OPENAI_API_KEY\n" });
+    expect(byName.code).toBe(0);
+    expect(byName.stderr).toBe(
+      "You are about to delete this secret:\n" +
+        "  Secret:      OPENAI_API_KEY\n" +
+        "  Last set:    2026-09-20T00:00:00.000Z\n" +
+        "  App:         Dummy\\x1b[2J app\n" +
+        "  Address:     https://app_dummy.apps.userland.fun/\n" +
+        "  App id:      app_dummy\n" +
+        "  Account:     acct_owner\n" +
+        "Server code that reads OPENAI_API_KEY stops getting it at once. The value cannot be shown or brought back; you can only set a new one.\n" +
+        "Type the secret name (OPENAI_API_KEY) or y to delete it: "
+    );
+    expect(byName.stdout).toContain("Deleted secret OPENAI_API_KEY from app_dummy.\nsecret=OPENAI_API_KEY\npresent=false\n");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "GET /v0/apps/app_dummy/secrets", "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY"]);
+
+    for (const answer of ["y\n", "YES\n", "  OPENAI_API_KEY  \n"]) {
+      requests.length = 0;
+      const result = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY"], api.baseUrl, { tty: true, stdin: answer });
+      expect(result.code, JSON.stringify(answer)).toBe(0);
+      expect(calls().at(-1), JSON.stringify(answer)).toBe("DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY");
+    }
+
+    // Anything else, including no answer at all (input closed), cancels without sending the DELETE.
+    for (const answer of ["n\n", "\n", "openai_api_key\n", "MODEL_API_KEY\n", ""]) {
+      requests.length = 0;
+      const result = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY"], api.baseUrl, { tty: true, stdin: answer });
+      expect(result.code, JSON.stringify(answer)).toBe(1);
+      expect(result.stdout, JSON.stringify(answer)).toBe("");
+      expect(result.stderr, JSON.stringify(answer)).toContain("Cancelled. OPENAI_API_KEY was not deleted.");
+      expect(calls(), JSON.stringify(answer)).toEqual(["GET /v0/apps/app_dummy", "GET /v0/apps/app_dummy/secrets"]);
+    }
+
+    // A name that is not set stops before the prompt.
+    requests.length = 0;
+    const notSet = await runCli(["apps", "secrets", "delete", "app_dummy", "MODEL_API_KEY"], api.baseUrl, { tty: true, stdin: "y\n" });
+    expect(notSet.code).toBe(1);
+    expect(notSet.stderr).toContain("No secret named MODEL_API_KEY is set for app_dummy, so nothing was deleted.");
+    expect(notSet.stderr).not.toContain("You are about to delete");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "GET /v0/apps/app_dummy/secrets"]);
+  });
+
+  test("with an account selected, deletes a secret only in an app of that account, even with --yes", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_dummy": appResponse("app_dummy", "Dummy app"),
+      "GET /v0/apps/app_dummy/secrets": secretsResponse("app_dummy", ["OPENAI_API_KEY"]),
+      "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY": { name: "OPENAI_API_KEY", present: false }
+    });
+    const calls = () => requests.map((request) => `${request.method} ${request.url}`);
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl, account_id: "acct_sandbox" }));
+
+    // The app belongs to acct_owner. Every way of selecting another account stops before the DELETE.
+    const mismatches: Array<{ label: string; args: string[]; options: Parameters<typeof runCli>[2] }> = [
+      { label: "--account with --yes", args: ["--yes", "--account", "acct_sandbox"], options: {} },
+      { label: "USERLAND_ACCOUNT_ID with --yes", args: ["--yes"], options: { accountId: "acct_sandbox" } },
+      { label: "saved account with --yes", args: ["--yes"], options: { apiKey: null, credentialsFile } },
+      { label: "--account in a terminal", args: ["--account", "acct_sandbox"], options: { tty: true, stdin: "y\n" } }
+    ];
+    for (const { label, args, options } of mismatches) {
+      requests.length = 0;
+      const result = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", ...args], api.baseUrl, options);
+      expect(result.code, label).toBe(1);
+      expect(result.stdout, label).toBe("");
+      expect(result.stderr, label).toBe(
+        "app_dummy belongs to account acct_owner, not acct_sandbox. Nothing was deleted.\n" +
+          "Check the app id with `userland apps list`. If you meant the other account, pass --account acct_owner.\n"
+      );
+      expect(calls(), label).toEqual(["GET /v0/apps/app_dummy"]);
+    }
+
+    // The matching account goes ahead, with the saved login's key and the account on every request.
+    requests.length = 0;
+    const matching = await runCli(["apps", "secrets", "delete", "app_dummy", "OPENAI_API_KEY", "--yes", "--account", "acct_owner"], api.baseUrl, {
+      apiKey: null,
+      credentialsFile
+    });
+    expect(matching.code).toBe(0);
+    expect(matching.stderr).toBe("");
+    expect(calls()).toEqual(["GET /v0/apps/app_dummy", "GET /v0/apps/app_dummy/secrets", "DELETE /v0/apps/app_dummy/secrets/OPENAI_API_KEY"]);
+    expect(requests.map((request) => request.accountId)).toEqual(["acct_owner", "acct_owner", "acct_owner"]);
+    expect(requests.map((request) => request.authorization)).toEqual(["Bearer saved_key", "Bearer saved_key", "Bearer saved_key"]);
+  });
+
+  test("refuses secret names the API refuses before sending anything", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {});
+
+    const cases: Array<{ name: string; message: string }> = [
+      { name: "USERLAND_TOKEN", message: "Invalid secret name: USERLAND_TOKEN. Secret names cannot start with USERLAND_, CF_, or CLOUDFLARE_, which are kept for Userland." },
+      { name: "CF_API_TOKEN", message: "Invalid secret name: CF_API_TOKEN. Secret names cannot start with USERLAND_, CF_, or CLOUDFLARE_, which are kept for Userland." },
+      { name: "CLOUDFLARE_KEY", message: "Invalid secret name: CLOUDFLARE_KEY. Secret names cannot start with USERLAND_, CF_, or CLOUDFLARE_, which are kept for Userland." },
+      { name: "openai_api_key", message: "Invalid secret name: openai_api_key. Secret names use capital letters" },
+      { name: "1KEY", message: "Invalid secret name: 1KEY." },
+      { name: `K${"X".repeat(64)}`, message: "Invalid secret name: KXXX" }
+    ];
+    for (const { name, message } of cases) {
+      for (const args of [
+        ["apps", "secrets", "delete", "app_1", name, "--yes"],
+        ["apps", "secrets", "delete", "app_1", name],
+        ["apps", "secrets", "set", "app_1", name]
+      ]) {
+        const result = await runCli(args, api.baseUrl, { stdin: "value" });
+        expect(result.code, args.join(" ")).toBe(1);
+        expect(result.stderr, args.join(" ")).toContain(message);
+      }
+    }
+    // CF and USERLAND without the underscore are ordinary names.
+    const ordinary = await runCli(["apps", "secrets", "delete", "app_1", "CFO_EMAIL", "--yes"], api.baseUrl);
+    expect(ordinary.stderr).not.toContain("Invalid secret name");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/apps/app_1/secrets"]);
+  });
+
+  test("creates an app sign-in invite and prints only the link", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_portal/admin-invites": [inviteResponse(["staff", "owner"]), inviteResponse([]), inviteResponse(["staff"]), inviteResponse(["staff"])]
+    });
+
+    // --role repeats; each role is sent once, in order. --expires-in-days becomes expires_in_seconds.
+    const result = await runCli(
+      ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role", "staff", "--role", "owner", "--role", "staff", "--expires-in-days", "30", "--account", "acct_owner"],
+      api.baseUrl
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("https://app_portal.apps.userland.fun/_userland/auth/invite/inv_1?token=inv_abc\n");
+    expect(result.stderr).toBe("");
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/v0/apps/app_portal/admin-invites",
+      authorization: "Bearer test_api_key",
+      accountId: "acct_owner",
+      body: { email: "jo@example.com", roles: ["staff", "owner"], expires_in_seconds: 2592000 }
+    });
+
+    // No --role means no special role, and no --expires-in-days leaves the API's 7 days. The key saved
+    // by `userland login` works, so agents do not need to make another API key.
+    const credentialsFile = await temporaryCredentialsFile();
+    await fs.mkdir(path.dirname(credentialsFile), { recursive: true });
+    await fs.writeFile(credentialsFile, JSON.stringify({ api_key: "saved_key", api_base_url: api.baseUrl, account_id: "acct_owner" }));
+    const saved = await runCli(["apps", "invites", "create", "app_portal", "--email", " jo@example.com "], api.baseUrl, { apiKey: null, credentialsFile });
+    expect(saved.code).toBe(0);
+    expect(saved.stdout).toBe("https://app_portal.apps.userland.fun/_userland/auth/invite/inv_1?token=inv_abc\n");
+    expect(requests[1]).toMatchObject({ authorization: "Bearer saved_key", accountId: "acct_owner", body: { email: "jo@example.com", roles: [] } });
+
+    const oneDay = await runCli(["apps", "invites", "create", "app_portal", "--role", "staff", "--email", "jo@example.com", "--expires-in-days", "1"], api.baseUrl);
+    expect(oneDay.code).toBe(0);
+    expect(requests[2].body).toEqual({ email: "jo@example.com", roles: ["staff"], expires_in_seconds: 86400 });
+
+    // --json prints the API response unchanged.
+    const json = await runCli(["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role", "staff", "--json"], api.baseUrl);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(inviteResponse(["staff"]));
+    expect(json.stderr).toBe("");
+    expect(requests).toHaveLength(4);
+  });
+
+  test("checks invite options before sending anything", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {});
+    const usageLine =
+      "Usage: userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>] [--json]";
+
+    const cases: Array<{ args: string[]; message: string }> = [
+      { args: ["apps", "invites", "create"], message: usageLine },
+      { args: ["apps", "invites", "create", "--email", "jo@example.com"], message: usageLine },
+      { args: ["apps", "invites", "create", "app_portal"], message: "--email is required: the email address of the person to invite." },
+      { args: ["apps", "invites", "create", "app_portal", "--email", ""], message: "--email requires a value, but it was empty." },
+      { args: ["apps", "invites", "create", "app_portal", "--email", "--role", "staff"], message: "--email requires a value." },
+      { args: ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role", ""], message: "--role requires a value, but it was empty." },
+      { args: ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role"], message: "--role requires a value." },
+      {
+        args: ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--role", "staff,owner"],
+        message: "Pass one role for each --role, for example --role staff --role owner, not --role staff,owner."
+      },
+      { args: ["apps", "invites", "create", "..", "--email", "jo@example.com"], message: 'Invalid app id: "..".' },
+      { args: ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--days", "3"], message: "Unknown option: --days" }
+    ];
+    for (const days of ["0", "31", "1.5", "7d", "-1", " "]) {
+      cases.push({
+        args: ["apps", "invites", "create", "app_portal", "--email", "jo@example.com", "--expires-in-days", days],
+        message: days.trim() === "" ? "--expires-in-days requires a value, but it was empty." : `--expires-in-days must be a whole number of days from 1 to 30, not ${days}.`
+      });
+    }
+    for (const { args, message } of cases) {
+      const result = await runCli(args, api.baseUrl);
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stdout, args.join(" ")).toBe("");
+      expect(result.stderr, args.join(" ")).toContain(message);
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  test("prints invite errors from the API, such as the app's people limit, without a link", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_full/admin-invites": {
+        __status: 402,
+        error: {
+          code: "quota_exceeded",
+          message: "app_users.active.max quota exceeded for the current plan.",
+          details: { metric: "app_users.active.max", plan_key: "free", limit: 10, current: 10, increment: 1, required_plan_key: "starter", upgrade_required: true }
+        }
+      },
+      "POST /v0/apps/app_static/admin-invites": { __status: 409, error: { code: "auth_disabled", message: "App-user auth is not enabled for this app." } },
+      "POST /v0/apps/app_portal/admin-invites": { __status: 400, error: { code: "invalid_role", message: "Role manager is not declared for this app." } }
+    });
+
+    const full = await runCli(["apps", "invites", "create", "app_full", "--email", "jo@example.com"], api.baseUrl);
+    expect(full.code).toBe(1);
+    expect(full.stdout).toBe("");
+    expect(full.stderr).toContain(
+      "API 402: app_users.active.max quota exceeded for the current plan.\nerror=quota_exceeded\nmetric=app_users.active.max\nplan_key=free\n" +
+        "required_plan_key=starter\nlimit=10\ncurrent=10\nincrement=1\nupgrade_required=true\n"
+    );
+
+    for (const { appId, message } of [
+      { appId: "app_static", message: "API 409: App-user auth is not enabled for this app.\nerror=auth_disabled\nDocs: https://docs.userland.fun/guides/auth\n" },
+      { appId: "app_portal", message: "API 400: Role manager is not declared for this app.\nerror=invalid_role\nDocs: https://docs.userland.fun/guides/auth\n" }
+    ]) {
+      for (const extra of [[], ["--json"]]) {
+        const result = await runCli(["apps", "invites", "create", appId, "--email", "jo@example.com", "--role", "manager", ...extra], api.baseUrl);
+        expect(result.code, appId).toBe(1);
+        expect(result.stdout, appId).toBe("");
+        expect(result.stderr, appId).toBe(message);
+      }
+    }
+  });
+
+  test("pages through events with --cursor", async () => {
+    const requests: RequestRecord[] = [];
+    const event = (id: string, createdAt: string) => ({
+      app_event_id: id,
+      type: "runtime.error",
+      severity: "error",
+      message: `boom ${id}`,
+      release_id: "rel_live",
+      created_at: createdAt
+    });
+    const cursor = "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOS0zMFQxMDowMDowMC4wMDBaIiwiYXBwX2V2ZW50X2lkIjoiZXZ0XzIifQ";
+    const api = await startMockApi(requests, {
+      "GET /v0/apps/app_ops/events?severity=error&limit=2": {
+        events: [event("evt_1", "2026-09-30T11:00:00.000Z"), event("evt_2", "2026-09-30T10:00:00.000Z")],
+        cursor
+      },
+      [`GET /v0/apps/app_ops/events?severity=error&limit=2&cursor=${cursor}`]: {
+        events: [event("evt_3", "2026-09-30T09:00:00.000Z")],
+        cursor: null
+      }
+    });
+
+    const first = await runCli(["apps", "events", "app_ops", "--severity", "error", "--limit", "2"], api.baseUrl);
+    expect(first.code).toBe(0);
+    expect(first.stdout).toBe(
+      "2026-09-30T11:00:00.000Z\terror\truntime.error\trel_live\tboom evt_1\n" +
+        "2026-09-30T10:00:00.000Z\terror\truntime.error\trel_live\tboom evt_2\n" +
+        `cursor=${cursor}\n`
+    );
+
+    const second = await runCli(["apps", "events", "app_ops", "--severity", "error", "--limit", "2", "--cursor", cursor], api.baseUrl);
+    expect(second.code).toBe(0);
+    expect(second.stdout).toBe("2026-09-30T09:00:00.000Z\terror\truntime.error\trel_live\tboom evt_3\n");
+
+    const missing = await runCli(["apps", "events", "app_ops", "--cursor"], api.baseUrl);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain("--cursor requires a value.");
+    const empty = await runCli(["apps", "events", "app_ops", "--cursor", "", "--limit", "2"], api.baseUrl);
+    expect(empty.code).toBe(1);
+    expect(empty.stderr).toContain("--cursor requires a value, but it was empty.");
+    expect(requests.map((request) => request.url)).toEqual([
+      "/v0/apps/app_ops/events?severity=error&limit=2",
+      `/v0/apps/app_ops/events?severity=error&limit=2&cursor=${cursor}`
+    ]);
   });
 
   test("supports account selection from env, saved credentials, and --account", async () => {
@@ -1992,7 +2426,10 @@ recent_errors:
       "POST /v0/apps/app%23frag/rollback": { app_id: "app#frag", release_id: "rel_1", previous_release_id: null, origin: "https://x.apps.userland.fun/", status: "live" },
       "PUT /v0/apps/app%2Fx/secrets/API_TOKEN": { name: "API_TOKEN", present: true, updated_at: "2026-05-05T00:00:00.000Z" },
       "PUT /v0/apps/app%20one": publishResponse("app one"),
-      "DELETE /v0/apps/app%2F..%2Fother": unpublishResponse("app/../other")
+      "DELETE /v0/apps/app%2F..%2Fother": unpublishResponse("app/../other"),
+      "GET /v0/apps/app%2Fx/secrets": secretsResponse("app/x", ["API_TOKEN"]),
+      "DELETE /v0/apps/app%2Fx/secrets/API_TOKEN": { name: "API_TOKEN", present: false },
+      "POST /v0/apps/app%3Fx%3D1/admin-invites": inviteResponse([])
     });
 
     await expectCommand(["apps", "releases", "app/../other"], api.baseUrl, "");
@@ -2002,17 +2439,30 @@ recent_errors:
     expect(secret.code).toBe(0);
     await expectCommand(["apps", "publish", "examples/hello-static", "--app", "app one", "--plan", "free"], api.baseUrl, "Published");
     await expectCommand(["apps", "unpublish", "app/../other", "--yes"], api.baseUrl, "Unpublished app/../other");
+    await expectCommand(["apps", "secrets", "list", "app/x"], api.baseUrl, "API_TOKEN");
+    await expectCommand(["apps", "secrets", "delete", "app/x", "API_TOKEN", "--yes"], api.baseUrl, "Deleted secret API_TOKEN from app/x.");
+    await expectCommand(["apps", "invites", "create", "app?x=1", "--email", "jo@example.com"], api.baseUrl, "/_userland/auth/invite/");
 
-    const badName = await runCli(["apps", "secrets", "set", "app_1", "FOO?x=1#"], api.baseUrl, { stdin: "value" });
-    expect(badName.code).toBe(1);
-    expect(badName.stderr).toContain("Invalid secret name: FOO?x=1#.");
+    for (const args of [
+      ["apps", "secrets", "set", "app_1", "FOO?x=1#"],
+      ["apps", "secrets", "delete", "app_1", "FOO?x=1#", "--yes"],
+      ["apps", "secrets", "delete", "app_1", "FOO/../..", "--yes"]
+    ]) {
+      const badName = await runCli(args, api.baseUrl, { stdin: "value" });
+      expect(badName.code, args.join(" ")).toBe(1);
+      expect(badName.stderr, args.join(" ")).toContain(`Invalid secret name: ${args[4]}.`);
+    }
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
       "GET /v0/apps/app%2F..%2Fother/releases",
       "GET /v0/apps/app%3Fx%3D1/events",
       "POST /v0/apps/app%23frag/rollback",
       "PUT /v0/apps/app%2Fx/secrets/API_TOKEN",
       "PUT /v0/apps/app%20one",
-      "DELETE /v0/apps/app%2F..%2Fother"
+      "DELETE /v0/apps/app%2F..%2Fother",
+      "GET /v0/apps/app%2Fx/secrets",
+      "GET /v0/apps/app%2Fx/secrets",
+      "DELETE /v0/apps/app%2Fx/secrets/API_TOKEN",
+      "POST /v0/apps/app%3Fx%3D1/admin-invites"
     ]);
   });
 
@@ -2032,6 +2482,10 @@ recent_errors:
       { args: ["apps", "domains", "remove", "app_1", ".."], message: 'Invalid domain: "..".' },
       { args: ["apps", "domains", "verify", "app_1", "."], message: 'Invalid domain: ".".' },
       { args: ["apps", "secrets", "set", "..", "MODEL_KEY"], stdin: "v", message: 'Invalid app id: "..".' },
+      { args: ["apps", "secrets", "list", ".."], message: 'Invalid app id: "..".' },
+      { args: ["apps", "secrets", "delete", "..", "MODEL_KEY", "--yes"], message: 'Invalid app id: "..".' },
+      { args: ["apps", "secrets", "delete", ".", "MODEL_KEY"], message: 'Invalid app id: ".".' },
+      { args: ["apps", "invites", "create", ".", "--email", "jo@example.com"], message: 'Invalid app id: ".".' },
       { args: ["apps", "status", "."], message: 'Invalid app id: ".".' },
       { args: ["apps", "rollback", "..", "rel_1"], message: 'Invalid app id: "..".' },
       // `apps unpublish .` would otherwise become DELETE /v0/apps/, and `..` DELETE /v0/.
@@ -2388,6 +2842,25 @@ function appResponse(appId: string, name: string): Record<string, unknown> {
 /** DELETE /v0/apps/:app_id, as the API returns it. */
 function unpublishResponse(appId: string): Record<string, unknown> {
   return { app_id: appId, status: "unpublished", deleted_at: "2026-09-28T00:00:00.000Z" };
+}
+
+/** GET /v0/apps/:app_id/secrets, as the API returns it (names and dates, never values). */
+function secretsResponse(appId: string, names: string[]): { app_id: string; secrets: Array<Record<string, unknown>> } {
+  return {
+    app_id: appId,
+    secrets: names.map((name) => ({ name, created_at: "2026-09-01T00:00:00.000Z", updated_at: "2026-09-20T00:00:00.000Z", present: true }))
+  };
+}
+
+/** POST /v0/apps/:app_id/admin-invites, as the API returns it. */
+function inviteResponse(roles: string[]): Record<string, unknown> {
+  return {
+    invite_id: "inv_1",
+    email: "jo@example.com",
+    roles,
+    expires_at: "2026-10-08T00:00:00.000Z",
+    invite_url: "https://app_portal.apps.userland.fun/_userland/auth/invite/inv_1?token=inv_abc"
+  };
 }
 
 function analyticsResponse() {
