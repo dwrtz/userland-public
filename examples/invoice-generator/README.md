@@ -21,7 +21,7 @@ For the owner (app user with the `owner` role):
 
 ## Plan
 
-Publishes on the **Free** plan. The manifest uses app-user auth with one role (`owner`, no public signup), two data collections with two indexes each (the Free plan's limits), and one manual job. No secrets, files, webhooks, or scheduled jobs. A custom domain or a named address such as `invoice-demo.apps.userland.fun` is an account feature on paid plans; the app itself doesn't need one.
+Publishes on the **Free** plan. The manifest uses app-user auth with one role (`owner`, no public signup), two data collections with two indexes each (the Free plan's limits), and one manual job. No secrets, files, webhooks, or scheduled jobs. A custom domain or a short address such as `invoice-demo.apps.userland.fun` is an account feature on paid plans; the app itself doesn't need one.
 
 ## How it's built
 

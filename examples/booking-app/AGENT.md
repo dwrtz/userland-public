@@ -38,7 +38,7 @@ Safety:
 - Tell the owner about the Free plan's 1,000-row limit and the **Clear out** button (README "Spam and storage").
 - Log ids and statuses with `ctx.log`, not names, emails, or phone numbers.
 - Keep API keys and secrets out of `public/` and out of HTML. Use `ctx.secrets` from server code if you add email or payment services.
-- Stay on the Free plan unless the owner agrees to a paid feature (named address, custom domain, traffic analytics, scheduled reminders).
+- Stay on the Free plan unless the owner agrees to a paid feature (short address, custom domain, traffic analytics, scheduled reminders).
 
 ## Userland docs
 

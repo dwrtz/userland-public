@@ -32,7 +32,7 @@
 import { html } from "./views.js";
 import { toListing, withHistory } from "./listings.js";
 
-// The public demo's named address and the demo app's own address. Both belong
+// The public demo's short address and the demo app's own address. Both belong
 // to the Userland demo deployment only, so every page of it is marked noindex;
 // replace them if you publish your own demo.
 const DEMO_HOSTS = new Set(["job-board-demo.apps.userland.fun", "4fz14jppml2y13cxqx1.apps.userland.fun"]);

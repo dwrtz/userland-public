@@ -145,7 +145,7 @@ userland validate . --plan free --strict
 
 ## Demo mode
 
-`server/demo.js` powers the public demo at `waitlist-demo.apps.userland.fun`. It only turns on for hostnames in `DEMO_HOSTS` (the demo's named address and the demo app's own address), so your copy runs as a normal waitlist anywhere else, including at your own `<app-id>.apps.userland.fun` address. In demo mode:
+`server/demo.js` powers the public demo at `waitlist-demo.apps.userland.fun`. It only turns on for hostnames in `DEMO_HOSTS` (the demo's short address and the demo app's own address), so your copy runs as a normal waitlist anywhere else, including at your own `<app-id>.apps.userland.fun` address. In demo mode:
 
 - The owner view opens without signing in.
 - It shows made-up sample signups (all `@example.com`) plus only the signups that visitor added. A visitor's signups are tagged with a random key that travels in the link (`?demo=...`), because Userland passes only its own sign-in cookie to app code.

@@ -41,7 +41,7 @@ import { starterLinks, socials } from "./content.js";
 import { addStarterLinks, claimSlot, createInboxItem, createLink, listLinks, MAX_ROWS, pause, signupSlot, starterSlot } from "./store.js";
 import { escapeHtml, layout } from "./views.js";
 
-// The public demo's named address and the demo app's own address. Both belong
+// The public demo's short address and the demo app's own address. Both belong
 // to the Userland demo deployment only, so every page of it is marked noindex;
 // replace them if you publish your own demo.
 export const DEMO_HOSTS = ["link-in-bio-demo.apps.userland.fun", "7hc3cpnov6tzt3v6rdd.apps.userland.fun"];

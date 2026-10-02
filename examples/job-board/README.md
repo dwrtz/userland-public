@@ -143,7 +143,7 @@ The "removing the demo" test in `tests/job-board.test.ts` runs steps 1 to 3 on a
 
 The manifest fits the Free plan: server routes, app-user auth with one role, and two data collections (one if you remove the demo). Things that need a paid plan:
 
-- Your own domain, or a named address like `yourboard.apps.userland.fun`: Starter.
+- Your own domain, or a short address like `yourboard.apps.userland.fun`: Starter.
 - App Analytics (visits, top pages, referrers) in the console: Starter.
 - Free includes 1,000 saved rows per app (demo rows count too if you keep demo mode) and 10,000 requests a month across your whole account. Listings stay saved after they're declined or filled, so delete old ones from the owner page now and then. If the board does fill up, posting shows a "new listings are paused" page and the owner page says how to make room. A busy board will want Starter.
 

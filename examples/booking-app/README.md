@@ -152,7 +152,7 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 
 The manifest publishes on the **Free** plan: server routes, app-user auth with one role and no public sign-up, and two data collections (`services` with one index, `bookings` with two, one of them unique). Free includes up to 1,000 saved rows and 10,000 requests a month; see [Spam and storage](#spam-and-storage) for keeping bookings under the row limit.
 
-Paid plans add things around the app, not in the manifest: a named address such as `your-studio.apps.userland.fun` or your own domain (Starter and up), and traffic analytics for visits, popular pages, and referrers (Starter and up). Adding email reminders with a scheduled job would also need Starter.
+Paid plans add things around the app, not in the manifest: a short address such as `your-studio.apps.userland.fun` or your own domain (Starter and up), and traffic analytics for visits, popular pages, and referrers (Starter and up). Adding email reminders with a scheduled job would also need Starter.
 
 ## Userland docs
 
