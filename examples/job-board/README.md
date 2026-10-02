@@ -102,21 +102,16 @@ userland login
 userland apps publish examples/job-board --message "First publish"
 ```
 
-Then make yourself the owner. Create an app-user invite with the `owner` role and open the `invite_url` it returns to set a password. The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
+Then make yourself the owner. Create an app-user invite with the `owner` role and open the invite link it prints to set a password.
 
 ```sh
-userland auth api-keys create --name "job-board owner invite"
-export USERLAND_API_KEY="<the key printed under API key:>"
 export APP_ID="<the app_id from the publish output>"
-
-curl -fsS -X POST \
-  -H "authorization: Bearer $USERLAND_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@yourfarm.com","roles":["owner"]}' \
-  "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
+userland apps invites create "$APP_ID" --email you@yourfarm.com --role owner
 ```
 
-After that, `/owner` sends you to the sign-in page and back. Anyone without the `owner` role gets a "can't manage listings" page, and changes from signed-out visitors are refused. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
+`apps invites create` needs CLI 0.9.0 or later (`npm install -g @userland.fun/cli@latest` updates it). It uses the key saved by `userland login`, so there is no API key to make or revoke. It prints only the invite link, which works for 7 days (add `--expires-in-days 30` for longer). Give the link only to the owner: whoever has it can set the password once.
+
+After that, `/owner` sends you to the sign-in page and back. Anyone without the `owner` role gets a "can't manage listings" page, and changes from signed-out visitors are refused.
 
 Publish updates with `userland apps publish examples/job-board --app "$APP_ID" --message "..."`. If a release breaks something, list releases with `userland apps releases "$APP_ID"` and move back with `userland apps rollback "$APP_ID" "$RELEASE_ID"`. Rollback keeps your listings.
 

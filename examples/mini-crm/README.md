@@ -95,21 +95,16 @@ userland login
 userland apps publish examples/mini-crm --message "Mini CRM"
 ```
 
-Then invite the owner as an app user with the `owner` role. The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
+Then invite the owner as an app user with the `owner` role:
 
 ```sh
-userland auth api-keys create --name "mini-crm owner invite"
-export USERLAND_API_KEY="<the key printed under API key:>"
 export APP_ID="<the app_id from the publish output>"
-
-curl -fsS -X POST \
-  -H "authorization: Bearer $USERLAND_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"email":"owner@yourbusiness.com","roles":["owner"]}' \
-  "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
+userland apps invites create "$APP_ID" --email owner@yourbusiness.com --role owner
 ```
 
-The owner opens the invite link, sets a password, and signs in at `/_userland/auth/login?return_to=/admin`. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
+`apps invites create` needs CLI 0.9.0 or later (`npm install -g @userland.fun/cli@latest` updates it). It uses the key saved by `userland login`, so there is no API key to make or revoke. It prints only the invite link, which works for 7 days (add `--expires-in-days 30` for longer). Give the link only to the owner: whoever has it can set the password once.
+
+The owner opens the invite link, sets a password, and signs in at `/_userland/auth/login?return_to=/admin`.
 
 ## Demo mode
 

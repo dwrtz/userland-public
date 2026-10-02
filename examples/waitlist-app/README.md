@@ -98,21 +98,16 @@ The CLI prints `app_id`, `origin`, and `release_id`. Note them in your README so
 
 ## Make yourself the owner
 
-Owner pages are closed until an app user with the `owner` role exists. The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
+Owner pages are closed until an app user with the `owner` role exists. Invite yourself:
 
 ```sh
-userland auth api-keys create --name "waitlist-app owner invite"
-export USERLAND_API_KEY="<the key printed under API key:>"
 export APP_ID="<the app_id from the publish output>"
-
-curl -fsS -X POST \
-  -H "authorization: Bearer $USERLAND_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@yourcompany.com","roles":["owner"]}' \
-  "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
+userland apps invites create "$APP_ID" --email you@yourcompany.com --role owner
 ```
 
-Open the `invite_url` from the response, choose a password, and you're signed in. Later, sign in at `<origin>/_userland/auth/login?return_to=/admin`. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
+`apps invites create` needs CLI 0.9.0 or later (`npm install -g @userland.fun/cli@latest` updates it). It uses the key saved by `userland login`, so there is no API key to make or revoke. It prints only the invite link, which works for 7 days (add `--expires-in-days 30` for longer). Give the link only to the owner: whoever has it can set the password once.
+
+Open the invite link, choose a password, and you're signed in. Later, sign in at `<origin>/_userland/auth/login?return_to=/admin`.
 
 ## Verify
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Examples: the READMEs and `AGENT.md` files of `booking-app`, `job-board`, `invoice-generator`, `mini-crm`, `link-in-bio-app`, `waitlist-app`, `blog-cms`, `tiny-store`, and `ai-secret-tool` invite people with `userland apps invites create <app-id> --email <email> --role <role>` (CLI 0.9.0 or later), which uses the key saved by `userland login`. Before, they made a new API key (which emails the owner) and called `POST /v0/apps/:app_id/admin-invites` with `curl`, then unset and revoked the key. `npm run validate:links` now refuses `admin-invites` and `api-keys create` in example READMEs and `AGENT.md` files.
+- Examples: call the address you choose on apps.userland.fun a "short address", as the console and the Terms do, instead of a "named address".
+
 ## 0.9.0 - 2026-10-01
 
 - CLI: add `userland apps secrets list <app-id> [--account <account-id>] [--json]`, which prints one tab-separated line for each secret that is set: its name, when it was first set (`created_at`), and when it was last set (`updated_at`). It never shows values: the CLI prints only the name and the two dates, in human output and in `--json` (`{ "app_id", "secrets": [{ "name", "created_at", "updated_at" }] }`), even if a response carried more. When no secrets are set, stdout is empty and stderr says so. It works with the key saved by `userland login`.

@@ -26,7 +26,7 @@ Steps:
 6. Keep lists paginated: `GET /api/posts` returns one page of 20 plus a `cursor` when more exist, and the page's "Show more" buttons pass it back. Do not raise `limit` to hide pagination; it tops out at 100.
 7. The editor in `public/assets/app.js` reads `/_userland/auth/session` and shows itself only when `user.roles` includes `admin`; signed-out visitors get a link to `/_userland/auth/login?return_to=/`. The server checks the role again on every request.
 8. Validate: `npm run validate:manifests -- blog-cms` and `npx vitest run examples/blog-cms`.
-9. After publishing, invite the first admin with `POST /v0/apps/:app_id/admin-invites` (Auth guide).
+9. After publishing, invite the first admin with `userland apps invites create <app-id> --email <admin email> --role admin` (CLI 0.9.0 or later; Auth guide). Give the link it prints only to the user who asked for the invite.
 
 Safety:
 

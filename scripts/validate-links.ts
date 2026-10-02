@@ -23,6 +23,10 @@ const forbiddenText = [
   "keychain"
 ];
 
+// Example docs invite people with `userland apps invites create` (CLI 0.9.0), which uses the key saved by
+// `userland login`. The old way, a raw API call with a new API key, made the owner get a new-key email.
+const forbiddenInExampleDocs = ["admin-invites", "api-keys create"];
+
 // Plans that are off sale. Example docs must never offer them or suggest them
 // as an upgrade; features beyond Business Plus say "contact support" instead.
 const retiredPlanPatterns = [/`agency`/iu, /\bagency plan\b/iu, /\bplan[^.\n]{0,40}\bagency\b/iu, /\bassisted launch\b/iu];
@@ -52,6 +56,11 @@ for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
     for (const forbidden of forbiddenText) {
       if (body.includes(forbidden)) {
         throw new Error(`${relativePath} contains stale reference: ${forbidden}`);
+      }
+    }
+    for (const forbidden of forbiddenInExampleDocs) {
+      if (body.includes(forbidden)) {
+        throw new Error(`${relativePath} contains stale reference: ${forbidden}. Invite people with userland apps invites create.`);
       }
     }
     assertNoRetiredPlans(relativePath, body);

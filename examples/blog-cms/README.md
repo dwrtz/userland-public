@@ -29,7 +29,13 @@ userland apps publish examples/blog-cms
 
 ## Add an admin
 
-Sign-up is closed, so invite the first admin after publishing. The invite creates an app user for this blog only. It does not give access to your Userland account. See the Auth guide for the `POST /v0/apps/<app-id>/admin-invites` request (use `"roles":["admin"]`).
+Sign-up is closed, so invite the first admin after publishing:
+
+```sh
+userland apps invites create <app-id> --email admin@example.com --role admin
+```
+
+It prints the invite link; give it only to that person. The invite creates an app user for this blog only. It does not give access to your Userland account. `apps invites create` needs CLI 0.9.0 or later (`npm install -g @userland.fun/cli@latest` updates it) and uses the key saved by `userland login`, so you don't need to make an API key. See https://docs.userland.fun/guides/auth for invites.
 
 Once the admin has set a password, they open the blog, choose **sign in**, and the editor appears on the home page.
 

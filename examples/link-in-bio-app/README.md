@@ -79,21 +79,16 @@ userland apps publish examples/link-in-bio-app --app "$APP_ID" --message "Update
 
 ### Make yourself the owner
 
-Invite your email with the `owner` role through the Userland API (the invite creates an app user for this app only). The invite is an API request, so it needs an API key in `USERLAND_API_KEY`. `userland login` keeps its key in `~/.userland/credentials.json`, not in your shell, so create a key for the invite (the CLI shows it once, under `API key:`) and put it and the app id in your environment. Run this in your own terminal; the key never goes into the app.
+Invite your email with the `owner` role (the invite creates an app user for this app only):
 
 ```sh
-userland auth api-keys create --name "link-in-bio-app owner invite"
-export USERLAND_API_KEY="<the key printed under API key:>"
 export APP_ID="<the app_id from the publish output>"
-
-curl -fsS -X POST \
-  -H "authorization: Bearer $USERLAND_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","roles":["owner"]}' \
-  "https://api.userland.fun/v0/apps/$APP_ID/admin-invites"
+userland apps invites create "$APP_ID" --email you@example.com --role owner
 ```
 
-Open the invite link, set a password, then visit `/admin`. After that, open **Links** and click **Add starter links** to fill the page from `server/content.js`, then edit them. Once the owner has signed in, run `unset USERLAND_API_KEY` (CLI commands use that variable before your saved login), then revoke the invite key with `userland auth api-keys revoke <api-key-id>` (the id is printed as `Created API key ...`).
+`apps invites create` needs CLI 0.9.0 or later (`npm install -g @userland.fun/cli@latest` updates it). It uses the key saved by `userland login`, so there is no API key to make or revoke. It prints only the invite link, which works for 7 days (add `--expires-in-days 30` for longer). Give the link only to the owner: whoever has it can set the password once.
+
+Open the invite link, set a password, then visit `/admin`. After that, open **Links** and click **Add starter links** to fill the page from `server/content.js`, then edit them.
 
 ### Undo a release
 
