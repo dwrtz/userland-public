@@ -47,7 +47,13 @@ userland apps publish examples/tiny-store --app <app-id>
 
 Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
 
-Then invite the first admin (see the Auth guide) and add products.
+Then invite the first admin and add products:
+
+```sh
+userland apps invites create <app-id> --email admin@example.com --role admin
+```
+
+It prints the invite link; give it only to that person. `apps invites create` needs CLI 0.9.0 or later and uses the key saved by `userland login`. See https://docs.userland.fun/guides/auth for invites.
 
 ## Payment webhook
 
