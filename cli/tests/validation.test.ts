@@ -125,7 +125,7 @@ describe("plan parity with the API plan rules", () => {
 
   test("covers every public plan and the issue #2 feature matrix", () => {
     const names = parity.cases.map((entry) => entry.name);
-    for (const required of ["private-app", "public-signup", "scheduled-daily", "scheduled-hourly", "scheduled-every_15_minutes", "webhook-generic_hmac", "webhook-github", "private-store", "secrets-2", "collections-3", "roles-3", "stores-2", "indexes-3"]) {
+    for (const required of ["private-app", "public-signup", "scheduled-daily", "scheduled-hourly", "scheduled-every_15_minutes", "webhook-generic_hmac", "webhook-github", "webhook-stripe", "private-store", "secrets-2", "collections-3", "roles-3", "stores-2", "indexes-3"]) {
       expect(names).toContain(required);
     }
     expect(new Set(parity.cases.map((entry) => entry.required_plan_key))).toEqual(new Set(["free", "starter", "business", "business_plus", SUPPORT_ONLY_PLAN_KEY]));
@@ -140,6 +140,7 @@ describe("offline entitlement checks", () => {
     { name: "hourly scheduled job", mutate: (m) => (m.resources.jobs = { sweep: { trigger: "schedule", schedule: "hourly" } }), key: "jobs.schedule.allowed", path: "resources.jobs.sweep.schedule", free: false, starter: false, business: true },
     { name: "generic HMAC webhook", mutate: (m) => (m.resources.webhooks = { hook: { provider: "generic_hmac", secret: "HOOK_SECRET", deliver_to: "server" } }), key: "webhooks.provider.generic_hmac", path: "resources.webhooks.hook.provider", free: false, starter: true, business: true },
     { name: "GitHub webhook", mutate: (m) => (m.resources.webhooks = { gh: { provider: "github", secret: "GH_SECRET", deliver_to: "server" } }), key: "webhooks.provider.github", path: "resources.webhooks.gh.provider", free: false, starter: false, business: true },
+    { name: "Stripe webhook", mutate: (m) => (m.resources.webhooks = { payments: { provider: "stripe", secret: "STRIPE_WEBHOOK_SECRET", deliver_to: "server" } }), key: "webhooks.provider.stripe", path: "resources.webhooks.payments.provider", free: false, starter: true, business: true },
     { name: "private file store", mutate: (m) => (m.resources.files = { stores: { vault: { public: false } } }), key: "files.private_stores", path: "resources.files.stores.vault.public", free: false, starter: false, business: true },
     { name: "file store count", mutate: (m) => (m.resources.files = { stores: { a: {}, b: {} } }), key: "files.stores.max", path: "resources.files.stores", free: false, starter: true, business: true },
     { name: "file upload size", mutate: (m) => (m.resources.files = { stores: { media: { max_file_size_bytes: 30 * 1024 * 1024 } } }), key: "files.max_upload_size_bytes.max", path: "resources.files.stores.media.max_file_size_bytes", free: false, starter: false, business: true },
@@ -322,6 +323,28 @@ describe("manifest schema validation", () => {
     expect(paths({ provider: "generic_hmac", deliver_to: "job", job: "sync" })).toEqual(["resources.webhooks.hook.secret: is required when provider is generic_hmac"]);
     expect(paths({ provider: "github", deliver_to: "job:sync", secret: "GH_SECRET" })).toEqual([]);
     expect(paths({ provider: "none", deliver_to: "job:sync" })).toEqual([]);
+    // Stripe signs its messages, so a `stripe` webhook needs the signing key's name too, on every target.
+    expect(paths({ provider: "stripe", deliver_to: "server" })).toEqual(["resources.webhooks.hook.secret: is required when provider is stripe"]);
+    expect(paths({ provider: "stripe", deliver_to: "job", job: "sync" })).toEqual(["resources.webhooks.hook.secret: is required when provider is stripe"]);
+    expect(paths({ provider: "stripe", deliver_to: "server", secret: "STRIPE_WEBHOOK_SECRET" })).toEqual([]);
+    expect(paths({ provider: "stripe", deliver_to: "job", job: "sync", secret: "STRIPE_WEBHOOK_SECRET" })).toEqual([]);
+    expect(paths({ provider: "stripe", deliver_to: "job:sync", secret: "STRIPE_WEBHOOK_SECRET" })).toEqual([]);
+  });
+
+  test("accepts the senders the API accepts, and only those", () => {
+    const check = (provider: string) =>
+      checkManifestDocument({ app: { name: "x" }, runtime: { static_root: "public" }, resources: { webhooks: { hook: { provider, secret: "HOOK_SECRET", deliver_to: "server" } } } });
+    for (const provider of ["generic_hmac", "github", "stripe"]) {
+      expect(check(provider), provider).toMatchObject({ errors: [], schema_strict: [] });
+    }
+    // A sender the API does not know is still an error, before anything is uploaded.
+    for (const provider of ["shopify", "Stripe", "stripe_v2"]) {
+      expect(check(provider).errors.map((error) => error.manifest_path), provider).toEqual(["resources.webhooks.hook.provider"]);
+    }
+    const schemaProviders = (manifestSchema() as { $defs: { WebhookSpec: { oneOf: Array<{ properties: { provider: { const?: string; enum?: string[] } } }> } } }).$defs.WebhookSpec.oneOf.map(
+      (variant) => variant.properties.provider.enum ?? [variant.properties.provider.const]
+    );
+    expect(schemaProviders).toEqual([["none"], ["generic_hmac", "github", "stripe"], ["none"], ["generic_hmac", "github", "stripe"], ["none"], ["generic_hmac", "github", "stripe"]]);
   });
 
   test("enforces the cross-field rules the API checks", () => {

@@ -19,19 +19,44 @@ function post(pathname: string, body: unknown, headers: Record<string, string> =
   });
 }
 
-function paidEvent(order: { checkout_session_id: string; total_cents: number; currency: string }, overrides: Record<string, unknown> = {}) {
+type Order = { checkout_session_id: string; total_cents: number; currency: string };
+
+// A Stripe event as the `checkout` webhook hands it to the job: Userland has
+// already checked Stripe's signature and drops the Stripe-Signature header.
+// The same order gets the same event id unless the test gives another, as when
+// Stripe sends one event again.
+function stripeEvent(order: Order, session: Record<string, unknown> = {}, event: Record<string, unknown> = {}) {
   return webhookJobEvent({
     job: "handle-checkout-event",
     webhook: "checkout",
     body: {
-      type: "checkout.completed",
-      checkout_session_id: order.checkout_session_id,
-      payment_status: "paid",
-      amount_total: order.total_cents,
-      currency: order.currency.toLowerCase(),
-      ...overrides
+      id: `evt_${order.checkout_session_id.replace(/[^A-Za-z0-9]/gu, "")}`,
+      object: "event",
+      type: "checkout.session.completed",
+      livemode: false,
+      data: {
+        object: {
+          id: order.checkout_session_id,
+          object: "checkout.session",
+          mode: "payment",
+          status: "complete",
+          payment_status: "paid",
+          amount_total: order.total_cents,
+          currency: order.currency.toLowerCase(),
+          ...session
+        }
+      },
+      ...event
     }
   });
+}
+
+function paidEvent(order: Order, session: Record<string, unknown> = {}) {
+  return stripeEvent(order, session);
+}
+
+function handledEvents(runtime: { state: { rows: Map<string, Array<Record<string, unknown>>> } }) {
+  return (runtime.state.rows.get("handled-events") ?? []).map((row) => row.event_id);
 }
 
 async function storeWithProduct() {
@@ -44,10 +69,12 @@ async function storeWithProduct() {
 }
 
 it("wires the checkout webhook to the job this server handles", () => {
-  const resources = manifest.resources as { webhooks: Record<string, { job: string; secret: string }>; secrets: { required: string[] }; jobs: Record<string, unknown> };
+  const resources = manifest.resources as { webhooks: Record<string, { provider: string; job: string; secret: string }>; secrets: { required: string[] }; jobs: Record<string, unknown> };
   expect(resources.jobs).toHaveProperty(resources.webhooks.checkout.job);
   expect(resources.jobs).toHaveProperty("expire-abandoned-orders");
   expect(resources.secrets.required).toContain(resources.webhooks.checkout.secret);
+  // Stripe sends straight to the app: Userland checks Stripe's own signature with this secret, so there is no relay.
+  expect(resources.webhooks.checkout.provider).toBe("stripe");
 });
 
 it("only lets admins create products", async () => {
@@ -97,6 +124,84 @@ it("marks orders paid from the checkout webhook job exactly once", async () => {
   expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
 });
 
+describe("an event Stripe sends again", () => {
+  it("is ignored by its event id once it has been handled, however much later it arrives", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+    const delivery = stripeEvent(order, {}, { id: "evt_1NG8Du2eZvKYlo2CUI79vXWy" });
+
+    await app.job(delivery, runtime.ctx);
+    expect(handledEvents(runtime)).toEqual(["evt_1NG8Du2eZvKYlo2CUI79vXWy"]);
+    // Userland answers a repeat within 10 minutes itself. A resend from Stripe's dashboard the next day reaches the job.
+    await app.job(delivery, runtime.ctx);
+
+    expect(runtime.state.logs).toContainEqual({
+      level: "info",
+      message: "checkout event ignored",
+      metadata: { reason: "already_handled", event_id: "evt_1NG8Du2eZvKYlo2CUI79vXWy", webhook_delivery_id: "whd_test_1" }
+    });
+    expect(runtime.state.logs.filter((entry) => entry.message === "checkout job processed")).toHaveLength(1);
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(handledEvents(runtime)).toEqual(["evt_1NG8Du2eZvKYlo2CUI79vXWy"]);
+  });
+
+  it("is not remembered until it has been handled, so a job that failed handles it when retried", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+    const collection = runtime.ctx.data.collection;
+    let failOnce = true;
+    runtime.ctx.data.collection = ((name: string) => {
+      const inner = collection(name);
+      if (name !== "orders") return inner;
+      return {
+        ...inner,
+        async update(id: string, patch: Record<string, unknown>) {
+          if (failOnce) {
+            failOnce = false;
+            throw Object.assign(new Error("storage unavailable"), { code: "storage_error", status: 500 });
+          }
+          return await inner.update(id, patch);
+        }
+      };
+    }) as typeof collection;
+
+    await expect(app.job(paidEvent(order), runtime.ctx)).rejects.toThrow("storage unavailable");
+    expect(handledEvents(runtime)).toEqual([]);
+    await app.job(paidEvent(order), runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(handledEvents(runtime)).toHaveLength(1);
+  });
+
+  it("marks a bank payment paid when Stripe confirms it, after a checkout that completed unpaid", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("checkout_pending");
+    expect(handledEvents(runtime)).toEqual([]);
+
+    const confirmed = stripeEvent(order, {}, { id: "evt_confirmed", type: "checkout.session.async_payment_succeeded" });
+    await app.job(confirmed, runtime.ctx);
+    await app.job(confirmed, runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(handledEvents(runtime)).toEqual(["evt_confirmed"]);
+  });
+
+  it("takes stock off once when two different events say the same order is paid", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, {}, { id: "evt_first" }), runtime.ctx);
+    await app.job(stripeEvent(order, {}, { id: "evt_second", type: "checkout.session.async_payment_succeeded" }), runtime.ctx);
+
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(runtime.state.logs).toContainEqual(expect.objectContaining({ message: "checkout event ignored", metadata: expect.objectContaining({ reason: "already_paid", event_id: "evt_second" }) }));
+    expect(handledEvents(runtime)).toEqual(["evt_first", "evt_second"]);
+  });
+});
+
 it("takes stock off once when the same payment is delivered twice at the same moment", async () => {
   const runtime = await storeWithProduct();
   const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug", quantity: 2 }] }), runtime.ctx)).json();
@@ -123,6 +228,8 @@ it("takes stock off once when the same payment is delivered twice at the same mo
   expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(3);
   expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
   expect(runtime.state.logs.filter((entry) => entry.message === "checkout job processed")).toHaveLength(1);
+  // All three copies got past the event id check together; the event is remembered once.
+  expect(handledEvents(runtime)).toHaveLength(1);
 });
 
 it("still takes stock off when the job is retried after failing once the order was marked paid", async () => {
@@ -177,22 +284,44 @@ it("logs an error instead of retrying when stock cannot be updated", async () =>
 });
 
 describe("checkout events that are not a completed payment", () => {
-  const cases: Array<[string, Record<string, unknown>]> = [
-    ["an expired checkout", { type: "checkout.expired", payment_status: "unpaid" }],
-    ["a failed delayed payment", { type: "checkout.async_payment_failed", payment_status: "unpaid" }],
-    ["a completed checkout still waiting on a delayed payment", { payment_status: "unpaid" }],
-    ["an event with no type", { type: undefined }]
+  const cases: Array<[string, (order: Order) => ReturnType<typeof stripeEvent>]> = [
+    ["an expired checkout", (order) => stripeEvent(order, { status: "expired", payment_status: "unpaid" }, { type: "checkout.session.expired" })],
+    ["a failed bank payment", (order) => stripeEvent(order, { payment_status: "unpaid" }, { type: "checkout.session.async_payment_failed" })],
+    ["a completed checkout still waiting on a bank payment", (order) => stripeEvent(order, { payment_status: "unpaid" })],
+    ["an event with no type", (order) => stripeEvent(order, {}, { type: undefined })],
+    ["an event about something other than a checkout", (order) => stripeEvent(order, { object: "payment_intent", id: "pi_123", status: "succeeded" }, { type: "payment_intent.succeeded" })],
+    ["an event with no checkout in it", (order) => stripeEvent(order, {}, { data: undefined })],
+    [
+      "the body a relay sent before Stripe could send here directly",
+      (order) =>
+        webhookJobEvent({
+          job: "handle-checkout-event",
+          webhook: "checkout",
+          body: { type: "checkout.completed", checkout_session_id: order.checkout_session_id, payment_status: "paid", amount_total: order.total_cents, currency: order.currency.toLowerCase() }
+        })
+    ]
   ];
-  for (const [label, overrides] of cases) {
+  for (const [label, delivery] of cases) {
     it(`leaves the order unpaid for ${label}`, async () => {
       const runtime = await storeWithProduct();
       const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
-      await app.job(paidEvent(order, overrides), runtime.ctx);
+      await app.job(delivery(order), runtime.ctx);
       expect(runtime.state.rows.get("orders")![0]!.status).toBe("checkout_pending");
       expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(5);
-      expect(runtime.state.logs).toContainEqual(expect.objectContaining({ message: "checkout event ignored" }));
+      expect(runtime.state.logs).toContainEqual(expect.objectContaining({ message: "checkout event ignored", metadata: expect.objectContaining({ reason: "not_a_completed_payment" }) }));
+      expect(handledEvents(runtime)).toEqual([]);
     });
   }
+
+  it("leaves the order unpaid when the checkout has no session id, or one no order has", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+    await app.job(stripeEvent(order, { id: undefined }, { id: "evt_no_session" }), runtime.ctx);
+    await app.job(stripeEvent(order, { id: "cs_test_someone_else" }, { id: "evt_other_session" }), runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("checkout_pending");
+    expect(runtime.state.logs.filter((entry) => entry.level === "warn").map((entry) => entry.message)).toEqual(["checkout event missing session id", "checkout order missing"]);
+    expect(handledEvents(runtime)).toEqual([]);
+  });
 
   it("leaves the order unpaid when the amount or currency does not match", async () => {
     const runtime = await storeWithProduct();
@@ -209,7 +338,11 @@ describe("checkout events that are not a completed payment", () => {
     await runtime.ctx.data.collection("orders").update(order.id, { status: "cancelled" });
     await app.job(paidEvent(order), runtime.ctx);
     expect(runtime.state.rows.get("orders")![0]!.status).toBe("cancelled");
-    expect(runtime.state.logs).toContainEqual({ level: "warn", message: "payment received for cancelled order", metadata: { order_id: order.id, webhook_delivery_id: "whd_test_1" } });
+    expect(runtime.state.logs).toContainEqual({
+      level: "warn",
+      message: "payment received for cancelled order",
+      metadata: { order_id: order.id, event_id: `evt_${order.checkout_session_id.replace(/[^A-Za-z0-9]/gu, "")}`, webhook_delivery_id: "whd_test_1" }
+    });
   });
 });
 

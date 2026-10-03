@@ -29,14 +29,19 @@ function escapeHtml(value) {
 const ABANDONED_ORDER_MS = 24 * 60 * 60 * 1000;
 const MAX_EXPIRED_PER_RUN = 500;
 const MAX_LINE_ITEMS = 20;
-// Each unpaid order is a checkout session at the payment provider, so one
-// customer can only have a few open at once. The hourly job cancels unpaid
-// orders after 24 hours, which frees the slots up again.
+// Each unpaid order is a checkout session at Stripe, so one customer can only
+// have a few open at once. The hourly job cancels unpaid orders after 24
+// hours, which frees the slots up again.
 const MAX_OPEN_ORDERS_PER_CUSTOMER = 5;
 const MAX_JSON_BYTES = 100_000;
 const PAGE_SIZE = 50;
-// The only checkout event that marks an order paid. See handleCheckoutEvent.
-const PAYMENT_COMPLETED_EVENT = "checkout.completed";
+// The Stripe events that can mark an order paid, and only when their Checkout
+// Session says `payment_status: "paid"`. A card payment is paid when the
+// session completes; a bank debit completes unpaid and is confirmed later by
+// checkout.session.async_payment_succeeded. See handleCheckoutEvent.
+const PAYMENT_EVENTS = new Set(["checkout.session.completed", "checkout.session.async_payment_succeeded"]);
+// Stripe event ids look like evt_1NG8Du2eZvKYlo2CUI79vXWy.
+const STRIPE_EVENT_ID = /^evt_[A-Za-z0-9_]{1,250}$/u;
 
 // Shop actions must come from this app's own pages. Userland's sign-in cookie
 // is SameSite=Lax and every app on apps.userland.fun counts as the same "site",
@@ -242,8 +247,11 @@ async function createOrder(request, ctx) {
     return json({ error: "too_many_open_orders", max_open_orders: MAX_OPEN_ORDERS_PER_CUSTOMER }, { status: 429 });
   }
 
-  // A real integration would call the checkout provider here with this key
-  // and store the provider's session id. The key stays on the server.
+  // A stand-in for Stripe Checkout. A real shop calls Stripe's Checkout
+  // Sessions API here with this key (a line for each of priced.lineItems, in
+  // priced.currency), stores the session's id (cs_...) as checkout_session_id
+  // so the payment event finds this order, and sends the customer to the
+  // session's url. The key stays on the server.
   // `get` returns undefined when the secret is not set, so this can answer a
   // clear 503. `require` would throw instead, and the visitor would get the
   // platform's 400 missing_secret, which reads as if their order was wrong.
@@ -300,66 +308,106 @@ async function takeFromStock(ctx, order) {
   }
 }
 
-// The `checkout` webhook delivers verified requests to this job. Userland
-// enqueues it with { webhook_delivery_id, name, headers, payload }, where
-// `payload` is the parsed request body. The relay must send:
-//   { type: "checkout.completed", checkout_session_id, payment_status: "paid",
-//     amount_total, currency }
-// Only that event marks an order paid, and only when the amount and currency
-// match the order. Any other event (expired, failed, still processing) is
-// logged and ignored; the hourly job cancels orders that never get paid.
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// Stripe can send the same event more than once: it retries until it gets an
+// answer, and you can resend an event from its dashboard. Userland answers a
+// repeat of an event it delivered in the last 10 minutes without passing it
+// on, so the job remembers every event it has handled for good, in the
+// handled-events collection, and ignores it the next time.
+async function alreadyHandled(ctx, eventId) {
+  const match = await ctx.data.collection("handled-events").list({ where: { event_id: eventId }, limit: 1 });
+  return match.rows.length > 0;
+}
+
+// Called once the order is paid and its stock is taken off, so a job that
+// fails before then still handles the event when it is retried. The by_event_id
+// unique index turns a second copy that got this far at the same moment into
+// `unique_conflict`, which means the event is remembered already.
+async function rememberHandled(ctx, eventId) {
+  if (!eventId) return;
+  try {
+    await ctx.data.collection("handled-events").create({ event_id: eventId });
+  } catch (error) {
+    if (error?.code !== "unique_conflict") throw error;
+  }
+}
+
+// The `checkout` webhook is `provider: "stripe"`: Userland checks Stripe's
+// signature with CHECKOUT_WEBHOOK_SECRET before anything reaches the app, so
+// no relay is needed. It enqueues this job with
+// { webhook_delivery_id, name, headers, payload }, where `payload` is Stripe's
+// event: { id: "evt_...", type, data: { object: <Checkout Session> } }.
+// Only a paid checkout.session.completed or
+// checkout.session.async_payment_succeeded marks an order paid, and only when
+// the session's amount and currency match the order. Any other event (expired,
+// failed, still processing) is logged and ignored; the hourly job cancels
+// orders that never get paid.
 async function handleCheckoutEvent(event, ctx) {
   const delivery = event.payload ?? {};
-  const body = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
-  const checkoutSessionId = String(body.checkout_session_id ?? "");
-  if (!checkoutSessionId) {
-    await ctx.log.warn("checkout event missing session id", { webhook_delivery_id: delivery.webhook_delivery_id });
+  const stripeEvent = isObject(delivery.payload) ? delivery.payload : {};
+  const eventId = typeof stripeEvent.id === "string" && STRIPE_EVENT_ID.test(stripeEvent.id) ? stripeEvent.id : "";
+  const eventType = typeof stripeEvent.type === "string" ? stripeEvent.type : "";
+  const session = isObject(stripeEvent.data) && isObject(stripeEvent.data.object) ? stripeEvent.data.object : {};
+  const seen = { event_id: eventId, webhook_delivery_id: delivery.webhook_delivery_id };
+
+  if (eventId && (await alreadyHandled(ctx, eventId))) {
+    await ctx.log.info("checkout event ignored", { reason: "already_handled", ...seen });
     return;
   }
-  if (body.type !== PAYMENT_COMPLETED_EVENT || body.payment_status !== "paid") {
+  if (!PAYMENT_EVENTS.has(eventType) || session.payment_status !== "paid") {
     await ctx.log.info("checkout event ignored", {
       reason: "not_a_completed_payment",
-      event_type: String(body.type ?? "").slice(0, 100),
-      payment_status: String(body.payment_status ?? "").slice(0, 100),
-      webhook_delivery_id: delivery.webhook_delivery_id
+      event_type: eventType.slice(0, 100),
+      payment_status: String(session.payment_status ?? "").slice(0, 100),
+      ...seen
     });
+    return;
+  }
+  const checkoutSessionId = typeof session.id === "string" ? session.id : "";
+  if (!checkoutSessionId) {
+    await ctx.log.warn("checkout event missing session id", seen);
     return;
   }
   const orders = ctx.data.collection("orders");
   const match = await orders.list({ where: { checkout_session_id: checkoutSessionId }, limit: 1 });
   const order = match.rows[0];
   if (!order) {
-    await ctx.log.warn("checkout order missing", { checkout_session_id: checkoutSessionId });
+    await ctx.log.warn("checkout order missing", { checkout_session_id: checkoutSessionId.slice(0, 200), ...seen });
     return;
   }
-  if (body.amount_total !== order.total_cents || String(body.currency ?? "").toUpperCase() !== order.currency) {
-    await ctx.log.warn("checkout amount mismatch", { order_id: order.id, webhook_delivery_id: delivery.webhook_delivery_id });
+  if (session.amount_total !== order.total_cents || String(session.currency ?? "").toUpperCase() !== order.currency) {
+    await ctx.log.warn("checkout amount mismatch", { order_id: order.id, ...seen });
     return;
   }
   if (order.status === "cancelled") {
     // The customer paid after the hourly job gave up on the order. Leave it
     // for the owner to refund or restore by hand.
-    await ctx.log.warn("payment received for cancelled order", { order_id: order.id, webhook_delivery_id: delivery.webhook_delivery_id });
+    await ctx.log.warn("payment received for cancelled order", { order_id: order.id, ...seen });
     return;
   }
   if (order.status !== "checkout_pending" && order.status !== "paid") {
-    await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id });
+    await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id, ...seen });
     return;
   }
   if (order.status === "checkout_pending") {
     await orders.update(order.id, { status: "paid", paid_at: new Date().toISOString() });
   }
 
-  // Providers retry deliveries, and two deliveries of the same payment can be
+  // Stripe retries deliveries, and two deliveries of the same payment can be
   // processed at the same moment. The by_order unique index on stock-updates
   // lets only one of them create this row, so stock is taken off once per
-  // order. The row is created after the order is marked paid, so a job that
-  // failed before this point still takes stock off when it is retried.
+  // order, even for two different events about the same payment. The row is
+  // created after the order is marked paid, so a job that failed before this
+  // point still takes stock off when it is retried.
   try {
     await ctx.data.collection("stock-updates").create({ order_id: order.id });
   } catch (error) {
     if (error?.code !== "unique_conflict") throw error;
-    await ctx.log.info("checkout event ignored", { reason: "already_paid", order_id: order.id });
+    await ctx.log.info("checkout event ignored", { reason: "already_paid", order_id: order.id, ...seen });
+    await rememberHandled(ctx, eventId);
     return;
   }
   try {
@@ -369,7 +417,8 @@ async function handleCheckoutEvent(event, ctx) {
     // take them off twice. The owner adjusts stock by hand.
     await ctx.log.error("stock not updated", { order_id: order.id, code: String(error?.code ?? "unknown") });
   }
-  await ctx.log.info("checkout job processed", { order_id: order.id, webhook_delivery_id: delivery.webhook_delivery_id });
+  await rememberHandled(ctx, eventId);
+  await ctx.log.info("checkout job processed", { order_id: order.id, ...seen });
 }
 
 // Scheduled hourly by the manifest.

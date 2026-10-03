@@ -2163,6 +2163,80 @@ describe("public CLI", () => {
     expect(requests).toHaveLength(0);
   });
 
+  test("accepts Stripe as a sender with a signing key, on Starter and up", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "starter"),
+      "PUT /v0/apps": publishResponse("app_payments")
+    });
+    const manifest = {
+      app: { name: "Payments" },
+      runtime: { static_root: "public", server_entry: "server/index.js" },
+      resources: {
+        secrets: { required: ["STRIPE_WEBHOOK_SECRET"] },
+        jobs: { handle: {} },
+        webhooks: { payments: { provider: "stripe", secret: "STRIPE_WEBHOOK_SECRET", deliver_to: "job", job: "handle" } }
+      }
+    };
+    const files = { "public/index.html": "<h1>hi</h1>", "server/index.js": "export default { fetch() { return new Response('ok'); } };" };
+    const dir = await temporaryAppDir(manifest, files);
+
+    const validate = await runCli(["validate", dir, "--json"], api.baseUrl, { apiKey: null });
+    expect(validate.code).toBe(0);
+    const report = JSON.parse(validate.stdout) as { ok: boolean; errors: unknown[]; warnings: unknown[]; required_plan_key: string; plan_gated: Array<{ feature_key?: string; required_plan_key: string }> };
+    expect(report).toMatchObject({ ok: true, errors: [], warnings: [], required_plan_key: "starter" });
+    expect(report.plan_gated).toContainEqual(expect.objectContaining({ feature_key: "webhooks.provider.stripe", required_plan_key: "starter" }));
+
+    const free = await runCli(["validate", dir, "--plan", "free"], api.baseUrl, { apiKey: null });
+    expect(free.code).toBe(2);
+    expect(free.stdout).toContain(
+      ["manifest_path=resources.webhooks.payments.provider", "feature=webhooks.provider.stripe", "value=stripe", "allowed=false", "requires=starter"].join("\n")
+    );
+    expect(free.stdout).toContain("message=Stripe webhooks: requires Starter.");
+    for (const plan of ["starter", "business", "business_plus"]) {
+      const allowed = await runCli(["validate", dir, "--plan", plan], api.baseUrl, { apiKey: null });
+      expect(allowed.code, plan).toBe(0);
+    }
+
+    // The publish preflight checks the account's own plan, then uploads the manifest as written.
+    const publish = await runCli(["apps", "publish", dir], api.baseUrl);
+    expect(publish.code).toBe(0);
+    expect(publish.stdout).toContain("local_validation=passed\nlocal_validation_plan=starter\nlocal_validation_plan_source=account");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts", "GET /v0/accounts/acct_owner/limits", "PUT /v0/apps"]);
+    expect(requests[2].body).toMatchObject({ resources: { webhooks: { payments: { provider: "stripe", secret: "STRIPE_WEBHOOK_SECRET", deliver_to: "job", job: "handle" } } } });
+
+    // A Stripe webhook needs the name of the secret that holds Stripe's signing secret, like any signed sender.
+    const unsigned = await temporaryAppDir({ ...manifest, resources: { ...manifest.resources, webhooks: { payments: { provider: "stripe", deliver_to: "job", job: "handle" } } } }, files);
+    const missing = await runCli(["validate", unsigned, "--plan", "business"], api.baseUrl, { apiKey: null });
+    expect(missing.code).toBe(1);
+    expect(missing.stdout).toContain("error=invalid_resource_manifest\nmanifest_path=resources.webhooks.payments.secret\nmessage=is required when provider is stripe");
+    const blocked = await runCli(["apps", "publish", unsigned], api.baseUrl);
+    expect(blocked.code).toBe(1);
+    expect(blocked.stderr).toContain("manifest_path=resources.webhooks.payments.secret");
+    expect(requests).toHaveLength(3);
+  });
+
+  test("blocks a Stripe webhook on an account whose plan doesn't include it", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free")
+    });
+    const dir = await temporaryAppDir({
+      app: { name: "Payments" },
+      runtime: { static_root: "public" },
+      resources: { secrets: { required: ["STRIPE_WEBHOOK_SECRET"] }, webhooks: { payments: { provider: "stripe", secret: "STRIPE_WEBHOOK_SECRET", deliver_to: "server" } } }
+    });
+
+    const result = await runCli(["apps", "publish", dir], api.baseUrl);
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("Local validation blocked this publish; nothing was uploaded.");
+    expect(result.stderr).toContain(["manifest_path=resources.webhooks.payments.provider", "feature=webhooks.provider.stripe", "value=stripe", "allowed=false", "requires=starter"].join("\n"));
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts", "GET /v0/accounts/acct_owner/limits"]);
+  });
+
   test("explains a skipped plan check for features no public plan includes", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {

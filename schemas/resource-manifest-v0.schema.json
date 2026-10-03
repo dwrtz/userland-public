@@ -592,7 +592,7 @@
       ]
     },
     "WebhookSpec": {
-      "description": "Webhook endpoint served at /_userland/webhooks/<name>. generic_hmac and github deliveries are verified with the named secret before app code runs. A job target must name a job declared in resources.jobs.",
+      "description": "Webhook endpoint served at /_userland/webhooks/<name>. generic_hmac, github and stripe deliveries are verified with the named secret before app code runs; for stripe, the secret holds the endpoint's Stripe signing secret (whsec_...). A job target must name a job declared in resources.jobs.",
       "oneOf": [
         {
           "type": "object",
@@ -631,7 +631,8 @@
               "type": "string",
               "enum": [
                 "generic_hmac",
-                "github"
+                "github",
+                "stripe"
               ]
             },
             "secret": {
@@ -701,7 +702,8 @@
               "type": "string",
               "enum": [
                 "generic_hmac",
-                "github"
+                "github",
+                "stripe"
               ]
             },
             "secret": {
@@ -770,7 +772,8 @@
               "type": "string",
               "enum": [
                 "generic_hmac",
-                "github"
+                "github",
+                "stripe"
               ]
             },
             "secret": {

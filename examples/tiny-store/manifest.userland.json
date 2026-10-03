@@ -97,6 +97,22 @@
             "read": "server_only",
             "write": "server_only"
           }
+        },
+        "handled-events": {
+          "fields": {
+            "event_id": "string"
+          },
+          "indexes": [
+            {
+              "name": "by_event_id",
+              "fields": ["event_id"],
+              "unique": true
+            }
+          ],
+          "access": {
+            "read": "server_only",
+            "write": "server_only"
+          }
         }
       }
     },
@@ -125,7 +141,7 @@
     },
     "webhooks": {
       "checkout": {
-        "provider": "generic_hmac",
+        "provider": "stripe",
         "secret": "CHECKOUT_WEBHOOK_SECRET",
         "deliver_to": "job",
         "job": "handle-checkout-event"
