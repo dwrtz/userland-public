@@ -35,6 +35,8 @@ printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY
 userland apps publish examples/ai-secret-tool --app <app-id>
 ```
 
+You can add the key in the console instead: open `https://console.userland.fun/apps/<app-id>/settings?add-key=MODEL_API_KEY`, paste the key, and save it, then publish again with `--app` as above. A coding agent setting up the app for you sends you this link rather than asking you to paste the key into your chat.
+
 Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
 
 ## Try it

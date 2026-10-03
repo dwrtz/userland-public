@@ -19,7 +19,7 @@ Example page: https://userland.fun/examples/mini-crm/
 
 ## Plan
 
-Free. The manifest uses the server runtime, app-user auth with one role, two collections, and at most two indexes per collection. Free includes 1,000 data rows and 10 active app users. A custom slug or domain, and App Analytics, need Starter.
+Free. The manifest uses the server runtime, app-user auth with one role, two collections, and at most two indexes per collection. Free includes 1,000 data rows and 10 active app users. A short address, a custom domain, and App Analytics need Starter.
 
 Each request from the form uses 2 data rows (the lead and its history entry), and each stage change, follow-up date, or note uses 1 more, so Free holds a few hundred leads. See [Spam and limits](#spam-and-limits) for how the app keeps a script from using them up, and what happens when they run out.
 

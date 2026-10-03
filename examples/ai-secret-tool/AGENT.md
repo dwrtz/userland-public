@@ -28,7 +28,7 @@ Steps:
 4. Keep the same-origin check (`isSameOrigin`) and `readJson` requiring `content-type: application/json` on `/api/run`, so other sites (including other `*.apps.userland.fun` apps) cannot call it through a visitor's browser. Once you add sign-in, this is also what stops them acting as a signed-in member.
 5. Secret names must be uppercase and cannot start with `USERLAND_`, `CF_`, or `CLOUDFLARE_`. App tags cannot be reserved names such as `secrets`.
 6. Validate: `npm run validate:manifests -- ai-secret-tool` and `npx vitest run examples/ai-secret-tool`.
-7. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting the secret does not activate it. Set it with `printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY`, then publish again into the same app with `userland apps publish examples/ai-secret-tool --app <app-id>` (without `--app` the CLI creates a second app).
+7. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting the secret does not activate it. The key is the owner's: send them `https://console.userland.fun/apps/<app-id>/settings?add-key=MODEL_API_KEY`, where they paste and save it, instead of asking for it in chat. If you already have the value, or the console says it can't save keys right now, set it with `printf '%s' "$MODEL_API_KEY" | userland apps secrets set <app-id> MODEL_API_KEY` without printing it. Then publish again into the same app with `userland apps publish examples/ai-secret-tool --app <app-id>` (without `--app` the CLI creates a second app).
 
 Safety:
 

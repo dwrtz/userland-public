@@ -92,7 +92,7 @@ The `workspace` field can stay; all real data lives in the `main` workspace. The
 - Amounts are stored in hundredths, so pick a currency with two decimal places (USD, EUR, GBP, CAD, AUD, and most others; not JPY or KRW). Prices are typed like `1,250.50`, with an optional currency sign in front. Changing the currency later only affects new documents.
 - Change the spam caps and page size in `LIMITS` at the top of `server/store.js`.
 - Change copy and layout in `server/views.js` and colors in the `:root` tokens at the top of `public/assets/app.css`.
-- Payment or email later: add a provider key with `userland apps secrets set` and read it only in server code with `ctx.secrets.require(...)`. Never put keys in `public/`.
+- Payment or email later: add the provider key's name to `resources.secrets.required`, add its value in the console (`https://console.userland.fun/apps/<app-id>/settings?add-key=<NAME>`) or with `userland apps secrets set`, and read it only in server code with `ctx.secrets.require(...)`. Never put keys in `public/`.
 
 ## Test
 

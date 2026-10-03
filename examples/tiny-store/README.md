@@ -37,7 +37,7 @@ userland login
 userland apps publish examples/tiny-store
 ```
 
-The webhook's `"provider": "stripe"` needs CLI 0.10.0 or later. Older versions of `userland validate` and `apps publish` refuse it with `manifest_path=resources.webhooks.checkout.provider` and `message=must be "none"`; `npm install -g @userland.fun/cli@latest` updates the CLI.
+The webhook's `"provider": "stripe"` needs CLI 0.11.0 or later. Older versions of `userland validate` and `apps publish` refuse it with `manifest_path=resources.webhooks.checkout.provider` and `message=must be "none"`; `npm install -g @userland.fun/cli@latest` updates the CLI.
 
 The first publish creates the app and prints its app id. That release is not live yet: its activation status is `pending_secrets` because the two secrets are missing. Add the payment webhook in Stripe (below) to get its signing secret. Setting secrets does not activate a stored release, so set both and then publish again into the same app:
 
@@ -48,6 +48,8 @@ userland apps publish examples/tiny-store --app <app-id>
 ```
 
 `CHECKOUT_SECRET_KEY` is your Stripe secret key, for when you replace the stand-in checkout. `CHECKOUT_WEBHOOK_SECRET` is the signing secret Stripe shows for the payment webhook (`whsec_...`).
+
+You can add the keys in the console instead: open `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_SECRET_KEY` and `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_WEBHOOK_SECRET`, paste each key, and save it, then publish again with `--app` as above. A coding agent setting up the app for you sends you these links rather than asking you to paste the keys into your chat.
 
 Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
 

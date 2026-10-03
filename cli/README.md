@@ -155,7 +155,7 @@ userland validate <dir> --strict
 
 It checks:
 
-- `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist, signed webhooks need a `secret`). A webhook's `provider` is `none`, `generic_hmac`, `github`, or `stripe`; every one but `none` is signed, and its `secret` names the secret that holds the signing key (for `stripe`, the signing secret Stripe shows for the endpoint, `whsec_...`). CLI 0.9.0 and earlier refuse `stripe` (`message=must be "none"` for the webhook's `provider`).
+- `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist, signed webhooks need a `secret`). A webhook's `provider` is `none`, `generic_hmac`, `github`, or `stripe`; every one but `none` is signed, and its `secret` names the secret that holds the signing key (for `stripe`, the signing secret Stripe shows for the endpoint, `whsec_...`). CLI 0.10.0 and earlier refuse `stripe` (`message=must be "none"` for the webhook's `provider`).
 - `runtime.embed_origins`, the other sites allowed to show the app in a frame on its `*.apps.userland.fun` addresses, with the API's rules and messages. Each entry is `https://`, a domain name, and an optional port, optionally starting with `*.` to cover subdomains (`https://www.example.com`, `https://*.example.com`), with no path or trailing slash. At most 20 entries, and no IP addresses, `localhost`, `*`, `'self'`, or Userland addresses (other apps, slugs, `userland.fun`, docs, the console, the API). Every bad entry gets its own `error=invalid_runtime_manifest` block (the API stops at the first). When the list is valid, the output shows the sites as the API stores them, in lowercase without repeats: `embed_origins=https://www.example.com,https://*.example.com`.
 - Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, symlinks listed in `files`, private keys in the folder, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps. It warns about the dotfiles and symlinks a folder publish leaves out (see "What gets uploaded" below).
 - Plan limits from `schemas/plans-v0.json`: private apps, app-user auth, public signup, data collection and index counts, file stores and upload sizes, required secrets, scheduled jobs and schedules, webhooks and providers, and release file count and size.
@@ -173,7 +173,7 @@ plan=free
 plan_source=flag
 required_plan=starter
 release_files=7
-release_bytes=17631
+release_bytes=18224
 
 manifest_path=resources.webhooks
 feature=webhooks.enabled
@@ -280,7 +280,7 @@ Docs: https://docs.userland.fun/reference/limits/
   "manifest_file": "manifest.userland.json",
   "release": {
     "file_count": 7,
-    "bundle_bytes": 17631
+    "bundle_bytes": 18224
   },
   "embed_origins": []
 }
@@ -352,7 +352,7 @@ recent_errors:
 
 API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API uses 30 days or the plan's retention window, whichever is shorter. When `--range` asks for more, the API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
 
-App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
+App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan, the console link to send the owner (`upgrade_url`, or `support_url` when no plan on sale includes it), and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
 
 Status and limits:
 
@@ -363,7 +363,7 @@ userland accounts downgrade preview --to starter --account <account-id>
 userland apps status <app-id> --account <account-id>
 ```
 
-`accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts. `accounts downgrade preview --to` takes the same plans as `validate --plan`: `free`, `starter`, `business`, or `business_plus`.
+`accounts limits` includes plan features, manifest limits, deployment limits, runtime limits, release limits, usage limits, current usage, and route counts. Usage is this period's counter unless a `usage_source=` line says otherwise: `usage_source=files.storage_bytes.max value=stored_files` means that number is the size of every file the account stores now, which does not reset each month. `short_address_holds=held` and `short_address_holds=max` say how many removed short addresses the account holds now and can hold at a time (`unlimited` when its plan has no limit; see Route management). `accounts downgrade preview --to` takes the same plans as `validate --plan`: `free`, `starter`, `business`, or `business_plus`.
 
 Support requests:
 
@@ -388,16 +388,32 @@ userland apps domains verify <app-id> <hostname> --account <account-id>
 userland apps domains remove <app-id> <hostname> --account <account-id>
 ```
 
-Structured API errors keep details on separate lines:
+A slug is the app's short address on apps.userland.fun. When you remove one with `apps slugs remove`, or unpublish its app while the short address is working, the account keeps it for 30 days: any of the account's own apps can add it again, and another account that adds it gets `API 409` with `error=route_hostname_taken`, as for a short address in use. `apps slugs remove` prints the removed route, whose `verification=` line has `held_for_account_until`, when the hold ends. An account holds at most as many removed short addresses at a time as its plan includes, and at least one (`short_address_holds` in `accounts limits`); a short address removed past that is not kept, so anyone can add it at once, and its `verification=` line has no `held_for_account_until`. A short address that a smaller plan or an unpaid invoice turned off stays with the app when you unpublish it, and its name can't be added to another app; remove it with `apps slugs remove` before unpublishing.
+
+A custom domain's route line and its `verification=` line are followed by the DNS records the owner adds at their DNS provider, and what Userland's last check found:
 
 ```text
-API 402: Monthly request quota exceeded for the current plan.
-error=quota_exceeded
-metric=requests.monthly.max
+route_123	custom_domain	pending_dns	portal.example.com		
+verification={"method":"dns_txt","name":"_userland.portal.example.com","value":"userland-route=route_123","ownership_status":"missing"}
+dns_record=traffic type=CNAME name=portal.example.com value=customers.userland.fun
+dns_record=ownership_txt type=TXT name=_userland.portal.example.com value=userland-route=route_123
+dns_ownership_status=missing
+dns_verification_error="Ownership TXT record not found: add _userland.portal.example.com with the value userland-route=route_123."
+dns_last_refreshed_at=2026-10-03T09:00:00.000Z
+```
+
+Give the owner every `dns_record=` line: `traffic` sends visitors to the app (for a bare domain such as `example.com`, its `note` says which record types work), `ownership_txt` proves the domain is theirs, and `provider_validation` lines, when there are any, let the certificate provider issue HTTPS. `apps domains remove` prints none of these lines, since a removed domain needs no records. Userland checks a waiting domain every hour for 14 days after it is added, so it goes live by itself once the records are right; `apps domains verify` checks now. While a record is still missing, verify answers `API 409` with `error=domain_pending_verification`, the domain's `status`, the same `dns_` lines, and `domain_url`, the console page that shows the owner the domain's setup steps.
+
+Structured API errors keep details on separate lines. Plan refusals carry the console link to send the owner: `upgrade_url` opens the plans page with the plan that fixes it, or `support_url` when no plan on sale does (`self_serve_upgrade=false`). Payment refusals (`billing_restricted`, `downgrade_incompatible`) carry `billing_url`, the account's Plan and billing page, and a domain that is still waiting carries `domain_url`. Send the link to the owner as it is:
+
+```text
+API 402: app_slugs requires Starter.
+error=entitlement_required
 plan_key=free
-limit=10000
-current=10000
-upgrade_required=true
+required_plan_key=starter
+self_serve_upgrade=true
+upgrade_url=https://console.userland.fun/billing/plans?plan=starter&for=app_slugs&account=acct_123
+violation=feature=app_slugs requires=starter
 ```
 
 When a rollback cannot update the app's server (`error=platform_deploy_failed`), the rollback does not happen and the app stays on the release it was on. The error says why and what to do. When the server did not start in time, which can happen right after publishing a newer release, or the upload could not be taken just then, it says to run the same command again:
@@ -498,14 +514,14 @@ userland apps invites create <app-id> --email <email> --role owner --account <ac
 https://<app_id>.apps.userland.fun/_userland/auth/invite/<invite_id>?token=inv_...
 ```
 
-The person opens the link, sets a password, and can then sign in to the app with the roles you gave them. They become a user of that app only: the invite does not add them to your Userland account or let them use the CLI or API. Give the link only to that person, because whoever has it can use it once to set the password.
+The person opens the link, sets a password, and can then sign in to the app with the roles you gave them. An invite is only for someone who does not have an account in the app yet: the command still prints a link for an email that already has one, but setting a password on it fails with "An app user already exists for this email." (`409 user_exists`) and gives no new role, and the person keeps the password and roles they have. There is no command yet to change the roles of someone who already has an account in the app. People who are invited become users of that app only: the invite does not add them to your Userland account or let them use the CLI or API. Give the link only to that person, because whoever has it can use it once to set the password.
 
 - `--email` (required) is the person's email address.
 - `--role` gives the person one of the roles the app's manifest declares in `resources.auth.roles`. Pass it once for each role (`--role staff --role owner`, not `--role staff,owner`). Without `--role`, the person gets no special role.
 - `--expires-in-days` sets how long the link works, from `1` to `30` days. Without it the link works for 7 days.
 - `--json` prints the API response unchanged: `invite_id`, `email`, `roles`, `expires_at`, and `invite_url`.
 
-The command works with the key saved by `userland login` as well as with `USERLAND_API_KEY`, so you do not need to make another API key to invite someone. It needs the owner or admin role in the app's account. When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the account saved by `userland accounts use`), the command reads the app first and creates no invite for an app that belongs to a different account: it prints `<app-id> belongs to account <other-account-id>, not <account-id>. No invite was created.` and exits `1`, as `apps unpublish` does. Errors print like other app commands and exit `1`, with no link: `API 409` with `error=auth_disabled` when the app does not have sign-in, `API 400` with `error=invalid_role` for a role the app does not declare, and `API 402` with `error=quota_exceeded` and `metric=app_users.active.max` when the app has as many people as its plan allows:
+The command works with the key saved by `userland login` as well as with `USERLAND_API_KEY`, so you do not need to make another API key to invite someone. It needs the owner or admin role in the app's account. When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the account saved by `userland accounts use`), the command reads the app first and creates no invite for an app that belongs to a different account: it prints `<app-id> belongs to account <other-account-id>, not <account-id>. No invite was created.` and exits `1`, as `apps unpublish` does. Errors print like other app commands and exit `1`, with no invite link: `API 409` with `error=auth_disabled` when the app does not have sign-in, `API 400` with `error=invalid_role` for a role the app does not declare, and `API 402` with `error=quota_exceeded` and `metric=app_users.active.max` when the app has as many people as its plan allows. That one carries `upgrade_url`, the plans page to send the owner (or `support_url` with `self_serve_upgrade=false` when no plan on sale allows more people):
 
 ```text
 API 402: app_users.active.max quota exceeded for the current plan.
@@ -517,6 +533,8 @@ limit=10
 current=10
 increment=1
 upgrade_required=true
+self_serve_upgrade=true
+upgrade_url=https://console.userland.fun/billing/plans?plan=starter&for=app_users.active.max&account=acct_123
 ```
 
 ## Read events
