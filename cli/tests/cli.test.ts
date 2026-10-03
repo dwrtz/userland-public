@@ -1273,6 +1273,16 @@ describe("public CLI", () => {
       "dns_ownership_status=missing\n" +
       'dns_verification_error="Ownership TXT record not found: add _userland.www.example.com with the value userland-route=route_domain."\n' +
       "dns_last_refreshed_at=2026-05-05T00:00:00.000Z\n";
+    const domainRoute = {
+      ...route,
+      route_id: "route_domain",
+      route_type: "custom_domain",
+      hostname: "www.example.com",
+      slug: null,
+      status: "pending_dns",
+      verification: { method: "dns_txt", name: "_userland.www.example.com", value: "userland-route=route_domain", ownership_status: "missing" },
+      dns_instructions: dnsInstructions
+    };
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "GET /v0/apps/app_ops": {
@@ -1296,10 +1306,13 @@ describe("public CLI", () => {
       "GET /v0/apps/app_ops/slugs": { app_id: "app_ops", routes: [route] },
       "POST /v0/apps/app_ops/slugs": { app_id: "app_ops", route },
       "DELETE /v0/apps/app_ops/slugs/demo": { app_id: "app_ops", route: { ...route, status: "deleted" } },
-      "GET /v0/apps/app_ops/domains": { app_id: "app_ops", routes: [{ ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, dns_instructions: dnsInstructions }] },
-      "POST /v0/apps/app_ops/domains": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "pending_dns", dns_instructions: dnsInstructions } },
+      "GET /v0/apps/app_ops/domains": { app_id: "app_ops", routes: [domainRoute] },
+      "POST /v0/apps/app_ops/domains": { app_id: "app_ops", route: domainRoute },
       "POST /v0/apps/app_ops/domains/www.example.com/verify": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null } },
-      "DELETE /v0/apps/app_ops/domains/www.example.com": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "deleted" } }
+      "DELETE /v0/apps/app_ops/domains/www.example.com": {
+        app_id: "app_ops",
+        route: { ...domainRoute, status: "deleted", reason: "Route deleted.", deleted_at: "2026-05-06T00:00:00.000Z" }
+      }
     });
 
     await expectCommand(["apps", "status", "app_ops", "--account", "acct_ops"], api.baseUrl, "can_serve_canonical=true");
@@ -1309,14 +1322,19 @@ describe("public CLI", () => {
     expect(requests.at(-1)?.body).toEqual({ slug: "demo" });
     await expectCommand(["apps", "slugs", "remove", "app_ops", "demo", "--account", "acct_ops"], api.baseUrl, "deleted");
     await expectCommand(["apps", "domains", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, "www.example.com");
-    await expectCommand(["apps", "domains", "add", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, `pending_dns\twww.example.com\t\t\n${dnsLines}`);
+    await expectCommand(
+      ["apps", "domains", "add", "app_ops", "www.example.com", "--account", "acct_ops"],
+      api.baseUrl,
+      `route_domain\tcustom_domain\tpending_dns\twww.example.com\t\t\nverification=${JSON.stringify(domainRoute.verification)}\n${dnsLines}`
+    );
     expect(requests.at(-1)?.body).toEqual({ hostname: "www.example.com" });
     await expectCommand(["apps", "domains", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, dnsLines);
-    // Slugs have no DNS records to add.
-    const slugs = await runCli(["apps", "slugs", "list", "app_ops", "--account", "acct_ops"], api.baseUrl);
-    expect(slugs.stdout).not.toContain("dns_");
     await expectCommand(["apps", "domains", "verify", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "active");
-    await expectCommand(["apps", "domains", "remove", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "deleted");
+    // The API answers a removed domain with its records as well; the CLI asks for none of them.
+    const removed = await runCli(["apps", "domains", "remove", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl);
+    expect(removed.code).toBe(0);
+    expect(removed.stdout).toContain("route_domain\tcustom_domain\tdeleted\twww.example.com\t\tRoute deleted.\n");
+    expect(removed.stdout).not.toMatch(/^dns_/mu);
     expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("POST /v0/apps/app_ops/domains/www.example.com/verify");
     expect(requests.every((request) => request.accountId === "acct_ops")).toBe(true);
   });

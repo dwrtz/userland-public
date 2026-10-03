@@ -1917,8 +1917,11 @@ function printRoute(route: RouteRecord): void {
   if (route.verification && Object.keys(route.verification).length > 0) {
     console.log(`verification=${JSON.stringify(route.verification)}`);
   }
-  for (const line of dnsInstructionLines(route.dns_instructions)) {
-    console.log(line);
+  // The API answers a removed domain with its records too; there is nothing left to add for it.
+  if (route.status !== "deleted" && !route.deleted_at) {
+    for (const line of dnsInstructionLines(route.dns_instructions)) {
+      console.log(line);
+    }
   }
 }
 
@@ -3170,10 +3173,11 @@ Invites:
   already has one, setting a password fails (user_exists) and gives no new role.
 
 Short addresses and domains:
-  slugs remove and apps unpublish hold a working short address for this account for 30 days, so only
-  its own apps can add it again, unless the account already holds as many as its plan includes
-  (accounts limits shows short_address_holds: held and max). domains add, list, and verify print the
-  records to add as dns_record= lines. When verify answers domain_pending_verification, it lists what
+  slugs remove, and apps unpublish for a working short address, keep it for this account for 30 days,
+  so only its own apps can add it again, unless the account already holds as many as its plan
+  includes (accounts limits shows short_address_holds: held and max). One that a smaller plan or an
+  unpaid invoice turned off stays with an unpublished app, so remove it before unpublishing. domains
+  add, list, and verify print the records to add as dns_record= lines. When verify answers domain_pending_verification, it lists what
   is still missing (dns_ownership_status, dns_verification_error) and domain_url, the console page
   with the domain's setup steps.
 
