@@ -849,7 +849,7 @@ describe("public CLI", () => {
     expect(requests).toHaveLength(0);
   });
 
-  test("prints invite errors from the API, such as the app's people limit, without a link", async () => {
+  test("prints invite errors from the API, such as the app's people limit, without an invite link", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "POST /v0/apps/app_full/admin-invites": {
@@ -857,7 +857,18 @@ describe("public CLI", () => {
         error: {
           code: "quota_exceeded",
           message: "app_users.active.max quota exceeded for the current plan.",
-          details: { metric: "app_users.active.max", plan_key: "free", limit: 10, current: 10, increment: 1, required_plan_key: "starter", upgrade_required: true }
+          details: {
+            metric: "app_users.active.max",
+            plan_key: "free",
+            limit: 10,
+            current: 10,
+            increment: 1,
+            required_plan_key: "starter",
+            upgrade_required: true,
+            self_serve_upgrade: true,
+            docs_url: "https://docs.userland.fun/reference/limits/",
+            upgrade_url: "https://console.userland.fun/billing/plans?plan=starter&for=app_users.active.max&account=acct_full"
+          }
         }
       },
       "POST /v0/apps/app_static/admin-invites": { __status: 409, error: { code: "auth_disabled", message: "App-user auth is not enabled for this app." } },
@@ -869,7 +880,8 @@ describe("public CLI", () => {
     expect(full.stdout).toBe("");
     expect(full.stderr).toContain(
       "API 402: app_users.active.max quota exceeded for the current plan.\nerror=quota_exceeded\nmetric=app_users.active.max\nplan_key=free\n" +
-        "required_plan_key=starter\nlimit=10\ncurrent=10\nincrement=1\nupgrade_required=true\n"
+        "required_plan_key=starter\nlimit=10\ncurrent=10\nincrement=1\nupgrade_required=true\nself_serve_upgrade=true\n" +
+        "upgrade_url=https://console.userland.fun/billing/plans?plan=starter&for=app_users.active.max&account=acct_full\n"
     );
 
     for (const { appId, message } of [
@@ -1163,11 +1175,25 @@ describe("public CLI", () => {
         deployment_limits: { "custom_domains.max": 5 },
         runtime_limits: { "server.cpu_ms.max": 50 },
         release_limits: { "release.file_count.max": 500 },
-        usage_limits: { "requests.monthly.max": 100000 },
-        usage: { "requests.monthly.max": 42 },
+        usage_limits: { "requests.monthly.max": 100000, "files.storage_bytes.max": 2147483648 },
+        usage: { "requests.monthly.max": 42, "files.storage_bytes.max": 1288490188 },
+        usage_sources: { "files.storage_bytes.max": "stored_files" },
         usage_period: { period_start: "2026-05-01T00:00:00.000Z", period_end: "2026-06-01T00:00:00.000Z" },
         route_counts: { active_custom_domains: 1 },
+        short_address_holds: { held: 2, max: 5 },
         compatibility_warnings: []
+      },
+      "GET /v0/accounts/acct_unlimited/limits": {
+        account_id: "acct_unlimited",
+        plan_key: "internal",
+        features: {},
+        manifest_limits: {},
+        deployment_limits: {},
+        runtime_limits: {},
+        release_limits: {},
+        usage_limits: {},
+        usage: {},
+        short_address_holds: { held: 0, max: null }
       },
       "GET /v0/accounts/acct_ops/downgrade-preview?plan=free": {
         account_id: "acct_ops",
@@ -1190,6 +1216,15 @@ describe("public CLI", () => {
     expect(limits.stdout).toContain("manifest_limit=jobs.declared.max value=10");
     expect(limits.stdout).toContain("deployment_limit=custom_domains.max value=5");
     expect(limits.stdout).toContain("usage=requests.monthly.max value=42");
+    // Stored files are counted in total, not for this period, and usage_source says so.
+    expect(limits.stdout).toContain("usage=files.storage_bytes.max value=1288490188\n");
+    expect(limits.stdout).toContain("usage_source=files.storage_bytes.max value=stored_files\n");
+    expect(limits.stdout).toContain("short_address_holds=held value=2\nshort_address_holds=max value=5\n");
+
+    const unlimited = await runCli(["accounts", "limits", "--account", "acct_unlimited"], api.baseUrl);
+    expect(unlimited.code).toBe(0);
+    expect(unlimited.stdout).toContain("short_address_holds=held value=0\nshort_address_holds=max value=unlimited\n");
+    expect(unlimited.stdout).not.toContain("usage_source=");
 
     const preview = await runCli(["accounts", "downgrade", "preview", "--to", "free", "--account", "acct_ops"], api.baseUrl);
     expect(preview.code).toBe(0);
@@ -1217,6 +1252,27 @@ describe("public CLI", () => {
       updated_at: "2026-05-05T00:00:00.000Z",
       deleted_at: null
     };
+    // As the API answers a new custom domain: the records to add, and what the last check found.
+    const dnsInstructions = {
+      traffic: { type: "CNAME", name: "www.example.com", value: "customers.userland.fun" },
+      cname: { type: "CNAME", name: "www.example.com", value: "customers.userland.fun" },
+      ownership_txt: { type: "TXT", name: "_userland.www.example.com", value: "userland-route=route_domain" },
+      ownership_status: "missing",
+      provider: { name: "cloudflare", status: "pending", ssl_status: "pending_validation" },
+      provider_validation_records: [
+        { txt_name: "_acme-challenge.www.example.com", txt_value: "token-1" },
+        { txt_name: "_acme-challenge.www.example.com", txt_value: "token-1" }
+      ],
+      verification_errors: ["Ownership TXT record not found: add _userland.www.example.com with the value userland-route=route_domain."],
+      last_refreshed_at: "2026-05-05T00:00:00.000Z"
+    };
+    const dnsLines =
+      "dns_record=traffic type=CNAME name=www.example.com value=customers.userland.fun\n" +
+      "dns_record=ownership_txt type=TXT name=_userland.www.example.com value=userland-route=route_domain\n" +
+      "dns_record=provider_validation type=TXT name=_acme-challenge.www.example.com value=token-1\n" +
+      "dns_ownership_status=missing\n" +
+      'dns_verification_error="Ownership TXT record not found: add _userland.www.example.com with the value userland-route=route_domain."\n' +
+      "dns_last_refreshed_at=2026-05-05T00:00:00.000Z\n";
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
       "GET /v0/apps/app_ops": {
@@ -1240,8 +1296,8 @@ describe("public CLI", () => {
       "GET /v0/apps/app_ops/slugs": { app_id: "app_ops", routes: [route] },
       "POST /v0/apps/app_ops/slugs": { app_id: "app_ops", route },
       "DELETE /v0/apps/app_ops/slugs/demo": { app_id: "app_ops", route: { ...route, status: "deleted" } },
-      "GET /v0/apps/app_ops/domains": { app_id: "app_ops", routes: [{ ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null }] },
-      "POST /v0/apps/app_ops/domains": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "pending_dns" } },
+      "GET /v0/apps/app_ops/domains": { app_id: "app_ops", routes: [{ ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, dns_instructions: dnsInstructions }] },
+      "POST /v0/apps/app_ops/domains": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "pending_dns", dns_instructions: dnsInstructions } },
       "POST /v0/apps/app_ops/domains/www.example.com/verify": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null } },
       "DELETE /v0/apps/app_ops/domains/www.example.com": { app_id: "app_ops", route: { ...route, route_type: "custom_domain", hostname: "www.example.com", slug: null, status: "deleted" } }
     });
@@ -1253,8 +1309,12 @@ describe("public CLI", () => {
     expect(requests.at(-1)?.body).toEqual({ slug: "demo" });
     await expectCommand(["apps", "slugs", "remove", "app_ops", "demo", "--account", "acct_ops"], api.baseUrl, "deleted");
     await expectCommand(["apps", "domains", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, "www.example.com");
-    await expectCommand(["apps", "domains", "add", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "pending_dns");
+    await expectCommand(["apps", "domains", "add", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, `pending_dns\twww.example.com\t\t\n${dnsLines}`);
     expect(requests.at(-1)?.body).toEqual({ hostname: "www.example.com" });
+    await expectCommand(["apps", "domains", "list", "app_ops", "--account", "acct_ops"], api.baseUrl, dnsLines);
+    // Slugs have no DNS records to add.
+    const slugs = await runCli(["apps", "slugs", "list", "app_ops", "--account", "acct_ops"], api.baseUrl);
+    expect(slugs.stdout).not.toContain("dns_");
     await expectCommand(["apps", "domains", "verify", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "active");
     await expectCommand(["apps", "domains", "remove", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl, "deleted");
     expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("POST /v0/apps/app_ops/domains/www.example.com/verify");
@@ -1510,6 +1570,69 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("self_serve_upgrade=true");
     expect(result.stderr).toContain("upgrade_url=https://console.userland.fun/billing");
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/reference/limits/");
+  });
+
+  test("prints the console link that fixes a payment or domain refusal", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_ops/slugs": {
+        __status: 402,
+        error: {
+          code: "billing_restricted",
+          message: "This account is restricted by billing state.",
+          details: {
+            account_id: "acct_ops",
+            billing_access_state: "past_due_restricted",
+            reasons: ["billing:past_due_restricted"],
+            billing_url: "https://console.userland.fun/billing?account=acct_ops"
+          }
+        }
+      },
+      "POST /v0/apps/app_ops/domains/www.example.com/verify": {
+        __status: 409,
+        error: {
+          code: "domain_pending_verification",
+          message: "Domain DNS verification is still pending.",
+          details: {
+            route_id: "route_domain",
+            hostname: "www.example.com",
+            status: "pending_certificate",
+            verification: { status: "pending" },
+            dns_instructions: {
+              traffic: { type: "CNAME", name: "www.example.com", value: "customers.userland.fun" },
+              ownership_txt: { type: "TXT", name: "_userland.www.example.com", value: "userland-route=route_domain" },
+              ownership_status: "verified",
+              provider_validation_records: { cname: "_acme.www.example.com", cname_target: "dcv.example.net" },
+              verification_errors: [],
+              last_refreshed_at: "2026-05-05T00:00:00.000Z"
+            },
+            domain_url: "https://console.userland.fun/apps/app_ops/settings?domain=www.example.com&account=acct_ops"
+          }
+        }
+      }
+    });
+
+    const billing = await runCli(["apps", "slugs", "add", "app_ops", "demo", "--account", "acct_ops"], api.baseUrl);
+    expect(billing.code).toBe(1);
+    expect(billing.stderr).toContain(
+      "API 402: This account is restricted by billing state.\nerror=billing_restricted\nbilling_url=https://console.userland.fun/billing?account=acct_ops\n"
+    );
+
+    const pending = await runCli(["apps", "domains", "verify", "app_ops", "www.example.com", "--account", "acct_ops"], api.baseUrl);
+    expect(pending.code).toBe(1);
+    expect(pending.stdout).toBe("");
+    expect(pending.stderr).toContain(
+      "API 409: Domain DNS verification is still pending.\n" +
+        "error=domain_pending_verification\n" +
+        "domain_url=https://console.userland.fun/apps/app_ops/settings?domain=www.example.com&account=acct_ops\n" +
+        "hostname=www.example.com\n" +
+        "status=pending_certificate\n" +
+        "dns_record=traffic type=CNAME name=www.example.com value=customers.userland.fun\n" +
+        "dns_record=ownership_txt type=TXT name=_userland.www.example.com value=userland-route=route_domain\n" +
+        "dns_record=provider_validation type=CNAME name=_acme.www.example.com value=dcv.example.net\n" +
+        "dns_ownership_status=verified\n" +
+        "dns_last_refreshed_at=2026-05-05T00:00:00.000Z\n"
+    );
   });
 
   test("prints why a rollback's server did not start, says the rollback did not happen, and to run the command again", async () => {
@@ -2273,7 +2396,7 @@ recent_errors:
         error: {
           code: "entitlement_required",
           message: "app_analytics is not available on self-serve plans; contact support.",
-          details: { plan_key: "free", required_plan_key: "internal", self_serve_upgrade: false }
+          details: { plan_key: "free", required_plan_key: "internal", self_serve_upgrade: false, support_url: "https://console.userland.fun/support?subject=App+Analytics&account=acct_x" }
         }
       }
     });
@@ -2281,7 +2404,9 @@ recent_errors:
     const result = await runCli(["apps", "analytics", "app_x"], api.baseUrl);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("App Analytics is not available on self-serve plans for this account; contact support.");
+    expect(result.stderr).toContain("self_serve_upgrade=false\nsupport_url=https://console.userland.fun/support?subject=App+Analytics&account=acct_x\n");
     expect(result.stderr).not.toContain("Upgrade to");
+    expect(result.stderr).not.toContain("upgrade_url=");
   });
 
   test("shows an upgrade state when analytics is not in the plan", async () => {
@@ -2294,8 +2419,12 @@ recent_errors:
         details: {
           plan_key: "free",
           source: "default",
+          feature_key: "app_analytics",
           required_plan_key: "starter",
-          violations: [{ kind: "feature", feature_key: "app_analytics", required_plan_key: "starter" }]
+          violations: [{ kind: "feature", feature_key: "app_analytics", required_plan_key: "starter" }],
+          self_serve_upgrade: true,
+          docs_url: "https://docs.userland.fun/reference/limits/",
+          upgrade_url: "https://console.userland.fun/billing/plans?plan=starter&for=app_analytics&account=acct_free"
         }
       }
     };
@@ -2307,7 +2436,10 @@ recent_errors:
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("App Analytics is not included in this account's plan.");
-    expect(result.stderr).toContain("error=entitlement_required\nfeature=app_analytics\nplan_key=free\nrequired_plan_key=starter");
+    expect(result.stderr).toContain(
+      "error=entitlement_required\nfeature=app_analytics\nplan_key=free\nrequired_plan_key=starter\nself_serve_upgrade=true\n" +
+        "upgrade_url=https://console.userland.fun/billing/plans?plan=starter&for=app_analytics&account=acct_free\n"
+    );
     expect(result.stderr).toContain("Upgrade to Starter or higher");
     expect(result.stderr).toContain("Docs: https://docs.userland.fun/guides/app-analytics");
 

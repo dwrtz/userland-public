@@ -44,7 +44,7 @@ Usage limits still apply, and a busy launch can reach them:
 - **Requests:** Free allows 10,000 requests a month across all your apps on the account. Every page, form post, and file counts, and a first visit to the landing page is about six (page, stylesheet, two fonts, script, icon). If your launch may get shared widely, plan on Starter (100,000 a month).
 - **Compute per request:** the landing page reads only one page of signups (100 rows). The private place-in-line page and the owner view read the whole list, 100 rows per query, every page until the end (never a cut-off list), so they take longer as the list grows. Free gives each request 10 ms of compute and Starter 25 ms. Before launch day, test those two pages with a list the size you expect.
 
-A slug (like `waitlist-demo`), a custom domain, and App Analytics are account features on paid plans; the app works without them.
+A short address (like `waitlist-demo.apps.userland.fun`), a custom domain, and App Analytics are account features on paid plans; the app works without them.
 
 ## Spam and privacy
 
