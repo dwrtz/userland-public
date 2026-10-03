@@ -54,7 +54,7 @@
             "email": "string",
             "status": {
               "type": "enum",
-              "values": ["draft", "checkout_pending", "paid", "cancelled"]
+              "values": ["draft", "checkout_pending", "payment_processing", "paid", "cancelled"]
             },
             "line_items": "json",
             "total_cents": "integer",
@@ -100,13 +100,18 @@
         },
         "handled-events": {
           "fields": {
-            "event_id": "string"
+            "event_id": "string",
+            "handled_at": "datetime"
           },
           "indexes": [
             {
               "name": "by_event_id",
               "fields": ["event_id"],
               "unique": true
+            },
+            {
+              "name": "by_handled_at",
+              "fields": ["handled_at"]
             }
           ],
           "access": {

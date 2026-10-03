@@ -124,6 +124,99 @@ it("marks orders paid from the checkout webhook job exactly once", async () => {
   expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
 });
 
+// The hourly job runs while a bank payment is on its way: the checkout
+// completed more than 24 hours ago.
+async function hoursLater(runtime: { state: { rows: Map<string, Array<Record<string, unknown>>> }; ctx: unknown }, hours: number) {
+  const past = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  for (const row of runtime.state.rows.get("orders")!) row.created_at = past;
+  await app.job({ job_id: "job_hourly", name: "expire-abandoned-orders", payload: {} }, runtime.ctx);
+}
+
+describe("a bank payment, which Stripe confirms days after the checkout completes", () => {
+  it("waits for Stripe past the 24 hours the hourly job gives an unpaid checkout, then marks the order paid", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("payment_processing");
+    expect(runtime.state.logs).toContainEqual({
+      level: "info",
+      message: "bank payment processing",
+      metadata: { order_id: order.id, event_id: "evt_completed", webhook_delivery_id: "whd_test_1" }
+    });
+    expect(handledEvents(runtime)).toEqual([]);
+
+    // A SEPA debit can take up to 14 business days.
+    await hoursLater(runtime, 20 * 24);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("payment_processing");
+    expect(runtime.state.logs).toContainEqual(expect.objectContaining({ message: "abandoned orders expired", metadata: expect.objectContaining({ expired: 0 }) }));
+
+    const confirmed = stripeEvent(order, {}, { id: "evt_confirmed", type: "checkout.session.async_payment_succeeded" });
+    await app.job(confirmed, runtime.ctx);
+    await app.job(confirmed, runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!).toMatchObject({ status: "paid", paid_at: expect.any(String) });
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(runtime.state.logs.filter((entry) => entry.message === "checkout job processed")).toHaveLength(1);
+    expect(handledEvents(runtime)).toEqual(["evt_confirmed"]);
+  });
+
+  it("cancels the order when Stripe says the bank payment failed, and takes no stock off", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
+    await hoursLater(runtime, 5 * 24);
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_failed", type: "checkout.session.async_payment_failed" }), runtime.ctx);
+
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("cancelled");
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(5);
+    expect(runtime.state.logs).toContainEqual({
+      level: "info",
+      message: "bank payment failed",
+      metadata: { order_id: order.id, event_id: "evt_failed", webhook_delivery_id: "whd_test_1" }
+    });
+    expect(handledEvents(runtime)).toEqual([]);
+
+    // The checkout's own event sent again doesn't bring the order back.
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("cancelled");
+  });
+
+  it("keeps the order paid when the checkout's own event arrives after Stripe confirmed the payment", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, {}, { id: "evt_confirmed", type: "checkout.session.async_payment_succeeded" }), runtime.ctx);
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
+    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_failed_late", type: "checkout.session.async_payment_failed" }), runtime.ctx);
+
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
+    expect(runtime.state.logs.filter((entry) => entry.message === "checkout event ignored").map((entry) => entry.metadata?.reason)).toEqual(["status_paid", "status_paid"]);
+  });
+
+  it("leaves the order alone when the bank payment's amount or currency does not match", async () => {
+    const runtime = await storeWithProduct();
+    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
+
+    await app.job(stripeEvent(order, { payment_status: "unpaid", amount_total: 1 }, { id: "evt_completed" }), runtime.ctx);
+    await app.job(stripeEvent(order, { payment_status: "unpaid", currency: "eur" }, { id: "evt_failed", type: "checkout.session.async_payment_failed" }), runtime.ctx);
+
+    expect(runtime.state.rows.get("orders")![0]!.status).toBe("checkout_pending");
+    expect(runtime.state.logs.filter((entry) => entry.level === "warn" && entry.message === "checkout amount mismatch")).toHaveLength(2);
+  });
+
+  it("doesn't count a bank payment on its way as an open checkout", async () => {
+    const runtime = await storeWithProduct();
+    for (let index = 0; index < 5; index += 1) {
+      expect((await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).status).toBe(201);
+    }
+    const [first] = runtime.state.rows.get("orders")!;
+    await app.job(stripeEvent({ checkout_session_id: String(first!.checkout_session_id), total_cents: 1200, currency: "USD" }, { payment_status: "unpaid" }), runtime.ctx);
+    expect((await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).status).toBe(201);
+  });
+});
+
 describe("an event Stripe sends again", () => {
   it("is ignored by its event id once it has been handled, however much later it arrives", async () => {
     const runtime = await storeWithProduct();
@@ -171,22 +264,6 @@ describe("an event Stripe sends again", () => {
     expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
     expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
     expect(handledEvents(runtime)).toHaveLength(1);
-  });
-
-  it("marks a bank payment paid when Stripe confirms it, after a checkout that completed unpaid", async () => {
-    const runtime = await storeWithProduct();
-    const { order } = await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json();
-
-    await app.job(stripeEvent(order, { payment_status: "unpaid" }, { id: "evt_completed" }), runtime.ctx);
-    expect(runtime.state.rows.get("orders")![0]!.status).toBe("checkout_pending");
-    expect(handledEvents(runtime)).toEqual([]);
-
-    const confirmed = stripeEvent(order, {}, { id: "evt_confirmed", type: "checkout.session.async_payment_succeeded" });
-    await app.job(confirmed, runtime.ctx);
-    await app.job(confirmed, runtime.ctx);
-    expect(runtime.state.rows.get("orders")![0]!.status).toBe("paid");
-    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(4);
-    expect(handledEvents(runtime)).toEqual(["evt_confirmed"]);
   });
 
   it("takes stock off once when two different events say the same order is paid", async () => {
@@ -286,8 +363,8 @@ it("logs an error instead of retrying when stock cannot be updated", async () =>
 describe("checkout events that are not a completed payment", () => {
   const cases: Array<[string, (order: Order) => ReturnType<typeof stripeEvent>]> = [
     ["an expired checkout", (order) => stripeEvent(order, { status: "expired", payment_status: "unpaid" }, { type: "checkout.session.expired" })],
-    ["a failed bank payment", (order) => stripeEvent(order, { payment_status: "unpaid" }, { type: "checkout.session.async_payment_failed" })],
-    ["a completed checkout still waiting on a bank payment", (order) => stripeEvent(order, { payment_status: "unpaid" })],
+    ["a confirmed bank payment whose checkout doesn't say paid", (order) => stripeEvent(order, { payment_status: "unpaid" }, { type: "checkout.session.async_payment_succeeded" })],
+    ["a completed checkout that needs no payment", (order) => stripeEvent(order, { payment_status: "no_payment_required" })],
     ["an event with no type", (order) => stripeEvent(order, {}, { type: undefined })],
     ["an event about something other than a checkout", (order) => stripeEvent(order, { object: "payment_intent", id: "pi_123", status: "succeeded" }, { type: "payment_intent.succeeded" })],
     ["an event with no checkout in it", (order) => stripeEvent(order, {}, { data: undefined })],
@@ -410,6 +487,51 @@ it("pages past the first 100 pending orders so the oldest ones expire", async ()
   const rows = runtime.state.rows.get("orders")!;
   expect(rows.filter((row) => row.status === "cancelled")).toHaveLength(30);
   expect(rows.filter((row) => String(row.checkout_session_id).startsWith("new_") && row.status !== "checkout_pending")).toHaveLength(0);
+});
+
+describe("handled Stripe events", () => {
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const hourly = { job_id: "job_hourly", name: "expire-abandoned-orders", payload: {} };
+
+  it("are forgotten by the hourly job after 30 days, and an old event sent again takes no stock off", async () => {
+    const runtime = await storeWithProduct();
+    const first = (await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json()).order;
+    const second = (await (await app.fetch(post("/api/orders", { line_items: [{ slug: "mug" }] }), runtime.ctx)).json()).order;
+    const old = stripeEvent(first, {}, { id: "evt_old" });
+    await app.job(old, runtime.ctx);
+    await app.job(stripeEvent(second, {}, { id: "evt_recent" }), runtime.ctx);
+    const rows = runtime.state.rows.get("handled-events")!;
+    expect(rows.every((row) => typeof row.handled_at === "string")).toBe(true);
+    // The harness keeps each field on the row and in row.data.
+    for (const [eventId, days] of [["evt_old", 31], ["evt_recent", 29]] as const) {
+      const row = rows.find((candidate) => candidate.event_id === eventId)!;
+      row.handled_at = row.data.handled_at = daysAgo(days);
+    }
+
+    await app.job(hourly, runtime.ctx);
+    expect(handledEvents(runtime)).toEqual(["evt_recent"]);
+    expect(runtime.state.logs).toContainEqual({ level: "info", message: "old handled events forgotten", metadata: { forgotten: 1 } });
+
+    // The order is paid already, so its stock-updates row stops the stock going down again.
+    await app.job(old, runtime.ctx);
+    expect(runtime.state.rows.get("products")![0]!.inventory_count).toBe(3);
+    expect(runtime.state.logs).toContainEqual(expect.objectContaining({ message: "checkout event ignored", metadata: expect.objectContaining({ reason: "already_paid", event_id: "evt_old" }) }));
+  });
+
+  it("are forgotten at most 500 a run, oldest first", async () => {
+    const runtime = createFakeRuntime(manifest, { secrets, user: customer });
+    const events = runtime.ctx.data.collection("handled-events");
+    for (let index = 0; index < 520; index += 1) {
+      await events.create({ event_id: `evt_old_${index}`, handled_at: daysAgo(60 - index / 100) });
+    }
+    await events.create({ event_id: "evt_kept", handled_at: daysAgo(1) });
+
+    await app.job(hourly, runtime.ctx);
+    expect(handledEvents(runtime).sort()).toEqual([...Array.from({ length: 20 }, (_, index) => `evt_old_${500 + index}`), "evt_kept"].sort());
+    await app.job(hourly, runtime.ctx);
+    expect(handledEvents(runtime)).toEqual(["evt_kept"]);
+    expect(runtime.state.logs.filter((entry) => entry.message === "old handled events forgotten").map((entry) => entry.metadata)).toEqual([{ forgotten: 500 }, { forgotten: 20 }]);
+  });
 });
 
 describe("posts from other sites", () => {

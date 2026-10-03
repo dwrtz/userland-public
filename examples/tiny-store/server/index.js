@@ -35,13 +35,21 @@ const MAX_LINE_ITEMS = 20;
 const MAX_OPEN_ORDERS_PER_CUSTOMER = 5;
 const MAX_JSON_BYTES = 100_000;
 const PAGE_SIZE = 50;
-// The Stripe events that can mark an order paid, and only when their Checkout
-// Session says `payment_status: "paid"`. A card payment is paid when the
-// session completes; a bank debit completes unpaid and is confirmed later by
-// checkout.session.async_payment_succeeded. See handleCheckoutEvent.
-const PAYMENT_EVENTS = new Set(["checkout.session.completed", "checkout.session.async_payment_succeeded"]);
+// The Stripe Checkout events the job acts on; see handleCheckoutEvent. A card
+// payment is paid when the session completes. A bank payment (or another
+// payment method that takes days) completes unpaid, and Stripe says days later
+// whether it went through.
+const CHECKOUT_COMPLETED = "checkout.session.completed";
+const BANK_PAYMENT_SUCCEEDED = "checkout.session.async_payment_succeeded";
+const BANK_PAYMENT_FAILED = "checkout.session.async_payment_failed";
 // Stripe event ids look like evt_1NG8Du2eZvKYlo2CUI79vXWy.
 const STRIPE_EVENT_ID = /^evt_[A-Za-z0-9_]{1,250}$/u;
+// How long the job remembers a Stripe event it has handled. Stripe retries a
+// delivery for up to 3 days and lists events for 30, so an older event id
+// can't come back; the hourly job forgets older ones so they stop counting
+// toward the app's row limit.
+const HANDLED_EVENT_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_FORGOTTEN_PER_RUN = 500;
 
 // Shop actions must come from this app's own pages. Userland's sign-in cookie
 // is SameSite=Lax and every app on apps.userland.fun counts as the same "site",
@@ -315,8 +323,10 @@ function isObject(value) {
 // Stripe can send the same event more than once: it retries until it gets an
 // answer, and you can resend an event from its dashboard. Userland answers a
 // repeat of an event it delivered in the last 10 minutes without passing it
-// on, so the job remembers every event it has handled for good, in the
-// handled-events collection, and ignores it the next time.
+// on. After that, the handled-events collection remembers each event that paid
+// an order, and the job ignores it the next time. The hourly job forgets
+// events after 30 days; one that came back after that would find its order
+// paid already and take no stock off (see the stock-updates row below).
 async function alreadyHandled(ctx, eventId) {
   const match = await ctx.data.collection("handled-events").list({ where: { event_id: eventId }, limit: 1 });
   return match.rows.length > 0;
@@ -329,10 +339,20 @@ async function alreadyHandled(ctx, eventId) {
 async function rememberHandled(ctx, eventId) {
   if (!eventId) return;
   try {
-    await ctx.data.collection("handled-events").create({ event_id: eventId });
+    await ctx.data.collection("handled-events").create({ event_id: eventId, handled_at: new Date().toISOString() });
   } catch (error) {
     if (error?.code !== "unique_conflict") throw error;
   }
+}
+
+// What a Checkout event means for its order, or null when it means nothing
+// (an expired checkout, or an event about something else).
+function checkoutOutcome(eventType, session) {
+  if ((eventType === CHECKOUT_COMPLETED || eventType === BANK_PAYMENT_SUCCEEDED) && session.payment_status === "paid") return "paid";
+  // The customer chose a bank payment, which takes days to go through.
+  if (eventType === CHECKOUT_COMPLETED && session.payment_status === "unpaid") return "processing";
+  if (eventType === BANK_PAYMENT_FAILED) return "failed";
+  return null;
 }
 
 // The `checkout` webhook is `provider: "stripe"`: Userland checks Stripe's
@@ -340,11 +360,17 @@ async function rememberHandled(ctx, eventId) {
 // no relay is needed. It enqueues this job with
 // { webhook_delivery_id, name, headers, payload }, where `payload` is Stripe's
 // event: { id: "evt_...", type, data: { object: <Checkout Session> } }.
-// Only a paid checkout.session.completed or
-// checkout.session.async_payment_succeeded marks an order paid, and only when
-// the session's amount and currency match the order. Any other event (expired,
-// failed, still processing) is logged and ignored; the hourly job cancels
-// orders that never get paid.
+//
+// The event's session must be the order's checkout session, with the order's
+// amount and currency. Then:
+// - A paid checkout.session.completed (a card payment) or
+//   checkout.session.async_payment_succeeded marks the order paid.
+// - An unpaid checkout.session.completed (a bank payment) moves the order to
+//   payment_processing, which the hourly job doesn't cancel, until Stripe says
+//   whether the payment went through.
+// - checkout.session.async_payment_failed cancels the order.
+// Any other event is logged and ignored; the hourly job cancels orders that
+// never get paid.
 async function handleCheckoutEvent(event, ctx) {
   const delivery = event.payload ?? {};
   const stripeEvent = isObject(delivery.payload) ? delivery.payload : {};
@@ -357,7 +383,8 @@ async function handleCheckoutEvent(event, ctx) {
     await ctx.log.info("checkout event ignored", { reason: "already_handled", ...seen });
     return;
   }
-  if (!PAYMENT_EVENTS.has(eventType) || session.payment_status !== "paid") {
+  const outcome = checkoutOutcome(eventType, session);
+  if (!outcome) {
     await ctx.log.info("checkout event ignored", {
       reason: "not_a_completed_payment",
       event_type: eventType.slice(0, 100),
@@ -382,18 +409,49 @@ async function handleCheckoutEvent(event, ctx) {
     await ctx.log.warn("checkout amount mismatch", { order_id: order.id, ...seen });
     return;
   }
-  if (order.status === "cancelled") {
-    // The customer paid after the hourly job gave up on the order. Leave it
-    // for the owner to refund or restore by hand.
-    await ctx.log.warn("payment received for cancelled order", { order_id: order.id, ...seen });
-    return;
+  if (outcome === "processing") {
+    await waitForBankPayment(ctx, order, seen);
+  } else if (outcome === "failed") {
+    await cancelForFailedPayment(ctx, order, seen);
+  } else {
+    await markPaid(ctx, order, eventId, seen);
   }
-  if (order.status !== "checkout_pending" && order.status !== "paid") {
+}
+
+// Stripe sends the bank payment's outcome days after the checkout completes,
+// so an order that is paid or cancelled already stays as it is: this event was
+// sent again, or arrived late.
+async function waitForBankPayment(ctx, order, seen) {
+  if (order.status !== "checkout_pending") {
     await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id, ...seen });
     return;
   }
-  if (order.status === "checkout_pending") {
-    await orders.update(order.id, { status: "paid", paid_at: new Date().toISOString() });
+  await ctx.data.collection("orders").update(order.id, { status: "payment_processing" });
+  await ctx.log.info("bank payment processing", { order_id: order.id, ...seen });
+}
+
+async function cancelForFailedPayment(ctx, order, seen) {
+  if (order.status !== "checkout_pending" && order.status !== "payment_processing") {
+    await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id, ...seen });
+    return;
+  }
+  await ctx.data.collection("orders").update(order.id, { status: "cancelled" });
+  await ctx.log.info("bank payment failed", { order_id: order.id, ...seen });
+}
+
+async function markPaid(ctx, order, eventId, seen) {
+  if (order.status === "cancelled") {
+    // The customer paid after the order was cancelled, for example by the
+    // hourly job. Leave it for the owner to refund or restore by hand.
+    await ctx.log.warn("payment received for cancelled order", { order_id: order.id, ...seen });
+    return;
+  }
+  if (order.status !== "checkout_pending" && order.status !== "payment_processing" && order.status !== "paid") {
+    await ctx.log.info("checkout event ignored", { reason: "status_" + order.status, order_id: order.id, ...seen });
+    return;
+  }
+  if (order.status !== "paid") {
+    await ctx.data.collection("orders").update(order.id, { status: "paid", paid_at: new Date().toISOString() });
   }
 
   // Stripe retries deliveries, and two deliveries of the same payment can be
@@ -421,7 +479,9 @@ async function handleCheckoutEvent(event, ctx) {
   await ctx.log.info("checkout job processed", { order_id: order.id, ...seen });
 }
 
-// Scheduled hourly by the manifest.
+// Cancels checkouts left unpaid for 24 hours. Orders waiting on a bank
+// payment are payment_processing, not checkout_pending, so they are left for
+// Stripe's answer.
 async function expireAbandonedOrders(ctx) {
   const orders = ctx.data.collection("orders");
   const cutoff = Date.now() - ABANDONED_ORDER_MS;
@@ -447,6 +507,36 @@ async function expireAbandonedOrders(ctx) {
     await orders.update(id, { status: "cancelled" });
   }
   await ctx.log.info("abandoned orders expired", { checked, expired: batch.length, remaining: stale.length - batch.length });
+}
+
+// Forgets handled Stripe events after 30 days (see HANDLED_EVENT_KEEP_MS), so
+// handled-events stays about one row per order paid in the last 30 days.
+// Oldest first, through the by_handled_at index, stopping at the first event
+// that is still kept.
+async function forgetOldEvents(ctx) {
+  const events = ctx.data.collection("handled-events");
+  const cutoff = Date.now() - HANDLED_EVENT_KEEP_MS;
+  const old = [];
+  let reachedKept = false;
+  let cursor;
+  do {
+    const page = await events.list({ order_by: [{ field: "handled_at", direction: "asc" }], limit: 100, ...(cursor ? { cursor } : {}) });
+    for (const row of page.rows) {
+      if (old.length >= MAX_FORGOTTEN_PER_RUN || !(Date.parse(row.handled_at) < cutoff)) {
+        reachedKept = true;
+        break;
+      }
+      old.push(row.id);
+    }
+    cursor = page.cursor;
+  } while (cursor && !reachedKept);
+
+  // Collected first, since cursors are positional. The next hourly run picks
+  // up the rest.
+  for (const id of old) {
+    await events.delete(id);
+  }
+  await ctx.log.info("old handled events forgotten", { forgotten: old.length });
 }
 
 // HEAD asks for a page's status and headers without the page itself (link
@@ -492,6 +582,7 @@ const app = {
     }
     if (event.name === "expire-abandoned-orders") {
       await expireAbandonedOrders(ctx);
+      await forgetOldEvents(ctx);
     }
   }
 };

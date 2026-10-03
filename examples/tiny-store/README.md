@@ -6,15 +6,15 @@ A small shop: admins add products, signed-in customers place orders, and Stripe 
 
 - Server routes for products, orders, and order pages.
 - App sign-in with an `admin` role, and open sign-up for customers. New customers get no role; any signed-in customer can order.
-- `products` and `orders` data collections. Order totals are worked out on the server from product prices. A small `stock-updates` collection makes sure each paid order takes stock off only once, and `handled-events` remembers which Stripe events the shop has already handled.
+- `products` and `orders` data collections. Order totals are worked out on the server from product prices. A small `stock-updates` collection makes sure each paid order takes stock off only once, and `handled-events` remembers which Stripe events the shop has handled in the last 30 days.
 - Stock: an order can't ask for more than a product's `inventory_count`, and stock goes down when the payment is confirmed. Shoppers see "Sold out", not the exact count.
-- A customer can have at most 5 unpaid orders open at once.
+- A customer can have at most 5 unpaid checkouts open at once.
 - The product list comes 50 at a time with a "Show more" button.
 - Shop actions only work from the shop's own pages. Another site, including another app on `apps.userland.fun`, cannot post to them on a signed-in admin's or customer's behalf.
 - A public `product-images` file store.
 - Two server-only secrets for Stripe.
 - A Stripe webhook: Userland checks Stripe's signature, then hands the payment event to a background job.
-- An hourly job that cancels checkouts left unpaid for 24 hours.
+- An hourly job that cancels checkouts left unpaid for 24 hours (orders waiting on a bank payment are left for Stripe's answer) and forgets handled Stripe events after 30 days.
 
 Checkout is a stand-in: placing an order makes up a checkout session ID. Before taking real payments, replace it with a call to Stripe's Checkout Sessions API with `CHECKOUT_SECRET_KEY`, and store the session's `id` (`cs_...`) as the order's `checkout_session_id`, so Stripe's payment event finds the order.
 
@@ -67,17 +67,28 @@ Stripe sends payment events straight to:
 https://<app-id>.apps.userland.fun/_userland/webhooks/checkout
 ```
 
-In Stripe's webhook settings, add this address as an endpoint and choose the events `checkout.session.completed` and `checkout.session.async_payment_succeeded`. Stripe then shows the endpoint's signing secret (`whsec_...`): save it as `CHECKOUT_WEBHOOK_SECRET` and publish again, as above. Stripe's test mode has its own endpoints and signing secrets, so add the endpoint in test mode while you try the shop out, and again in live mode when it takes real payments.
+In Stripe's webhook settings, add this address as an endpoint and choose the events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, and `checkout.session.async_payment_failed`. Stripe then shows the endpoint's signing secret (`whsec_...`): save it as `CHECKOUT_WEBHOOK_SECRET` and publish again, as above.
+
+Stripe's test mode and live mode each have their own endpoints and signing secrets, and the app checks one signing secret at a time. Try the shop out with a test-mode endpoint and your test secret key. When it starts taking real payments:
+
+1. Add the same address as an endpoint in live mode, with the same three events.
+2. Save the live endpoint's signing secret as `CHECKOUT_WEBHOOK_SECRET`, replacing the test one, and save your live secret key as `CHECKOUT_SECRET_KEY`.
+3. Disable or delete the test-mode endpoint in Stripe. Userland turns its messages away once the test signing secret is replaced, and Stripe would keep retrying them and email you that the endpoint is failing.
 
 The webhook is `"provider": "stripe"`, so Userland checks every request before the app sees it:
 
 - The `Stripe-Signature` header must be signed with `CHECKOUT_WEBHOOK_SECRET` and be less than 5 minutes old. Missing or wrong signatures are rejected with a 400 or 401 and never reach the app.
 - The header itself is never passed to the app or stored.
-- An event Stripe sends again within 10 minutes of delivering it is answered once and not passed on. Stripe can still send an event again later (it retries until it gets an answer, and you can resend events from its dashboard), so the job remembers each event it has handled in `handled-events` and ignores it the next time.
+- An event Stripe sends again within 10 minutes of delivering it is answered once and not passed on. Stripe can still send an event again later (it retries until it gets an answer, and you can resend events from its dashboard), so the job remembers each event that paid an order in `handled-events` and ignores it the next time. Stripe retries for up to 3 days and keeps events for 30, so the hourly job forgets events after 30 days; an older event sent again finds its order paid already and takes no stock off.
 
 No relay is needed. Before Userland could check Stripe's signature, this example needed a small service that checked Stripe's events, re-signed them and passed them on. The job now reads Stripe's own events, not the relay's, so if your copy still uses a relay, point Stripe at the address above instead and save Stripe's signing secret as `CHECKOUT_WEBHOOK_SECRET`.
 
-Only a paid checkout marks an order paid: a `checkout.session.completed` or `checkout.session.async_payment_succeeded` event whose Checkout Session has `payment_status: "paid"`. The session's `id` must be the order's `checkout_session_id`, and its `amount_total` (in cents) and `currency` must match the order:
+The job acts on an event only when its Checkout Session's `id` is the order's `checkout_session_id`, and its `amount_total` (in cents) and `currency` match the order:
+
+- A `checkout.session.completed` or `checkout.session.async_payment_succeeded` event whose session has `payment_status: "paid"` marks the order paid. A card payment is paid when the checkout completes.
+- A `checkout.session.completed` event whose session has `payment_status: "unpaid"` is a bank payment (or another payment method that takes days). The order becomes `payment_processing`, which the hourly job doesn't cancel, until Stripe says whether the payment went through: `checkout.session.async_payment_succeeded` marks it paid and `checkout.session.async_payment_failed` cancels it.
+
+A paid event looks like this:
 
 ```json
 {
@@ -95,7 +106,7 @@ Only a paid checkout marks an order paid: a `checkout.session.completed` or `che
 }
 ```
 
-Every other event is logged and ignored: expired checkouts, failed payments, and completed checkouts whose payment is still processing (a bank payment completes unpaid, and `checkout.session.async_payment_succeeded` confirms it later). An amount or currency that doesn't match the order is ignored with a warning. A payment that arrives after the hourly job cancelled the order is left alone with a `payment received for cancelled order` warning, so you can refund it or restore the order yourself. Find these with `userland apps events <app-id> --severity warn`.
+Every other event is logged and ignored, such as an expired checkout. An amount or currency that doesn't match the order is ignored with a warning. A payment that arrives after the hourly job cancelled the order is left alone with a `payment received for cancelled order` warning, so you can refund it or restore the order yourself. Find these with `userland apps events <app-id> --severity warn`.
 
 Stock is taken off once per order when the payment is confirmed, even if the payment event arrives twice. Payments for two different orders confirmed at the same moment can miss each other's change, and a payment for the last items can arrive after someone else's; the job logs an `order oversold` warning when stock would go below zero. If stock can't be updated at all, the job logs a `stock not updated` error; adjust the product's stock by hand.
 
