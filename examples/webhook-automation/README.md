@@ -30,6 +30,8 @@ printf '%s' "$AUTOMATION_WEBHOOK_SECRET" | userland apps secrets set <app-id> AU
 userland apps publish examples/webhook-automation --app <app-id>
 ```
 
+You can add the secret in the console instead: open `https://console.userland.fun/apps/<app-id>/settings?add-key=AUTOMATION_WEBHOOK_SECRET`, paste the secret, and save it, then publish again with `--app` as above. A coding agent setting up the app for you sends you this link rather than asking you to paste the secret into your chat.
+
 Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
 
 ## Connect the sender

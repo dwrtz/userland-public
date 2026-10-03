@@ -130,7 +130,10 @@ const PRIVATE_KEY_NAME = /^id_(?:rsa|dsa|ecdsa|ed25519)(?:[._-].*)?$/u;
 const KEY_STORE_EXTENSIONS = new Set([".p12", ".pfx"]);
 const PEM_EXTENSIONS = new Set([".pem", ".key"]);
 const RESERVED_RESOURCE_NAMES = new Set(["_userland", "system", "auth", "session", "sessions", "secrets", "runtime"]);
-const CONTENT_TYPE_PATTERN = /^[!#$%&'*+\-.^_`|~0-9a-z]+\/[!#$%&'*+\-.^_`|~0-9a-z]+(?:\s*;\s*[!#$%&'*+\-.^_`|~0-9a-z]+=(?:"[^"]*"|[!#$%&'*+\-.^_`|~0-9a-z]+))*$/iu;
+// The API's rule (packages/shared CONTENT_TYPE_PATTERN): parameters separated by spaces or tabs only, and
+// quoted values of printable ASCII without `"`, `\` or `,`, which browsers read differently.
+const CONTENT_TYPE_PATTERN =
+  /^[!#$%&'*+\-.^_`|~0-9a-z]+\/[!#$%&'*+\-.^_`|~0-9a-z]+(?:[\t ]*;[\t ]*[!#$%&'*+\-.^_`|~0-9a-z]+=(?:"[\t\x20\x21\x23-\x2b\x2d-\x5b\x5d-\x7e]*"|[!#$%&'*+\-.^_`|~0-9a-z]+))*$/iu;
 
 let cachedManifestSchema: JsonSchema | undefined;
 let cachedPlanData: PlanData | undefined;
@@ -1400,7 +1403,7 @@ const PATTERN_DESCRIPTIONS: Record<string, string> = {
   "^job:[a-z][a-z0-9-]{0,63}$": "must look like job:<job-name>",
   "^https://(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[1-9][0-9]{0,4})?$":
     "must start with https:// in lowercase letters, then a domain name and an optional port (a leading *. covers subdomains)",
-  "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+(?:\\s*;\\s*[!#$%&'*+\\-.^_`|~0-9A-Za-z]+=(?:\\\"[^\\\"]*\\\"|[!#$%&'*+\\-.^_`|~0-9A-Za-z]+))*$": "must be a MIME type such as text/html or image/png"
+  "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\\-.^_`|~0-9A-Za-z]+(?:[\\t ]*;[\\t ]*[!#$%&'*+\\-.^_`|~0-9A-Za-z]+=(?:\"[\\t\\x20\\x21\\x23-\\x2b\\x2d-\\x5b\\x5d-\\x7e]*\"|[!#$%&'*+\\-.^_`|~0-9A-Za-z]+))*$": "must be a MIME type such as text/html or image/png"
 };
 
 /** Keywords validateAgainstSchema understands; tests fail if the published schema starts using others. */

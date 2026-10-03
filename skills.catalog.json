@@ -21,7 +21,7 @@
     {
       "name": "userland-publish-operate",
       "path": ".agents/skills/userland-publish-operate",
-      "description": "Userland app publish, secrets, events, releases, rollback, and unpublish (remove app) operations."
+      "description": "Userland app publish, secrets, events, releases, rollback, invites, and unpublish (remove app) operations."
     },
     {
       "name": "userland-debug-migrate",

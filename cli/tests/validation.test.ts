@@ -246,6 +246,29 @@ describe("manifest schema validation", () => {
     expect(check.schema_strict).toEqual([]);
   });
 
+  // The API refuses these (packages/shared CONTENT_TYPE_PATTERN): a `,` or `\` inside quotes, a
+  // non-ASCII quoted value, or a line break around `;` can make a browser read another type.
+  test("refuses content types the API refuses, in files and in allowed_content_types", () => {
+    const refused = ['text/plain;a="x,y"', 'image/png;a="\\";b=",text/html;c="', "text/plain;\ncharset=utf-8", 'text/plain;a="café"'];
+    const accepted = ["text/html; charset=utf-8", "text/plain ;charset=utf-8", 'text/plain; a="hello world"', "image/png"];
+    const check = (contentType: string) =>
+      checkManifestDocument({
+        app: { name: "Types" },
+        runtime: { static_root: "public" },
+        files: [{ path: "public/index.html", content_type: contentType }],
+        resources: { files: { stores: { media: { allowed_content_types: [contentType] } } } }
+      });
+    for (const contentType of refused) {
+      expect(check(contentType).errors, contentType).toEqual([
+        { code: "schema", manifest_path: "files[0].content_type", message: `${JSON.stringify(contentType)} must be a MIME type such as text/html or image/png` },
+        { code: "schema", manifest_path: "resources.files.stores.media.allowed_content_types[0]", message: `${JSON.stringify(contentType)} must be a MIME type such as text/html or image/png` }
+      ]);
+    }
+    for (const contentType of accepted) {
+      expect(check(contentType).errors, contentType).toEqual([]);
+    }
+  });
+
   test("reports shape errors with manifest paths", () => {
     const errors = validateManifestDocument({
       app: { name: "Bad", visibility: "secret", tags: ["secrets"] },

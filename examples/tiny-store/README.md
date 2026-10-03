@@ -45,6 +45,8 @@ printf '%s' "$CHECKOUT_WEBHOOK_SECRET" | userland apps secrets set <app-id> CHEC
 userland apps publish examples/tiny-store --app <app-id>
 ```
 
+You can add the keys in the console instead: open `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_SECRET_KEY` and `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_WEBHOOK_SECRET`, paste each key, and save it, then publish again with `--app` as above. A coding agent setting up the app for you sends you these links rather than asking you to paste the keys into your chat.
+
 Always pass `--app <app-id>` when publishing again. Without it, the CLI creates a second app.
 
 Then invite the first admin and add products:

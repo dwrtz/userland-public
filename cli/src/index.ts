@@ -333,8 +333,10 @@ interface AccountLimitsResponse {
   release_limits: Record<string, number | null>;
   usage_limits: Record<string, number | null>;
   usage: Record<string, number>;
+  usage_sources?: Record<string, string>;
   usage_period?: { period_start?: string; period_end?: string };
   route_counts?: Record<string, number>;
+  short_address_holds?: { held: number; max: number | null };
   compatibility_warnings?: Array<{ code?: string; message?: string }>;
 }
 
@@ -372,6 +374,7 @@ interface RouteRecord {
   status: string;
   reason: string | null;
   verification?: Record<string, unknown>;
+  dns_instructions?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
   deleted_at?: string | null;
@@ -1050,7 +1053,11 @@ async function accountLimitsCommand(args: string[]): Promise<void> {
   printKeyValues("release_limit", response.release_limits);
   printKeyValues("usage_limit", response.usage_limits);
   printKeyValues("usage", response.usage);
+  // Usage that is not this period's counter, such as files.storage_bytes.max (every stored file).
+  if (response.usage_sources) printKeyValues("usage_source", response.usage_sources);
   if (response.route_counts) printKeyValues("route_count", response.route_counts);
+  // Removed short addresses held for this account for 30 days, and how many it can hold at a time.
+  if (response.short_address_holds) printKeyValues("short_address_holds", response.short_address_holds);
   printWarnings(response.compatibility_warnings);
 }
 
@@ -1324,6 +1331,12 @@ function printAnalyticsUpgradeState(appId: string, error: ApiError, json: boolea
   console.error("feature=app_analytics");
   if (planKey) console.error(`plan_key=${shown(planKey)}`);
   if (requiredPlanKey) console.error(`required_plan_key=${shown(requiredPlanKey)}`);
+  // The console link that fixes it, as every other plan refusal prints it: send it to the owner as it is.
+  if (typeof details.self_serve_upgrade === "boolean") console.error(`self_serve_upgrade=${details.self_serve_upgrade}`);
+  const upgradeUrl = stringValue(details.upgrade_url);
+  const supportUrl = stringValue(details.support_url);
+  if (upgradeUrl) console.error(`upgrade_url=${shown(upgradeUrl)}`);
+  if (supportUrl) console.error(`support_url=${shown(supportUrl)}`);
   if (requiredPlanKey && !isSelfServePlan(requiredPlanKey)) {
     console.error("App Analytics is not available on self-serve plans for this account; contact support. Publishing and other app commands keep working.");
   } else {
@@ -1904,6 +1917,57 @@ function printRoute(route: RouteRecord): void {
   if (route.verification && Object.keys(route.verification).length > 0) {
     console.log(`verification=${JSON.stringify(route.verification)}`);
   }
+  // The API answers a removed domain with its records too; there is nothing left to add for it.
+  if (route.status !== "deleted" && !route.deleted_at) {
+    for (const line of dnsInstructionLines(route.dns_instructions)) {
+      console.log(line);
+    }
+  }
+}
+
+/**
+ * A custom domain's `dns_instructions`, one line each: the records to add (the traffic record, the
+ * ownership TXT record, and any the certificate provider asks for, each once), whether the ownership
+ * record was found, what the last check says is still missing, and when it last checked.
+ */
+function dnsInstructionLines(instructions: unknown): string[] {
+  if (!isPlainObject(instructions)) {
+    return [];
+  }
+  const lines: string[] = [];
+  const addRecord = (purpose: string, record: Record<string, unknown>) => {
+    const line = `dns_record=${purpose} ${formatFields(record)}`;
+    if (!lines.includes(line)) lines.push(line);
+  };
+  const traffic = isPlainObject(instructions.traffic) ? instructions.traffic : isPlainObject(instructions.cname) ? instructions.cname : undefined;
+  if (traffic && isPrintableScalar(traffic.name) && isPrintableScalar(traffic.value)) {
+    addRecord("traffic", { type: traffic.type, name: traffic.name, value: traffic.value, note: traffic.note });
+  }
+  const ownership = instructions.ownership_txt;
+  if (isPlainObject(ownership) && isPrintableScalar(ownership.name) && isPrintableScalar(ownership.value)) {
+    addRecord("ownership_txt", { type: ownership.type ?? "TXT", name: ownership.name, value: ownership.value });
+  }
+  const validation = instructions.provider_validation_records;
+  for (const entry of Array.isArray(validation) ? validation : isPlainObject(validation) ? [validation] : []) {
+    if (!isPlainObject(entry)) continue;
+    if (typeof entry.txt_name === "string" && typeof entry.txt_value === "string") {
+      addRecord("provider_validation", { type: "TXT", name: entry.txt_name, value: entry.txt_value });
+    } else if (typeof entry.cname === "string" && typeof entry.cname_target === "string") {
+      addRecord("provider_validation", { type: "CNAME", name: entry.cname, value: entry.cname_target });
+    }
+  }
+  if (isPrintableScalar(instructions.ownership_status)) {
+    lines.push(`dns_ownership_status=${formatFieldValue(instructions.ownership_status)}`);
+  }
+  for (const error of Array.isArray(instructions.verification_errors) ? instructions.verification_errors : []) {
+    if (typeof error === "string" && error.trim() !== "") {
+      lines.push(`dns_verification_error=${formatFieldValue(error)}`);
+    }
+  }
+  if (isPrintableScalar(instructions.last_refreshed_at)) {
+    lines.push(`dns_last_refreshed_at=${formatFieldValue(instructions.last_refreshed_at)}`);
+  }
+  return lines;
 }
 
 async function printObject(value: Record<string, unknown>): Promise<void> {
@@ -2812,6 +2876,9 @@ function errorMessage(body: unknown): string | undefined {
   if (parsed.code === "platform_deploy_failed") {
     lines.push(...deployFailureLines(parsed.details));
   }
+  if (parsed.code === "domain_pending_verification") {
+    lines.push(...domainPendingLines(parsed.details));
+  }
   return lines.filter(Boolean).join("\n");
 }
 
@@ -2839,6 +2906,23 @@ function deployFailureLines(details: unknown): string[] {
     }
   }
   return lines;
+}
+
+/**
+ * domain_pending_verification details: the domain's status, and its records with what is still
+ * missing (dns_instructions), so the owner can be told which record to add.
+ */
+function domainPendingLines(details: unknown): string[] {
+  if (!isPlainObject(details)) {
+    return [];
+  }
+  const lines: string[] = [];
+  for (const key of ["hostname", "status"]) {
+    if (isPrintableScalar(details[key])) {
+      lines.push(`${key}=${formatFieldValue(details[key])}`);
+    }
+  }
+  return [...lines, ...dnsInstructionLines(details.dns_instructions)];
 }
 
 function isPrintableScalar(value: unknown): value is string | number {
@@ -2915,7 +2999,7 @@ function structuredDetailLines(details: unknown): string[] {
   }
 
   const lines: string[] = [];
-  for (const key of ["metric", "plan_key", "required_plan_key", "limit", "limit_key", "current", "increment", "value", "upgrade_required", "self_serve_upgrade", "upgrade_url", "support_url"]) {
+  for (const key of ["metric", "plan_key", "required_plan_key", "limit", "limit_key", "current", "increment", "value", "upgrade_required", "self_serve_upgrade", "upgrade_url", "support_url", "billing_url", "domain_url"]) {
     if (details[key] !== undefined) {
       lines.push(`${key}=${formatFieldValue(details[key])}`);
     }
@@ -3085,7 +3169,17 @@ Invites:
   manifest declares; with no --role the person gets no special role. The link lasts 7 days, or 1 to
   30 days with --expires-in-days. It works with the key saved by userland login, so you do not need
   to make another API key for it. When an account is selected, no invite is made for an app in a
-  different account.
+  different account. An invite is only for someone with no account in the app yet: for an email that
+  already has one, setting a password fails (user_exists) and gives no new role.
+
+Short addresses and domains:
+  slugs remove, and apps unpublish for a working short address, keep it for this account for 30 days,
+  so only its own apps can add it again, unless the account already holds as many as its plan
+  includes (accounts limits shows short_address_holds: held and max). One that a smaller plan or an
+  unpaid invoice turned off stays with an unpublished app, so remove it before unpublishing. domains
+  add, list, and verify print the records to add as dns_record= lines. When verify answers domain_pending_verification, it lists what
+  is still missing (dns_ownership_status, dns_verification_error) and domain_url, the console page
+  with the domain's setup steps.
 
 Events:
   apps events lists the newest events first, up to 100 at a time (--limit). When there are more, the

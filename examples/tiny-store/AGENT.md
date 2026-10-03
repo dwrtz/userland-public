@@ -36,7 +36,7 @@ Steps:
 8. `createProduct` maps the `by_slug` unique index's `unique_conflict` error to `409 slug_taken`. Keep list routes paginated with `cursor`; do not raise `limit` to hide pagination.
 9. Keep job names identical in `resources.jobs`, `resources.webhooks.checkout.job`, and `job(event, ctx)`.
 10. Validate: `npm run validate:manifests -- tiny-store` and `npx vitest run examples/tiny-store`.
-11. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting secrets does not activate it. Set both secrets with `printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>`, then publish again into the same app with `userland apps publish examples/tiny-store --app <app-id>` (without `--app` the CLI creates a second app). Then invite an admin.
+11. The first publish creates the app, but its release stays `pending_secrets` and is not live. Setting secrets does not activate it. The payment provider's keys are the owner's: send them `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_SECRET_KEY` and `https://console.userland.fun/apps/<app-id>/settings?add-key=CHECKOUT_WEBHOOK_SECRET`, where they paste and save each one, instead of asking for them in chat. If you already have a value, or the console says it can't save keys right now, set it with `printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>` without printing it. Then publish again into the same app with `userland apps publish examples/tiny-store --app <app-id>` (without `--app` the CLI creates a second app). Then invite an admin.
 
 Safety:
 
