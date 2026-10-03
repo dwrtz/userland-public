@@ -130,6 +130,12 @@ const PRIVATE_KEY_NAME = /^id_(?:rsa|dsa|ecdsa|ed25519)(?:[._-].*)?$/u;
 const KEY_STORE_EXTENSIONS = new Set([".p12", ".pfx"]);
 const PEM_EXTENSIONS = new Set([".pem", ".key"]);
 const RESERVED_RESOURCE_NAMES = new Set(["_userland", "system", "auth", "session", "sessions", "secrets", "runtime"]);
+/**
+ * Webhook senders whose messages Userland checks with the webhook's `secret` before app code runs. Each one is a
+ * plan feature, `webhooks.provider.<provider>`, as in the API's analyzeManifestEntitlements. `stripe` (Starter and
+ * up) checks Stripe's own `Stripe-Signature` header with the endpoint's signing secret.
+ */
+const SIGNED_WEBHOOK_PROVIDERS = new Set(["generic_hmac", "github", "stripe"]);
 // The API's rule (packages/shared CONTENT_TYPE_PATTERN): parameters separated by spaces or tabs only, and
 // quoted values of printable ASCII without `"`, `\` or `,`, which browsers read differently.
 const CONTENT_TYPE_PATTERN =
@@ -1130,7 +1136,7 @@ export function analyzeManifestRequirements(input: ManifestInput): Requirement[]
   if (webhooks.length > 0) feature("webhooks.enabled", "resources.webhooks", webhooks.length);
   for (const [name, webhook] of webhooks) {
     const provider = isPlainObject(webhook) ? webhook.provider : undefined;
-    if (provider === "generic_hmac" || provider === "github") {
+    if (typeof provider === "string" && SIGNED_WEBHOOK_PROVIDERS.has(provider)) {
       feature(`webhooks.provider.${provider}`, `resources.webhooks.${name}.provider`, provider);
     }
   }
@@ -1228,7 +1234,8 @@ const FEATURE_LABELS: Record<string, string> = {
   "jobs.scheduled": "Scheduled jobs",
   "webhooks.enabled": "Webhooks",
   "webhooks.provider.generic_hmac": "Generic HMAC webhooks",
-  "webhooks.provider.github": "GitHub webhooks"
+  "webhooks.provider.github": "GitHub webhooks",
+  "webhooks.provider.stripe": "Stripe webhooks"
 };
 
 const LIMIT_LABELS: Record<string, string> = {
