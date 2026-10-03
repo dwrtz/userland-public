@@ -37,7 +37,7 @@ userland login
 userland apps publish examples/tiny-store
 ```
 
-The webhook's `"provider": "stripe"` needs CLI 0.10.0 or later. Older versions of `userland validate` and `apps publish` report it as an invalid provider; `npm install -g @userland.fun/cli@latest` updates the CLI.
+The webhook's `"provider": "stripe"` needs CLI 0.10.0 or later. Older versions of `userland validate` and `apps publish` refuse it with `manifest_path=resources.webhooks.checkout.provider` and `message=must be "none"`; `npm install -g @userland.fun/cli@latest` updates the CLI.
 
 The first publish creates the app and prints its app id. That release is not live yet: its activation status is `pending_secrets` because the two secrets are missing. Add the payment webhook in Stripe (below) to get its signing secret. Setting secrets does not activate a stored release, so set both and then publish again into the same app:
 
