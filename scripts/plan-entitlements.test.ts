@@ -19,7 +19,7 @@ it("takes the plan list from the CLI's plan data: self-serve plans only", () => 
 it("allows only manifest and release keys as paid features", () => {
   const keys = paidFeatureKeys();
   expect(allowedPaidFeatures).toEqual(keys);
-  for (const key of ["private_apps", "auth.public_signup", "files.private_stores", "jobs.scheduled", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.provider.github"]) {
+  for (const key of ["private_apps", "auth.public_signup", "files.private_stores", "jobs.scheduled", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.provider.github", "webhooks.provider.stripe"]) {
     expect(keys.has(key), key).toBe(true);
   }
   for (const key of Object.keys(planData().plans.free!.manifest_limits)) expect(keys.has(key), key).toBe(true);
