@@ -3173,13 +3173,15 @@ Invites:
   already has one, setting a password fails (user_exists) and gives no new role.
 
 Short addresses and domains:
-  slugs remove, and apps unpublish for a working short address, keep it for this account for 30 days,
-  so only its own apps can add it again, unless the account already holds as many as its plan
-  includes (accounts limits shows short_address_holds: held and max). One that a smaller plan or an
-  unpaid invoice turned off stays with an unpublished app, so remove it before unpublishing. domains
-  add, list, and verify print the records to add as dns_record= lines. When verify answers domain_pending_verification, it lists what
-  is still missing (dns_ownership_status, dns_verification_error) and domain_url, the console page
-  with the domain's setup steps.
+  slugs remove and apps unpublish keep a short address they remove for this account for 30 days, so
+  only its own apps can add it again, unless the account already holds as many as its plan includes
+  (accounts limits shows short_address_holds: held and max). apps unpublish also removes the short
+  addresses and domains that a smaller plan or an unpaid invoice turned off, and keeps those short
+  addresses the same way, after the working ones, so there is no need to remove them first. One that
+  Userland support turned off stays with the unpublished app until support turns it back on or
+  releases it. domains add, list, and verify print the records to add as dns_record= lines. When
+  verify answers domain_pending_verification, it lists what is still missing (dns_ownership_status,
+  dns_verification_error) and domain_url, the console page with the domain's setup steps.
 
 Events:
   apps events lists the newest events first, up to 100 at a time (--limit). When there are more, the
