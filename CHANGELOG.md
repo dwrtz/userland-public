@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI: `userland --help` ("Short addresses and domains") and the README say that `apps unpublish` also removes the short addresses and custom domains that a smaller plan or an unpaid invoice turned off, and keeps those short addresses for the account for 30 days, as `apps slugs remove` does, after the working ones. One that Userland support turned off still stays with the unpublished app until support turns it back on or releases it, and publishing the app again with its app id brings back none of the ones it removed. Before, both said a short address turned off by a smaller plan or an unpaid invoice stayed with an unpublished app and should be removed first. Userland's API changed this on 2026-10-04 for every CLI version; only the words change here.
+
 ## 0.11.0 - 2026-10-03
 
 - CLI and schema: `userland validate` and the `apps publish` check accept `"provider": "stripe"` for a webhook, which Userland checks with Stripe's own `Stripe-Signature` header before the app sees the message. Like `generic_hmac` and `github`, it needs `secret`: the name of the app secret that holds the signing secret Stripe shows for the endpoint (`whsec_...`); without it the check reports `is required when provider is stripe`. It needs Starter or a higher plan (`webhooks.provider.stripe`), which the plan check reports as "Stripe webhooks: requires Starter." `schemas/resource-manifest-v0.schema.json` lists `stripe` with the signed providers, and `schemas/plans-v0.json` and `cli/tests/fixtures/plan-parity.json` have the new feature key, generated from the API's plan rules. Before, the CLI reported `stripe` as an invalid provider (`must be "none"`).
