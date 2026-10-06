@@ -52,6 +52,7 @@ userland apps releases <app-id>
 userland versions <app-id>
 userland apps rollback <app-id> <release-id>
 userland apps download <app-id>
+userland apps export <app-id>
 userland apps unpublish <app-id>
 userland apps secrets list <app-id>
 printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
@@ -100,6 +101,7 @@ npm run userland -- apps releases <app-id>
 npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
 npm run userland -- apps download <app-id>
+npm run userland -- apps export <app-id>
 npm run userland -- apps unpublish <app-id>
 npm run userland -- apps secrets list <app-id>
 printf '%s' "$VALUE" | npm run userland -- apps secrets set <app-id> <NAME>
@@ -501,6 +503,34 @@ Next: userland apps publish /Users/me/my-app --app app_...
 A `required_secret=` line names each secret the version needs. Its value is never downloaded; it stays saved with the app, so publishing the folder again as the same app keeps using it. `--json` prints `app_id`, `account_id`, `release_id`, `is_live`, `message`, `created_at`, `dir`, `file_count`, `total_bytes`, `files` (`path`, `size_bytes`, `sha256`) and `required_secrets`.
 
 A version published before newer rules (for example an embed origin on a Userland address, or a content type an older CLI accepted) may need a change before it publishes again; `userland validate <dir>` says what.
+
+## Export saved data
+
+```sh
+userland apps export <app-id>
+userland apps export <app-id> ./backup
+userland apps export <app-id> ./orders --collection orders
+userland apps export <app-id> ./backup --no-files --json
+```
+
+`userland apps export` (CLI 0.13.0 or later) saves an app's data into a folder (`./<app-id>-data` by default): the records its server code saved, the people who can sign in, and the files people uploaded. Owners and admins can export, on every plan, also for an unpublished app.
+
+| Path | What it holds |
+|---|---|
+| `records/<collection>.json` and `.csv` | Every record: its `id`, `created_at`, `updated_at`, `owner_app_user_id`, and its fields (one CSV column per field) |
+| `people.json` and `people.csv` | The people who sign in: `id`, `email`, `roles` (separated by `;` in the CSV), `created_at`, `updated_at`, `disabled_at` |
+| `files/<store>/<path>` | Each uploaded file, its size and SHA-256 checked |
+| `files/index.csv` | Every uploaded file's store, path, content type, size and SHA-256 |
+| `README.txt` | What the folder holds |
+
+Each `.json` file is a JSON array with one item per line, so large collections never have to fit in memory. In the CSV files, a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return begins with `'`, so a spreadsheet shows it as text instead of running it. Passwords are never exported: people set a new password on any new system. Secret values and deleted records and files aren't included either.
+
+- `--collection <name>` saves one collection only, without people or files.
+- `--no-files` leaves uploaded files out.
+- A folder that isn't empty needs `--force`.
+- When an account is selected, an app in a different account is not exported.
+
+The output ends with `collections=`, `records=`, `people=`, `files=` and `file_bytes=` lines; `--json` prints the same counts with `app_id`, `account_id` and `dir`.
 
 ## Unpublish an app
 

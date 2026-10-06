@@ -144,6 +144,23 @@ export async function folderIsEmpty(dir: string): Promise<boolean> {
   return entries.every((entry) => entry === ".DS_Store");
 }
 
+/**
+ * One CSV cell. Text that a spreadsheet would run as a formula (starting with =, +, -, @, a tab or a
+ * carriage return) gets a leading ' so it shows as text: visitors wrote this data, and owners open it
+ * in spreadsheets. Cells with a comma, quote or line break are quoted. Values that aren't text are
+ * written as JSON.
+ */
+export function csvCell(value: unknown): string {
+  let text = value === null || value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value);
+  if (/^[=+\-@\t\r]/u.test(text)) text = `'${text}`;
+  return /[",\r\n]/u.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+/** One CSV line, ending in CRLF as spreadsheets expect. */
+export function csvRow(values: readonly unknown[]): string {
+  return `${values.map(csvCell).join(",")}\r\n`;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

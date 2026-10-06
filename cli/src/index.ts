@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { contentTypeForPath, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
+import { contentTypeForPath, csvRow, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
 import {
   analyzeAppDirectory,
@@ -105,6 +105,14 @@ interface EventsOptions {
   releaseId?: string;
   limit?: string;
   cursor?: string;
+}
+
+interface ExportOptions {
+  account?: string;
+  collection?: string;
+  force?: boolean;
+  json?: boolean;
+  noFiles?: boolean;
 }
 
 interface DownloadOptions {
@@ -581,6 +589,10 @@ async function appsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "download" || subcommand === "pull") {
     await downloadCommand(rest);
+    return;
+  }
+  if (subcommand === "export") {
+    await exportCommand(rest);
     return;
   }
   if (subcommand === "secrets" && rest[0] === "set") {
@@ -1715,6 +1727,259 @@ async function apiFetchResponse(apiPath: string, accountOption: string | undefin
   }
 }
 
+interface DataPage<T> {
+  app_id: string;
+  account_id: string | null;
+  next_cursor: string | null;
+  records?: T[];
+  app_users?: T[];
+  files?: T[];
+}
+
+interface ExportedRecord {
+  id: string;
+  data: Record<string, unknown>;
+  owner_app_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ExportedPerson {
+  id: string;
+  email: string;
+  roles: string[];
+  created_at: string;
+  updated_at: string;
+  disabled_at: string | null;
+}
+
+interface ExportedFile {
+  id: string;
+  store: string;
+  path: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const EXPORT_PAGE_LIMIT = 1000;
+
+/**
+ * `userland apps export <app-id> [dir]`: an app's saved data, read a page at a time from the owner
+ * reads (GET /v0/apps/:app_id/data, /data/:collection, /app-users, /files and /files/:file_id) and
+ * written into a folder:
+ *
+ *   records/<collection>.json and .csv   every record: its id, times, owner and fields
+ *   people.json and people.csv           the people who sign in: id, email, roles, times (no passwords)
+ *   files/<store>/<path>                 each uploaded file, size and SHA-256 checked
+ *   files/index.csv                      the uploaded files' store, path, type, size and SHA-256
+ *   README.txt                           what the folder holds, in plain words
+ *
+ * The .json files hold one record per line inside a JSON array, so nothing is held in memory but a
+ * page; the CSV is written from them afterwards, with spreadsheet formulas escaped. --collection limits
+ * it to one collection (no people or files); --no-files leaves uploaded files out.
+ */
+async function exportCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (!appId || appId.startsWith("--")) {
+    usage(1);
+  }
+  const hasDir = args[1] !== undefined && !args[1].startsWith("--");
+  const options = parseExportOptions(args.slice(hasDir ? 2 : 1));
+  const appSegment = pathSegment(appId, "app id");
+  const dir = path.resolve(hasDir ? args[1] : `${appId}-data`);
+
+  const dirStat = await fs.lstat(dir).catch(() => null);
+  if (dirStat && (dirStat.isSymbolicLink() || !dirStat.isDirectory())) {
+    throw new Error(`${dir} is ${dirStat.isSymbolicLink() ? "a symlink" : "not a folder"}. Choose another folder.`);
+  }
+  if (!options.force && !(await folderIsEmpty(dir))) {
+    throw new Error(`${dir} is not empty. Choose an empty or new folder, or pass --force to write into it.`);
+  }
+  const fetchOptions = { accountId: options.account, accountScoped: true, raw: true };
+
+  const collectionsAnswer = await apiFetch<{ account_id: string | null; collections: Array<{ name: string; record_count: number }> }>(`/v0/apps/${appSegment}/data`, { method: "GET" }, fetchOptions);
+  const selected = selectedAccountId(options.account, await readCredentials());
+  if (selected && collectionsAnswer.account_id && collectionsAnswer.account_id !== selected) {
+    throw new Error(`${terminalSafe(appId)} belongs to account ${terminalSafe(collectionsAnswer.account_id)}, not ${terminalSafe(selected)}. Nothing was exported.`);
+  }
+  const collections = options.collection !== undefined ? [options.collection] : collectionsAnswer.collections.map((collection) => collection.name);
+  for (const name of collections) {
+    // A collection name becomes a file name: only the API's own names (letters, digits, - and _).
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(name)) {
+      throw new Error(`The collection name ${JSON.stringify(name)} can't be a file name. Nothing was exported.`);
+    }
+  }
+
+  await fs.mkdir(dir, { recursive: true });
+  const summary = { collections: collections.length, records: 0, people: 0, files: 0, file_bytes: 0 };
+
+  if (collections.length > 0) {
+    await ensureParentFolders(dir, path.join(dir, "records", "x"));
+  }
+  for (const name of collections) {
+    const jsonPath = path.join(dir, "records", `${name}.json`);
+    const fields = new Set<string>();
+    const count = await writeJsonLines(jsonPath, pages<ExportedRecord>(`/v0/apps/${appSegment}/data/${encodeURIComponent(name)}`, "records", fetchOptions), (record) => {
+      for (const key of Object.keys(record.data ?? {})) fields.add(key);
+      return { id: record.id, created_at: record.created_at, updated_at: record.updated_at, owner_app_user_id: record.owner_app_user_id, data: record.data };
+    });
+    summary.records += count;
+    const columns = [...fields].sort();
+    await writeCsvFromJsonLines(jsonPath, path.join(dir, "records", `${name}.csv`), ["id", "created_at", "updated_at", "owner_app_user_id", ...columns], (record: { id: string; created_at: string; updated_at: string; owner_app_user_id: string | null; data: Record<string, unknown> }) => [
+      record.id,
+      record.created_at,
+      record.updated_at,
+      record.owner_app_user_id,
+      ...columns.map((column) => record.data?.[column])
+    ]);
+  }
+
+  if (options.collection === undefined) {
+    const peoplePath = path.join(dir, "people.json");
+    summary.people = await writeJsonLines(peoplePath, pages<ExportedPerson>(`/v0/apps/${appSegment}/app-users`, "app_users", fetchOptions), (person) => ({
+      id: person.id,
+      email: person.email,
+      roles: person.roles,
+      created_at: person.created_at,
+      updated_at: person.updated_at,
+      disabled_at: person.disabled_at
+    }));
+    await writeCsvFromJsonLines(peoplePath, path.join(dir, "people.csv"), ["id", "email", "roles", "created_at", "updated_at", "disabled_at"], (person: ExportedPerson) => [
+      person.id,
+      person.email,
+      person.roles.join(";"),
+      person.created_at,
+      person.updated_at,
+      person.disabled_at
+    ]);
+
+    if (!options.noFiles) {
+      const index = await openExportFile(path.join(dir, "files", "index.csv"), dir);
+      await index.write(csvRow(["store", "path", "content_type", "size_bytes", "sha256", "created_at", "updated_at", "id"]));
+      try {
+        for await (const page of pages<ExportedFile>(`/v0/apps/${appSegment}/files`, "files", fetchOptions)) {
+          const targets = page.map((file) => ({ file, target: targetPath(path.join(dir, "files"), `${file.store}/${file.path}`) }));
+          let next = 0;
+          const worker = async () => {
+            while (next < targets.length) {
+              const { file, target } = targets[next++];
+              await ensureParentFolders(dir, target);
+              const response = await apiFetchResponse(`/v0/apps/${appSegment}/files/${encodeURIComponent(file.id)}`, options.account);
+              await writeCheckedFile(target, responseChunks(response), { path: `${file.store}/${file.path}`, size_bytes: file.size_bytes, sha256: file.sha256 });
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, targets.length) }, worker));
+          for (const file of page) {
+            await index.write(csvRow([file.store, file.path, file.content_type, file.size_bytes, file.sha256, file.created_at, file.updated_at, file.id]));
+            summary.files += 1;
+            summary.file_bytes += file.size_bytes;
+          }
+        }
+      } finally {
+        await index.close();
+      }
+    }
+  }
+
+  await fs.writeFile(path.join(dir, "README.txt"), exportReadme(appId, collections, options), { mode: 0o644 });
+
+  if (options.json) {
+    console.log(JSON.stringify(terminalSafeValue({ app_id: appId, account_id: collectionsAnswer.account_id, dir, ...summary }), null, 2));
+    return;
+  }
+  console.log(`Exported the saved data of ${terminalSafe(appId)} to ${terminalSafe(dir)}`);
+  console.log(`app_id=${terminalSafe(appId)}`);
+  console.log(`dir=${terminalSafe(dir)}`);
+  console.log(`collections=${summary.collections}`);
+  console.log(`records=${summary.records}`);
+  if (options.collection === undefined) {
+    console.log(`people=${summary.people}`);
+    console.log(options.noFiles ? "files=skipped" : `files=${summary.files}`);
+    if (!options.noFiles) console.log(`file_bytes=${summary.file_bytes}`);
+  }
+  console.log("Not included: password hashes (people set a new password on any new system), secret values, and deleted records and files.");
+}
+
+/** Every item of a paged owner read, a page at a time. */
+async function* pages<T>(apiPath: string, key: "records" | "app_users" | "files", fetchOptions: { accountId?: string; accountScoped?: boolean; raw?: boolean }): AsyncGenerator<T[]> {
+  let cursor: string | null = null;
+  do {
+    const query = new URLSearchParams({ limit: String(EXPORT_PAGE_LIMIT), ...(cursor ? { cursor } : {}) });
+    const page: DataPage<T> = await apiFetch<DataPage<T>>(`${apiPath}?${query.toString()}`, { method: "GET" }, fetchOptions);
+    yield page[key] ?? [];
+    cursor = page.next_cursor;
+  } while (cursor);
+}
+
+/** A new file inside the export folder, never through a symlink. */
+async function openExportFile(target: string, root: string) {
+  await ensureParentFolders(root, target);
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing && !existing.isFile()) {
+    throw new Error(`${target} is ${existing.isSymbolicLink() ? "a symlink" : "not a regular file"}, so the CLI won't write over it.`);
+  }
+  return await fs.open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+}
+
+/** Writes a JSON array with one item per line, a page at a time; returns how many items. */
+async function writeJsonLines<T>(target: string, source: AsyncGenerator<T[]>, shape: (item: T) => unknown): Promise<number> {
+  const handle = await openExportFile(target, path.dirname(target));
+  let count = 0;
+  try {
+    await handle.write("[");
+    for await (const page of source) {
+      for (const item of page) {
+        await handle.write(`${count === 0 ? "\n" : ",\n"}${JSON.stringify(shape(item))}`);
+        count += 1;
+      }
+    }
+    await handle.write(count === 0 ? "]\n" : "\n]\n");
+  } finally {
+    await handle.close();
+  }
+  return count;
+}
+
+/** The CSV twin of a JSON-lines array written by writeJsonLines, read back a line at a time. */
+async function writeCsvFromJsonLines<T>(jsonPath: string, csvPath: string, header: readonly string[], row: (item: T) => unknown[]): Promise<void> {
+  const out = await openExportFile(csvPath, path.dirname(csvPath));
+  const input = await fs.open(jsonPath, "r");
+  try {
+    await out.write(csvRow(header));
+    const lines = createInterface({ input: input.createReadStream({ encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      const trimmed = line.endsWith(",") ? line.slice(0, -1) : line;
+      if (trimmed === "[" || trimmed === "]" || trimmed === "[]" || trimmed === "") continue;
+      await out.write(csvRow(row(JSON.parse(trimmed) as T)));
+    }
+  } finally {
+    await input.close();
+    await out.close();
+  }
+}
+
+function exportReadme(appId: string, collections: readonly string[], options: ExportOptions): string {
+  const lines = [
+    `This folder holds the saved data of your Userland app ${appId}, as it was when you exported it.`,
+    "",
+    collections.length > 0 ? "records/: one .json and one .csv file for each collection, with every record's id, when it was created and last changed, who owns it, and its fields." : "records/: the app had no saved records.",
+    ...(options.collection === undefined
+      ? [
+          "people.json and people.csv: the people who can sign in to the app, with their email, roles, and when they joined or were turned off.",
+          options.noFiles ? "Uploaded files were left out (--no-files)." : "files/: every uploaded file, by store and path, and files/index.csv listing them with their size and SHA-256."
+        ]
+      : [`Only the "${options.collection}" collection is here (--collection).`]),
+    "",
+    "Not included: passwords (people set a new password on any new system), secret values, and deleted records and files.",
+    "In the CSV files, a cell that starts with =, +, - or @ begins with ' so spreadsheets show it as text.",
+    ""
+  ];
+  return lines.join("\n");
+}
+
 /**
  * DELETE /v0/apps/:app_id. The API takes the app offline, removes its slugs and custom domains, and
  * marks it deleted; its release history is kept. In a terminal the CLI first shows the app's name,
@@ -2748,6 +3013,7 @@ const CLI_OPTION_NAMES = new Set([
   "--api-key",
   "--app",
   "--console-url",
+  "--collection",
   "--cursor",
   "--email",
   "--expires-in-days",
@@ -2758,6 +3024,7 @@ const CLI_OPTION_NAMES = new Set([
   "--message",
   "--name",
   "--no-browser",
+  "--no-files",
   "--no-save",
   "--password",
   "--plan",
@@ -2952,6 +3219,27 @@ function parseInviteCreateOptions(args: string[]): InviteCreateOptions {
       options.expiresInDays = requireOptionValue(arg, args[++index]);
     } else if (arg === "--account") {
       options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
+function parseExportOptions(args: string[]): ExportOptions {
+  const options: ExportOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--collection") {
+      options.collection = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--no-files") {
+      options.noFiles = true;
+    } else if (arg === "--force") {
+      options.force = true;
     } else if (arg === "--json") {
       options.json = true;
     } else {
@@ -3365,6 +3653,7 @@ function usage(exitCode: number): never {
   userland apps rollback <app-id> <release-id> [--account <account-id>]
   userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]
   userland apps download <app-id> [dir] [--version <release-id>] [--force] [--account <account-id>] [--json]
+  userland apps export <app-id> [dir] [--collection <name>] [--no-files] [--force] [--account <account-id>] [--json]
   userland apps secrets list <app-id> [--account <account-id>] [--json]
   userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
   userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]
@@ -3423,6 +3712,13 @@ Downloading an app:
   Every file's size and SHA-256 are checked, and manifest.userland.json is rebuilt with the version's
   settings and message. A folder that is not empty needs --force. Saved data, secret values, and
   files whose names start with a dot are not included. Owners, admins, and members can download.
+
+Exporting saved data:
+  apps export writes an app's saved records, the people who sign in (never their passwords), and its
+  uploaded files into a folder (default ./<app-id>-data): records/<collection>.json and .csv,
+  people.json and .csv, files/<store>/<path> and files/index.csv. CSV cells that start with =, +, -
+  or @ begin with '. --collection saves one collection only; --no-files leaves uploaded files out.
+  Owners and admins can export, on every plan.
 
 Unpublishing:
   apps unpublish takes an app offline, removes its slugs and custom domains, and removes it from
