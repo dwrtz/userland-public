@@ -31,6 +31,7 @@ Use this skill when publishing, updating, inspecting, rolling back, or unpublish
 5. Roll back if activation or runtime behavior is wrong.
 6. Unpublish test or demo apps the user no longer needs, only when the user asks.
 7. When the user asks, invite people to sign in to an app that has sign-in, or delete a secret the app no longer uses.
+8. When there is no project folder (a new session, a lost folder, or the user asks for a copy), get the app back with `userland apps download <app-id> [dir]` (CLI 0.13.0 or later), change it there, run `userland validate <dir>`, and publish with `--app <app-id>`. Tell the user what the folder doesn't have: the app's saved data, secret values, files whose names start with a dot, and the original source if the app was built before publishing.
 
 ## Commands
 
@@ -45,12 +46,13 @@ userland apps releases <app-id>
 userland apps events <app-id> --severity error --limit 25
 userland apps events <app-id> --severity error --limit 25 --cursor <cursor>
 userland apps rollback <app-id> <release-id>
+userland apps download <app-id> [dir] [--version <release-id>] [--force] [--account <account-id>]
 userland apps list [--account <account-id>]
 userland apps unpublish <app-id> --yes [--account <account-id>]
 userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>]
 ```
 
-If `secrets list`, `secrets delete`, `invites create`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`.
+If `secrets list`, `secrets delete`, `invites create`, `apps download`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`.
 
 `apps events` prints the newest events first. When there are more, the last line is `cursor=<cursor>`; run the same command again with `--cursor <cursor>` to read the next, older page.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- CLI: add `userland apps download <app-id> [dir] [--version <release-id>] [--force] [--account <account-id>] [--json]`, with `userland apps pull` as an alias. It writes the live version, or any version Userland still keeps, into a folder (`./<app-id>` by default) that `userland apps publish <dir> --app <app-id>` publishes again with the same files and content types. It reads the version's file list (`GET /v0/apps/:app_id/releases/:release_id/files`), checks every path before writing anything (no `..`, absolute paths, backslashes or drive letters, and nothing outside the folder), then reads the files four at a time, checking each one's size and SHA-256 as it arrives and keeping none that doesn't match; it waits and tries again when the file-read limit answers `429`. `manifest.userland.json` is rebuilt from the version's settings and message, with a `files` list naming every file and a `content_type` only where the CLI would guess another from the extension. A folder that isn't empty needs `--force`, and symlinks are never written or followed. When an account is selected, an app in another account is not downloaded. The output names each secret the version needs (`required_secret=`), says what isn't included (saved data, secret values, dot-files, and the original source of a built app), and gives the `validate` and `publish --app` commands to run next. Needs the Userland API's file reads, live on 2026-10-06. The `userland-publish-operate` skill says when to use it and what to tell the user.
+
 ## 0.12.0 - 2026-10-11
 
 - CLI: the README (the one on npm) and the repo README say the CLI needs Node.js 20 or newer, how to check (`node --version`), and where to get it, and that `npx @userland.fun/cli` runs the CLI without a global install when `npm install -g` fails with a permission error. The repo README lists Node.js 20+ among an agent's inputs. The requirement itself is unchanged (`engines.node` has been `>=20`).

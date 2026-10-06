@@ -51,6 +51,7 @@ userland apps status <app-id>
 userland apps releases <app-id>
 userland versions <app-id>
 userland apps rollback <app-id> <release-id>
+userland apps download <app-id>
 userland apps unpublish <app-id>
 userland apps secrets list <app-id>
 printf '%s' "$VALUE" | userland apps secrets set <app-id> <NAME>
@@ -98,6 +99,7 @@ npm run userland -- apps status <app-id>
 npm run userland -- apps releases <app-id>
 npm run userland -- versions <app-id>
 npm run userland -- apps rollback <app-id> <release-id>
+npm run userland -- apps download <app-id>
 npm run userland -- apps unpublish <app-id>
 npm run userland -- apps secrets list <app-id>
 printf '%s' "$VALUE" | npm run userland -- apps secrets set <app-id> <NAME>
@@ -463,6 +465,42 @@ status=400
 upload_error="Your Worker exceeded the size limit of 10 MiB." code=10027
 The rollback did not happen: your app is still on its current release. Running the same command again will not fix this. Send this output to support: userland support open --subject "Rollback failed" --app <app-id>
 ```
+
+## Download an app
+
+```sh
+userland apps download <app-id>
+userland apps download <app-id> ./my-app
+userland apps download <app-id> ./old-copy --version <release-id>
+userland apps download <app-id> . --force --json
+userland apps pull <app-id>
+```
+
+`userland apps download` (alias `apps pull`, CLI 0.13.0 or later) writes one version of an app into a folder that publishes again unchanged with `userland apps publish <dir> --app <app-id>`. Use it when the project folder is lost, when a new coding agent starts without one, or to keep a copy.
+
+- **Which version.** It takes the live version unless you pass `--version` with a release id from `userland apps releases <app-id>`. Any version Userland still keeps works, also for an unpublished app.
+- **The folder.** It defaults to `./<app-id>`. A folder that isn't empty needs `--force`; files already there with other names are left alone.
+- **What it writes.** Every file of the version at its path, and a `manifest.userland.json` rebuilt from the version's settings and message. The manifest has a `files` list naming every file, with a `content_type` only where the CLI's guess from the extension would differ, so publishing the folder sends exactly the same files with the same types.
+- **Checks.** Each file's size and SHA-256 are checked as it arrives, and a file that doesn't match is not kept. A path that would land outside the folder (`..`, an absolute path, a backslash) stops the download before anything is written. Symlinks are never written or followed.
+- **Files a few at a time.** It reads files four at a time and waits when the API's file-read limit says to slow down.
+- **Account.** When an account is selected (`--account`, `USERLAND_ACCOUNT_ID`, or the saved account), an app in a different account is not downloaded.
+- **Who.** Owners, admins and members can download (`API 403` for a viewer). A version Userland no longer keeps answers `API 404`.
+
+```text
+Downloaded 5 files of the live version to /Users/me/my-app
+app_id=app_...
+release_id=rel_...
+dir=/Users/me/my-app
+file_count=5
+required_secret=STRIPE_SECRET_KEY
+Not included: the app's saved data, secret values, and files whose names start with a dot (Userland never uploads those). If the app was built before it was published, these are the built files.
+Next: userland validate /Users/me/my-app
+Next: userland apps publish /Users/me/my-app --app app_...
+```
+
+A `required_secret=` line names each secret the version needs. Its value is never downloaded; it stays saved with the app, so publishing the folder again as the same app keeps using it. `--json` prints `app_id`, `account_id`, `release_id`, `is_live`, `message`, `created_at`, `dir`, `file_count`, `total_bytes`, `files` (`path`, `size_bytes`, `sha256`) and `required_secrets`.
+
+A version published before newer rules (for example an embed origin on a Userland address, or a content type an older CLI accepted) may need a change before it publishes again; `userland validate <dir>` says what.
 
 ## Unpublish an app
 

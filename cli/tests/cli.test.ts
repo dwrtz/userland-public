@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3147,6 +3148,165 @@ recent_errors:
   });
 });
 
+describe("apps download", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+    await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+  /** The file list and file reads the API answers for a version made from a folder, with some types the CLI wouldn't guess. */
+  async function versionOf(appId: string, releaseId: string, dir: string, overrides: Record<string, string> = {}) {
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.userland.json"), "utf8")) as Record<string, unknown>;
+    const paths: string[] = [];
+    const walk = async (relative: string) => {
+      for (const entry of await fs.readdir(path.join(dir, relative), { withFileTypes: true })) {
+        const child = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) await walk(child);
+        else if (child !== "manifest.userland.json") paths.push(child);
+      }
+    };
+    await walk("");
+    paths.sort();
+    const guess = (file: string) =>
+      file.endsWith(".html") ? "text/html; charset=utf-8" : file.endsWith(".css") ? "text/css; charset=utf-8" : file.endsWith(".json") ? "application/json; charset=utf-8" : "application/octet-stream";
+    const contents = new Map<string, Buffer>();
+    for (const file of paths) contents.set(file, await fs.readFile(path.join(dir, file)));
+    const files = paths.map((file) => ({ path: file, kind: "static", content_type: overrides[file] ?? guess(file), size_bytes: contents.get(file)!.length, sha256: sha256(contents.get(file)!) }));
+    const routes: Record<string, unknown> = {
+      [`GET /v0/apps/${appId}/releases/live/files`]: {
+        app_id: appId,
+        account_id: "acct_owner",
+        release_id: releaseId,
+        is_live: true,
+        activation_status: "live",
+        message: "Spring prices",
+        created_at: "2026-10-06T12:00:00.000Z",
+        manifest: { app: manifest.app, runtime: manifest.runtime, resources: { ...(manifest.resources as object), secrets: { required: ["STRIPE_SECRET_KEY"] } } },
+        file_count: files.length,
+        total_bytes: files.reduce((total, file) => total + file.size_bytes, 0),
+        files,
+        kept_until_at_least: "2026-10-06T12:30:00.000Z"
+      }
+    };
+    for (const file of files) {
+      routes[`GET /v0/apps/${appId}/releases/${releaseId}/files/${file.path.split("/").map(encodeURIComponent).join("/")}`] = { __raw: contents.get(file.path)! };
+    }
+    return { routes, files, contents, manifest };
+  }
+
+  async function emptyDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "userland-download-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  test("writes a version into a folder that publishes again with the same files, types and settings", async () => {
+    const version = await versionOf("app_dl", "rel_dl", "examples/hello-static", { "example.json": "application/json" });
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { ...version.routes, "PUT /v0/apps/app_dl": publishResponse("app_dl") });
+    const parent = await emptyDir();
+    const target = path.join(parent, "hello");
+
+    const result = await runCli(["apps", "download", "app_dl", target], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`Downloaded ${version.files.length} files of the live version to ${target}\n`);
+    expect(result.stdout).toContain(`app_id=app_dl\nrelease_id=rel_dl\ndir=${target}\nfile_count=${version.files.length}\nrequired_secret=STRIPE_SECRET_KEY\n`);
+    expect(result.stdout).toContain(`Next: userland validate ${target}\nNext: userland apps publish ${target} --app app_dl\n`);
+    for (const file of version.files) {
+      expect(await fs.readFile(path.join(target, file.path)), file.path).toEqual(version.contents.get(file.path));
+    }
+    const manifest = JSON.parse(await fs.readFile(path.join(target, "manifest.userland.json"), "utf8")) as Record<string, any>;
+    expect(manifest).toMatchObject({ app: version.manifest.app, runtime: version.manifest.runtime, message: "Spring prices", resources: { secrets: { required: ["STRIPE_SECRET_KEY"] } } });
+    expect(manifest.files).toEqual(version.files.map((file) => (file.path === "example.json" ? { path: file.path, content_type: "application/json" } : { path: file.path })));
+
+    const published = await runCli(["apps", "publish", target, "--app", "app_dl", "--skip-local-validation"], api.baseUrl);
+    expect(published.code, published.stderr).toBe(0);
+    const body = requests.find((request) => request.method === "PUT")?.body as { files: Array<{ path: string; content_type: string; content_base64: string }>; message: string; app: unknown };
+    expect(body.message).toBe("Spring prices");
+    expect(body.app).toEqual(version.manifest.app);
+    expect(body.files.map((file) => ({ path: file.path, content_type: file.content_type, sha256: sha256(Buffer.from(file.content_base64, "base64")) }))).toEqual(
+      version.files.map((file) => ({ path: file.path, content_type: file.content_type, sha256: file.sha256 }))
+    );
+  });
+
+  test("refuses paths that would land outside the folder, before writing anything", async () => {
+    for (const bad of ["../evil.txt", "/etc/passwd", "public\\win.txt", "public/../../x.txt", "public//x.txt", "C:/x.txt"]) {
+      const version = await versionOf("app_bad", "rel_bad", "examples/hello-static");
+      const list = version.routes["GET /v0/apps/app_bad/releases/live/files"] as { files: Array<{ path: string }> };
+      list.files.push({ ...list.files[0], path: bad });
+      const api = await startMockApi([], version.routes);
+      const target = path.join(await emptyDir(), "out");
+      const result = await runCli(["apps", "download", "app_bad", target], api.baseUrl);
+      expect(result.code, bad).toBe(1);
+      expect(result.stderr, bad).toContain("Nothing was downloaded.");
+      expect(await fs.readdir(target).catch(() => []), bad).toEqual([]);
+    }
+  });
+
+  test("keeps no file whose bytes don't match the version's SHA-256", async () => {
+    const version = await versionOf("app_sha", "rel_sha", "examples/hello-static");
+    version.routes["GET /v0/apps/app_sha/releases/rel_sha/files/public/index.html"] = { __raw: "<h1>changed</h1>" };
+    const api = await startMockApi([], version.routes);
+    const target = path.join(await emptyDir(), "out");
+    const result = await runCli(["apps", "download", "app_sha", target], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("public/index.html arrived with");
+    await expect(fs.access(path.join(target, "public/index.html"))).rejects.toThrow();
+  });
+
+  test("needs --force for a folder that isn't empty, and never writes through a symlink", async () => {
+    const version = await versionOf("app_dir", "rel_dir", "examples/hello-static");
+    const api = await startMockApi([], version.routes);
+    const target = await emptyDir();
+    await fs.writeFile(path.join(target, "notes.txt"), "mine");
+    const refused = await runCli(["apps", "download", "app_dir", target], api.baseUrl);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("is not empty. Choose an empty or new folder, or pass --force to write into it.");
+
+    const outside = await emptyDir();
+    await fs.symlink(outside, path.join(target, "public"));
+    const linked = await runCli(["apps", "download", "app_dir", target, "--force"], api.baseUrl);
+    expect(linked.code).toBe(1);
+    expect(linked.stderr).toContain("is a symlink, so the CLI won't write into it.");
+    expect(await fs.readdir(outside)).toEqual([]);
+
+    await fs.rm(path.join(target, "public"));
+    const forced = await runCli(["apps", "download", "app_dir", target, "--force"], api.baseUrl);
+    expect(forced.code, forced.stderr).toBe(0);
+    expect(await fs.readFile(path.join(target, "notes.txt"), "utf8")).toBe("mine");
+  });
+
+  test("works as apps pull with --version and --json, checks the account, and waits when the file-read limit says so", async () => {
+    const version = await versionOf("app_v", "rel_old", "examples/hello-static");
+    const routes: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(version.routes)) routes[key.replace("/releases/live/files", "/releases/rel_old/files")] = value;
+    (routes["GET /v0/apps/app_v/releases/rel_old/files"] as { is_live: boolean }).is_live = false;
+    const css = "GET /v0/apps/app_v/releases/rel_old/files/public/assets/app.css";
+    routes[css] = [{ __status: 429, error: { code: "rate_limited", message: "Too many file reads. Wait a minute, then continue." } }, routes[css]];
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, routes);
+    const target = path.join(await emptyDir(), "old");
+
+    const result = await runCli(["apps", "pull", "app_v", target, "--version", "rel_old", "--json", "--account", "acct_owner"], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    const json = JSON.parse(result.stdout);
+    expect(json).toMatchObject({ app_id: "app_v", account_id: "acct_owner", release_id: "rel_old", is_live: false, dir: target, file_count: version.files.length, required_secrets: ["STRIPE_SECRET_KEY"] });
+    expect(json.files).toEqual(version.files.map((file) => ({ path: file.path, size_bytes: file.size_bytes, sha256: file.sha256 })));
+    expect(requests.filter((request) => request.url.endsWith("public/assets/app.css"))).toHaveLength(2);
+    expect(requests.every((request) => request.accountId === "acct_owner")).toBe(true);
+
+    const elsewhere = await runCli(["apps", "pull", "app_v", path.join(await emptyDir(), "x"), "--version", "rel_old", "--account", "acct_other"], api.baseUrl);
+    expect(elsewhere.code).toBe(1);
+    expect(elsewhere.stderr).toContain("app_v belongs to account acct_owner, not acct_other. Nothing was downloaded.");
+
+    const gone = await runCli(["apps", "download", "app_v", path.join(await emptyDir(), "y"), "--version", "rel_gone"], api.baseUrl);
+    expect(gone.code).toBe(1);
+    expect(gone.stderr).toContain("API 404");
+  });
+});
+
 function accountsResponse(): Record<string, unknown> {
   return {
     accounts: [{ id: "acct_owner", account_id: "acct_owner", role: "owner", name: "Alice", owner_user_id: "usr_alice" }],
@@ -3411,6 +3571,13 @@ async function handleRequest(
   const picked = Array.isArray(configuredRoute) ? configuredRoute.shift() : configuredRoute;
   // A function route runs when the request arrives (for example to change files mid-command).
   const route = typeof picked === "function" ? await (picked as () => unknown)() : picked;
+  // Bytes rather than JSON, as the file reads answer.
+  if (typeof route === "object" && route !== null && "__raw" in route) {
+    const raw = route as { __raw: string | Uint8Array; __status?: number; __headers?: Record<string, string> };
+    response.writeHead(raw.__status ?? 200, { "content-type": "application/octet-stream", ...raw.__headers });
+    response.end(Buffer.from(raw.__raw));
+    return;
+  }
   if (typeof route === "object" && route !== null && "__status" in route) {
     const { __status, ...body } = route as { __status: number; [key: string]: unknown };
     response.writeHead(__status, { "content-type": "application/json" });

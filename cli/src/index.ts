@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
+import { contentTypeForPath, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
 import {
   analyzeAppDirectory,
@@ -104,6 +105,13 @@ interface EventsOptions {
   releaseId?: string;
   limit?: string;
   cursor?: string;
+}
+
+interface DownloadOptions {
+  account?: string;
+  force?: boolean;
+  json?: boolean;
+  version?: string;
 }
 
 interface UnpublishOptions {
@@ -569,6 +577,10 @@ async function appsCommand(args: string[]): Promise<void> {
   }
   if (subcommand === "unpublish") {
     await unpublishCommand(rest);
+    return;
+  }
+  if (subcommand === "download" || subcommand === "pull") {
+    await downloadCommand(rest);
     return;
   }
   if (subcommand === "secrets" && rest[0] === "set") {
@@ -1532,6 +1544,175 @@ async function rollbackCommand(args: string[]): Promise<void> {
   console.log(`release_id=${response.release_id}`);
   console.log(`previous_release_id=${response.previous_release_id ?? ""}`);
   console.log(`status=${response.status}`);
+}
+
+interface VersionFilesResponse {
+  app_id: string;
+  account_id: string | null;
+  release_id: string;
+  is_live: boolean;
+  activation_status: string;
+  message: string | null;
+  created_at: string;
+  manifest: Record<string, unknown>;
+  files: Array<{ path: string; kind: string; content_type: string; size_bytes: number; sha256: string }>;
+}
+
+/** How many files `apps download` reads at once. */
+const DOWNLOAD_CONCURRENCY = 4;
+/** How many times one file read is tried when the API says to slow down (429). */
+const DOWNLOAD_ATTEMPTS = 6;
+
+/**
+ * `userland apps download <app-id> [dir]` (alias `apps pull`): the live version, or `--version
+ * <release-id>`, written into a folder that publishes again unchanged with `apps publish <dir> --app
+ * <app-id>`. It reads the version's file list (GET /v0/apps/:app_id/releases/:release_id/files), checks
+ * every path before writing anything, then reads each file (…/files/<path>), a few at a time, checking
+ * its size and SHA-256 as it arrives. manifest.userland.json is rebuilt from the stored settings, with a
+ * `files` list so exactly the version's files are published again. A folder that isn't empty needs
+ * --force; symlinks are never written or followed.
+ */
+async function downloadCommand(args: string[]): Promise<void> {
+  const appId = args[0];
+  if (!appId || appId.startsWith("--")) {
+    usage(1);
+  }
+  const hasDir = args[1] !== undefined && !args[1].startsWith("--");
+  const options = parseDownloadOptions(args.slice(hasDir ? 2 : 1));
+  const appSegment = pathSegment(appId, "app id");
+  const versionSegment = pathSegment(options.version ?? "live", "version id");
+  const dir = path.resolve(hasDir ? args[1] : appId);
+
+  const dirStat = await fs.lstat(dir).catch(() => null);
+  if (dirStat && (dirStat.isSymbolicLink() || !dirStat.isDirectory())) {
+    throw new Error(`${dir} is ${dirStat.isSymbolicLink() ? "a symlink" : "not a folder"}. Choose another folder.`);
+  }
+  if (!options.force && !(await folderIsEmpty(dir))) {
+    throw new Error(`${dir} is not empty. Choose an empty or new folder, or pass --force to write into it.`);
+  }
+
+  const version = await apiFetch<VersionFilesResponse>(`/v0/apps/${appSegment}/releases/${versionSegment}/files`, { method: "GET" }, { accountId: options.account, accountScoped: true, raw: true });
+  const selected = selectedAccountId(options.account, await readCredentials());
+  if (selected && version.account_id && version.account_id !== selected) {
+    throw new Error(`${terminalSafe(appId)} belongs to account ${terminalSafe(version.account_id)}, not ${terminalSafe(selected)}. Nothing was downloaded.`);
+  }
+  // A file the version named manifest.userland.json can't be published again (the CLI reads that name
+  // as the manifest), so the rebuilt manifest takes its place, as in the zip download.
+  const files = version.files.filter((file) => file.path !== "manifest.userland.json");
+  const targets = files.map((file) => ({ file, target: targetPath(dir, file.path) }));
+
+  await fs.mkdir(dir, { recursive: true });
+  let next = 0;
+  const worker = async () => {
+    while (next < targets.length) {
+      const { file, target } = targets[next++];
+      await ensureParentFolders(dir, target);
+      const fileSegments = file.path.split("/").map((part) => encodeURIComponent(part)).join("/");
+      const response = await apiFetchResponse(`/v0/apps/${appSegment}/releases/${pathSegment(version.release_id, "version id")}/files/${fileSegments}`, options.account);
+      await writeCheckedFile(target, responseChunks(response), file);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, targets.length) }, worker));
+
+  const manifestPath = path.join(dir, "manifest.userland.json");
+  const manifestStat = await fs.lstat(manifestPath).catch(() => null);
+  if (manifestStat && !manifestStat.isFile()) {
+    throw new Error(`${manifestPath} is not a regular file, so the CLI won't write over it.`);
+  }
+  await fs.writeFile(manifestPath, `${JSON.stringify(rebuiltManifest(version.manifest, version.message, files), null, 2)}\n`, { mode: 0o644 });
+
+  const secrets = requiredSecretNames(version.manifest);
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        terminalSafeValue({
+          app_id: version.app_id,
+          account_id: version.account_id,
+          release_id: version.release_id,
+          is_live: version.is_live,
+          message: version.message,
+          created_at: version.created_at,
+          dir,
+          file_count: files.length,
+          total_bytes: files.reduce((total, file) => total + file.size_bytes, 0),
+          files: files.map((file) => ({ path: file.path, size_bytes: file.size_bytes, sha256: file.sha256 })),
+          required_secrets: secrets
+        }),
+        null,
+        2
+      )
+    );
+    return;
+  }
+  const shownDir = shellWord(dir);
+  console.log(`Downloaded ${files.length} file${files.length === 1 ? "" : "s"} of ${version.is_live ? "the live version" : "a kept version"} to ${terminalSafe(dir)}`);
+  console.log(`app_id=${terminalSafe(version.app_id)}`);
+  console.log(`release_id=${terminalSafe(version.release_id)}`);
+  console.log(`dir=${terminalSafe(dir)}`);
+  console.log(`file_count=${files.length}`);
+  for (const name of secrets) {
+    console.log(`required_secret=${terminalSafe(name)}`);
+  }
+  console.log("Not included: the app's saved data, secret values, and files whose names start with a dot (Userland never uploads those). If the app was built before it was published, these are the built files.");
+  console.log(`Next: userland validate ${shownDir}`);
+  console.log(`Next: userland apps publish ${shownDir} --app ${shellWord(version.app_id)}${accountFlag(options.account)}`);
+}
+
+/** A response's body, a chunk at a time. */
+async function* responseChunks(response: Response): AsyncGenerator<Uint8Array> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * A GET whose answer is bytes, not JSON, with the same key, API and account as apiFetch. A 429 (the
+ * file-read limit) is tried again after a short wait; other errors are thrown as apiFetch throws them.
+ */
+async function apiFetchResponse(apiPath: string, accountOption: string | undefined): Promise<Response> {
+  const credentials = await readCredentials();
+  const target = apiTarget(credentials);
+  if (!target.apiKey) {
+    throw new Error("USERLAND_API_KEY is required. Run `userland signup` or `userland login` to save credentials.");
+  }
+  if (target.conflict) {
+    throw new Error(target.conflict);
+  }
+  const accountId = selectedAccountId(accountOption, credentials);
+  const headers: Record<string, string> = { authorization: `Bearer ${target.apiKey}` };
+  if (accountId) {
+    headers["x-userland-account-id"] = accountId;
+  }
+  const base = assertServiceUrl(target.baseUrl, "API base URL");
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await fetch(`${base.href.replace(/\/$/u, "")}${apiPath}`, { method: "GET", headers });
+    if (response.ok) {
+      return response;
+    }
+    const text = await response.text();
+    if (response.status === 429 && attempt < DOWNLOAD_ATTEMPTS) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      await new Promise((resolve) => setTimeout(resolve, Number.isFinite(retryAfter) && retryAfter >= 0 && response.headers.has("retry-after") ? retryAfter * 1000 : Math.min(30_000, 1000 * 2 ** (attempt - 1))));
+      continue;
+    }
+    let body: unknown;
+    try {
+      body = text ? (JSON.parse(text) as unknown) : undefined;
+    } catch {
+      throw new ApiError(`API ${response.status}: the response was not JSON.`, response.status, undefined, undefined, undefined);
+    }
+    const message = errorMessage(body) ?? response.statusText;
+    const parsed = isPlainObject(body) ? parseApiError(body) : {};
+    throw new ApiError(`API ${response.status}: ${message}`, response.status, parsed.code, parsed.details, body);
+  }
 }
 
 /**
@@ -2570,6 +2751,7 @@ const CLI_OPTION_NAMES = new Set([
   "--cursor",
   "--email",
   "--expires-in-days",
+  "--force",
   "--help",
   "--json",
   "--limit",
@@ -2592,6 +2774,7 @@ const CLI_OPTION_NAMES = new Set([
   "--type",
   "--username",
   "--value",
+  "--version",
   "--yes",
   "-y"
 ]);
@@ -2778,6 +2961,25 @@ function parseInviteCreateOptions(args: string[]): InviteCreateOptions {
   return options;
 }
 
+function parseDownloadOptions(args: string[]): DownloadOptions {
+  const options: DownloadOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--version") {
+      options.version = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--account") {
+      options.account = requireOptionValue(arg, args[++index]);
+    } else if (arg === "--force") {
+      options.force = true;
+    } else if (arg === "--json") {
+      options.json = true;
+    } else {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+  return options;
+}
+
 function parseUnpublishOptions(args: string[]): UnpublishOptions {
   const options: UnpublishOptions = {};
   for (let index = 0; index < args.length; index += 1) {
@@ -2919,24 +3121,6 @@ function formatFieldValue(value: unknown): string {
     return JSON.stringify(value);
   }
   return String(value);
-}
-
-function contentTypeForPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  const types: Record<string, string> = {
-    ".html": "text/html; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".txt": "text/plain; charset=utf-8"
-  };
-  return types[ext] ?? "application/octet-stream";
 }
 
 function errorMessage(body: unknown): string | undefined {
@@ -3180,6 +3364,7 @@ function usage(exitCode: number): never {
   userland apps releases <app-id> [--account <account-id>]
   userland apps rollback <app-id> <release-id> [--account <account-id>]
   userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]
+  userland apps download <app-id> [dir] [--version <release-id>] [--force] [--account <account-id>] [--json]
   userland apps secrets list <app-id> [--account <account-id>] [--json]
   userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
   userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]
@@ -3203,6 +3388,7 @@ Aliases:
   userland analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]
   userland releases <app-id> [--account <account-id>]
   userland versions <app-id> [--account <account-id>]
+  userland apps pull <app-id> [dir] [--version <release-id>] [--force] [--account <account-id>] [--json]
 
 Validation:
   validate checks manifest.userland.json against the public schema, file paths, and plan limits offline.
@@ -3230,6 +3416,13 @@ Publishing a folder:
   stored but not live (activation_status pending_secrets, requires_migration, or failed) prints
   "Stored, not live" with the reasons and the commands to run next, and still exits 0: run those
   commands, then publish again with --app <app-id>. Publishing without --app creates a second app.
+
+Downloading an app:
+  apps download (or apps pull) writes the live version, or --version <release-id> from apps releases,
+  into a folder (default ./<app-id>) that apps publish <dir> --app <app-id> publishes again unchanged.
+  Every file's size and SHA-256 are checked, and manifest.userland.json is rebuilt with the version's
+  settings and message. A folder that is not empty needs --force. Saved data, secret values, and
+  files whose names start with a dot are not included. Owners, admins, and members can download.
 
 Unpublishing:
   apps unpublish takes an app offline, removes its slugs and custom domains, and removes it from
