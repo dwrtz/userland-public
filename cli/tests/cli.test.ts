@@ -1559,9 +1559,9 @@ describe("public CLI", () => {
             violations: [
               {
                 kind: "manifest_feature",
-                feature_key: "private_apps",
-                manifest_path: "/app/visibility",
-                value: "private",
+                feature_key: "auth.public_signup",
+                manifest_path: "/resources/auth/public_signup",
+                value: true,
                 required_plan_key: "business"
               },
               {
@@ -1583,7 +1583,7 @@ describe("public CLI", () => {
     expect(result.stderr).toContain("API 402: This app manifest uses features or limits outside the account plan.");
     expect(result.stderr).toContain("error=entitlement_required");
     expect(result.stderr).toContain("required_plan_key=business");
-    expect(result.stderr).toContain("violation=/app/visibility feature=private_apps value=private requires=business");
+    expect(result.stderr).toContain("violation=/resources/auth/public_signup feature=auth.public_signup value=true requires=business");
     expect(result.stderr).toContain("violation=/resources/jobs/*/schedule limit=jobs.schedule.allowed value=1 allowed=daily requires=business");
     expect(result.stderr).toContain("self_serve_upgrade=true");
     expect(result.stderr).toContain("upgrade_url=https://console.userland.fun/billing");
@@ -1926,7 +1926,7 @@ describe("public CLI", () => {
     const human = await runCli(["validate", dir], "http://127.0.0.1:1", { apiKey: null });
     expect(human.code).toBe(1);
     expect(human.stdout).toContain("Validation failed.");
-    expect(human.stdout).toContain("error=schema\nmanifest_path=app.visibility\nmessage=must be one of: public, private");
+    expect(human.stdout).toContain("error=schema\nmanifest_path=app.visibility\nmessage=must be one of: public");
     expect(human.stdout).toContain("manifest_path=resources.jobs.nightly.schedule\nmessage=must be one of: every_15_minutes, hourly, daily");
     expect(human.stdout).toContain("manifest_path=runtime.static_root");
 

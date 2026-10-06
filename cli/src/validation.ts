@@ -595,12 +595,22 @@ function validateCliKeys(cliKeys: Record<string, unknown>): { errors: Validation
   return { errors, schema_strict: schemaStrict };
 }
 
+/** The API's message for `app.visibility: "private"`. */
+export const PRIVATE_APPS_REFUSED =
+  "Private apps aren't available yet. Remove app.visibility or set it to public, and use sign-in with roles to limit who can see your app's pages and data.";
+
 /** Cross-field rules the API enforces that JSON Schema cannot express. */
 function semanticManifestErrors(document: Record<string, unknown>): ValidationIssue[] {
   const errors: ValidationIssue[] = [];
   const app = document.app as Record<string, unknown>;
   if (typeof app.name === "string" && app.name.trim().length === 0) {
     errors.push({ code: "invalid_manifest", manifest_path: "app.name", message: "must not be blank" });
+  }
+  // Private apps were never enforced (Userland served them to everyone), so the API refuses them
+  // until it can protect them (dwrtz/userland#244). The schema allows only "public"; this gives the
+  // API's own message instead of the schema's.
+  if (app.visibility === "private") {
+    errors.push({ code: "invalid_app_manifest", manifest_path: "app.visibility", message: PRIVATE_APPS_REFUSED });
   }
   const runtime = document.runtime as Record<string, unknown>;
   for (const key of ["static_root", "server_entry"]) {
@@ -1088,7 +1098,6 @@ export function analyzeManifestRequirements(input: ManifestInput): Requirement[]
   if (typeof runtime.static_root === "string" && runtime.static_root.length > 0) feature("runtime.static", "runtime.static_root", runtime.static_root);
   if (runtime.server_entry !== undefined) feature("runtime.server", "runtime.server_entry", runtime.server_entry);
   if (runtime.fallback === "server") feature("runtime.server", "runtime.fallback", runtime.fallback);
-  if (app.visibility === "private") feature("private_apps", "app.visibility", app.visibility);
 
   const auth = isPlainObject(resources.auth) ? resources.auth : undefined;
   if (auth?.mode === "app_users") feature("auth.app_users", "resources.auth.mode", auth.mode);
@@ -1222,7 +1231,6 @@ function requirementAllowed(requirement: Requirement, allowed: ManifestLimitValu
 const FEATURE_LABELS: Record<string, string> = {
   "runtime.static": "Static files",
   "runtime.server": "Server runtime",
-  private_apps: "Private apps",
   "auth.app_users": "App-user sign-in",
   "auth.public_signup": "Public app-user signup",
   "auth.email_verification": "App-user email verification",
