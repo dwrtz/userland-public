@@ -1363,7 +1363,7 @@ export function formatValidationReport(report: ValidationReport, context: { dir:
     lines.push(`Docs: ${LIMITS_DOCS_URL}`);
   } else if (report.errors.length > 0) {
     lines.push("");
-    lines.push("Docs: https://docs.userland.fun/reference/resource-manifest");
+    lines.push("Docs: https://docs.userland.fun/reference/resource-manifest/");
   } else if (!report.plan && required !== null && required !== "free") {
     lines.push("");
     lines.push(

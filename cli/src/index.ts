@@ -479,7 +479,7 @@ const FILE_SAFETY_ERROR_CODES = new Set(["unsafe_path", "symlink", "missing_file
 const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/u;
 const RESERVED_SECRET_PREFIXES = ["USERLAND_", "CF_", "CLOUDFLARE_"];
 const ANALYTICS_USAGE = "Usage: userland apps analytics <app-id> [--range 7d|30d|90d] [--account <account-id>] [--json]";
-const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics";
+const APP_ANALYTICS_DOCS_URL = "https://docs.userland.fun/guides/app-analytics/";
 const UNPUBLISH_USAGE = "Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]";
 const SECRETS_LIST_USAGE = "Usage: userland apps secrets list <app-id> [--account <account-id>] [--json]";
 const SECRETS_DELETE_USAGE = "Usage: userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]";
@@ -1255,12 +1255,12 @@ function publishSummaryLines(response: PublishResponse, context: { dir: string; 
 
 function activationDocsUrl(status: string): string {
   if (status === "pending_secrets") {
-    return "https://docs.userland.fun/guides/secrets";
+    return "https://docs.userland.fun/guides/secrets/";
   }
   if (status === "requires_migration") {
-    return "https://docs.userland.fun/guides/resource-migrations";
+    return "https://docs.userland.fun/guides/resource-migrations/";
   }
-  return "https://docs.userland.fun/guides/troubleshooting";
+  return "https://docs.userland.fun/guides/troubleshooting/";
 }
 
 /** A folder path as one shell word, so a suggested command can be copied as printed. */
@@ -3601,21 +3601,21 @@ function docsUrlForError(message: string): string {
     return LIMITS_DOCS_URL;
   }
   if (message.includes("quota_exceeded") || message.includes("downgrade_incompatible")) {
-    return "https://docs.userland.fun/reference/errors";
+    return "https://docs.userland.fun/reference/errors/";
   }
   if (message.includes("USERLAND_API_KEY") || message.includes("credentials")) {
-    return "https://docs.userland.fun/reference/cli";
+    return "https://docs.userland.fun/reference/cli/";
   }
   if (message.includes("secrets") || message.includes("pending_secrets")) {
-    return "https://docs.userland.fun/guides/secrets";
+    return "https://docs.userland.fun/guides/secrets/";
   }
   if (message.includes("error=auth_disabled") || message.includes("error=invalid_role")) {
-    return "https://docs.userland.fun/guides/auth";
+    return "https://docs.userland.fun/guides/auth/";
   }
   if (message.includes("rollback")) {
-    return "https://docs.userland.fun/guides/rollback";
+    return "https://docs.userland.fun/guides/rollback/";
   }
-  return "https://docs.userland.fun/guides/troubleshooting";
+  return "https://docs.userland.fun/guides/troubleshooting/";
 }
 
 function isHelpCommand(command: string | undefined): boolean {
@@ -3762,8 +3762,8 @@ Events:
   --cursor <cursor> added.
 
 Docs:
-  https://docs.userland.fun/reference/cli
-  https://docs.userland.fun/guides/troubleshooting`;
+  https://docs.userland.fun/reference/cli/
+  https://docs.userland.fun/guides/troubleshooting/`;
   if (exitCode === 0) {
     console.log(message);
   } else {
