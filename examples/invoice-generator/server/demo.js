@@ -16,6 +16,9 @@
 // its own address always requires the owner sign-in. The one exception is the
 // demo app's own Userland address (SHOWCASE_HOSTS): its public pages send
 // visitors to the demo address, and its desk keeps the normal owner sign-in.
+// Both lists hold the address on apps.userland.fun and on userland.link (where
+// Userland apps are moving), and the app's own address sends visitors to the
+// demo address on the same domain.
 //
 // To remove demo mode from your copy:
 //   1. Delete this file and tests/demo.test.ts.
@@ -26,9 +29,14 @@ import { STUDIO } from "./studio.js";
 import { MAIN_WORKSPACE, addDays, createClient, createDocument, formatNumber, randomToken, today } from "./store.js";
 import { esc, messagePage } from "./views.js";
 
-export const DEMO_HOSTS = new Set(["invoice-demo.apps.userland.fun"]);
-export const SHOWCASE_HOSTS = new Set(["3ls259ymzm94r65h4v4.apps.userland.fun"]);
-const DEMO_ORIGIN = "https://invoice-demo.apps.userland.fun";
+export const DEMO_HOSTS = new Set(["invoice-demo.apps.userland.fun", "invoice-demo.userland.link"]);
+export const SHOWCASE_HOSTS = new Set(["3ls259ymzm94r65h4v4.apps.userland.fun", "3ls259ymzm94r65h4v4.userland.link"]);
+const DEMO_NAME = "invoice-demo";
+
+/** The demo address on the same domain as a SHOWCASE_HOSTS host. */
+function demoOrigin(hostname) {
+  return `https://${DEMO_NAME}.${hostname.slice(hostname.indexOf(".") + 1)}`;
+}
 export const DEMO_ROBOTS = "noindex,follow";
 export const EXAMPLE_PAGE = "https://userland.fun/examples/invoice-generator/";
 
@@ -81,7 +89,8 @@ export async function checkKey(rc, ctx, now = new Date()) {
 
 /** Where a public page on the app's own Userland address sends the visitor. */
 export function showcaseTarget(rc, method) {
-  return method === "GET" ? DEMO_ORIGIN + rc.url.pathname + rc.url.search : `${DEMO_ORIGIN}/`;
+  const origin = demoOrigin(rc.url.hostname);
+  return method === "GET" ? origin + rc.url.pathname + rc.url.search : `${origin}/`;
 }
 
 /**

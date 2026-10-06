@@ -219,15 +219,22 @@ interface AccountsResponse {
 }
 
 interface PublishResponse {
+  /** "published" when the new release is live, "stored" when it is kept but not serving. */
   status: string;
   app_id: string;
   release_id: string;
   origin: string;
   previous_release_id: string | null;
   activation: {
+    /** live, pending_secrets, requires_migration, or failed. */
     status: string;
     reasons: string[];
+    /** Required secrets that are not set (pending_secrets). Older APIs leave it out. */
+    missing_secrets?: string[];
+    /** The release that was live before this publish; it keeps serving when this one is not live. */
     previous_release_id: string | null;
+    /** The release is live, but billing or the plan has turned off the app's web address. */
+    billing_restricted?: boolean;
   };
 }
 
@@ -1166,7 +1173,10 @@ async function publishCommand(args: string[]): Promise<void> {
     body: JSON.stringify(body)
   }, { accountId: options.account, accountScoped: true });
 
-  console.log(`Published ${response.origin}`);
+  const consoleUrl = await consoleUrlForLinks();
+  for (const line of publishSummaryLines(response, { dir, account: options.account, consoleUrl })) {
+    console.log(line);
+  }
   console.log(`app_id=${response.app_id}`);
   console.log(`release_id=${response.release_id}`);
   console.log(`previous_release_id=${response.previous_release_id ?? ""}`);
@@ -1174,6 +1184,76 @@ async function publishCommand(args: string[]): Promise<void> {
   if (response.activation.reasons.length > 0) {
     console.log(`activation_reasons=${response.activation.reasons.join("; ")}`);
   }
+}
+
+/**
+ * The plain-language lines that start publish output: "Published <origin>" only when the new release
+ * is live. Otherwise "Stored, not live", with the reasons, what is serving now, and the commands to
+ * run next. The key=value lines that follow are unchanged, and the exit code stays 0 either way: the
+ * release was stored, and a failing exit code tends to make agents retry without --app, which
+ * creates a second app.
+ */
+function publishSummaryLines(response: PublishResponse, context: { dir: string; account: string | undefined; consoleUrl: string | null }): string[] {
+  const activation = response.activation;
+  const appId = shellWord(response.app_id);
+  const lines: string[] = [];
+  if (activation.status === "live") {
+    lines.push(`Published ${response.origin}`);
+    if (activation.billing_restricted === true) {
+      lines.push("The release is live, but the app's web address is turned off for now: the account's billing or plan is restricting this app, so visitors can't open it.");
+      lines.push(`Next: userland accounts status${accountFlag(context.account)}`);
+    }
+    return lines;
+  }
+
+  lines.push("Stored, not live: this release is not serving yet.");
+  for (const reason of activation.reasons) {
+    lines.push(`Why: ${reason}`);
+  }
+  const previous = activation.previous_release_id ?? response.previous_release_id;
+  lines.push(previous ? `The previous release (${previous}) is still live at ${response.origin}` : `No release of this app is live yet, so ${response.origin} does not show it yet.`);
+
+  const republish = `userland apps publish ${shellWord(context.dir)} --app ${appId}${accountFlag(context.account)}`;
+  if (activation.status === "pending_secrets") {
+    for (const name of activation.missing_secrets ?? []) {
+      lines.push(`Next: printf '%s' "$VALUE" | userland apps secrets set ${appId} ${shellWord(name)}${accountFlag(context.account)}`);
+      if (context.consoleUrl) {
+        lines.push(`      or the owner adds it at ${context.consoleUrl}/apps/${encodeURIComponent(response.app_id)}/settings?add-key=${encodeURIComponent(name)}`);
+      }
+    }
+    lines.push(`Next: ${republish}`);
+  } else {
+    lines.push(`Next: fix what is listed above, then run ${republish}`);
+  }
+  lines.push(`Docs: ${activationDocsUrl(activation.status)}`);
+  return lines;
+}
+
+function activationDocsUrl(status: string): string {
+  if (status === "pending_secrets") {
+    return "https://docs.userland.fun/guides/secrets";
+  }
+  if (status === "requires_migration") {
+    return "https://docs.userland.fun/guides/resource-migrations";
+  }
+  return "https://docs.userland.fun/guides/troubleshooting";
+}
+
+/** A folder path as one shell word, so a suggested command can be copied as printed. */
+function shellWord(value: string): string {
+  const safe = terminalSafe(value);
+  return /^[A-Za-z0-9_./@%+=:,-]+$/u.test(safe) ? safe : `'${safe.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * The console to link to in output: USERLAND_CONSOLE_URL, then the console saved with the key, then
+ * the Userland console when the CLI talks to the default API. Null for any other API, whose console
+ * the CLI does not know.
+ */
+async function consoleUrlForLinks(): Promise<string | null> {
+  const credentials = await readCredentials().catch(() => undefined);
+  const url = envValue("USERLAND_CONSOLE_URL") ?? credentials?.console_url ?? (sameApi(apiTarget(credentials).baseUrl, DEFAULT_API_BASE_URL) ? DEFAULT_CONSOLE_BASE_URL : undefined);
+  return url === undefined ? null : terminalSafe(url.replace(/\/+$/u, ""));
 }
 
 /**
@@ -3146,6 +3226,10 @@ Publishing a folder:
   Names that start with a dot (.env, .npmrc, .git/, and so on) are left out, except .well-known/
   and dot-folders named in runtime.static_root or runtime.server_entry. Symlinks are never followed.
   Private keys (such as id_rsa or a .pem file holding a private key) stop the publish.
+  apps publish prints "Published <address>" only when the new release is live. A release that is
+  stored but not live (activation_status pending_secrets, requires_migration, or failed) prints
+  "Stored, not live" with the reasons and the commands to run next, and still exits 0: run those
+  commands, then publish again with --app <app-id>. Publishing without --app creates a second app.
 
 Unpublishing:
   apps unpublish takes an app offline, removes its slugs and custom domains, and removes it from

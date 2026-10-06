@@ -308,6 +308,29 @@ With a `files` list, exactly those files are uploaded, including dotfiles you li
 
 The Userland API remains authoritative. Local validation mirrors the API's manifest and plan rules for fast feedback; the API can still reject a publish because of billing state, account flags, deployment limits, usage quotas, or newer rules, and returns structured `402` details when it does.
 
+### Publish output
+
+`apps publish` starts with `Published <address>` only when the new release is live. A release can also be stored without going live: `activation_status` is then `pending_secrets` (a required secret is not set), `requires_migration` (a change to saved data needs a migration first), or `failed` (the server code could not be started). The output then starts with `Stored, not live`, one `Why:` line for each reason, what the app's address shows now, and the commands to run next:
+
+```text
+Stored, not live: this release is not serving yet.
+Why: Required secret STRIPE_SECRET_KEY is not set.
+The previous release (rel_old) is still live at https://<app_id>.apps.userland.fun/
+Next: printf '%s' "$VALUE" | userland apps secrets set <app_id> STRIPE_SECRET_KEY
+      or the owner adds it at https://console.userland.fun/apps/<app_id>/settings?add-key=STRIPE_SECRET_KEY
+Next: userland apps publish <dir> --app <app_id>
+Docs: https://docs.userland.fun/guides/secrets
+app_id=<app_id>
+release_id=rel_new
+previous_release_id=rel_old
+activation_status=pending_secrets
+activation_reasons=Required secret STRIPE_SECRET_KEY is not set.
+```
+
+On a first publish there is no previous release, so that line says the address does not show the app yet. Setting the secret does not make this release live: set it, then publish again with `--app`. The console link appears when the CLI knows the console (the default API, a console saved by `userland login`, or `USERLAND_CONSOLE_URL`). A release that is live while billing or the plan has turned the app's address off prints `Published <address>`, then a line saying visitors can't open it, and `Next: userland accounts status`.
+
+The `key=value` lines are the same in every case, so scripts can keep reading `activation_status`. The exit code is `0` whenever the release was stored, live or not: run the next commands rather than publishing again without `--app`, which would create a second app. `inactive` appears only in `apps releases`, never in publish output. CLI 0.11.0 and earlier print `Published <address>` for every stored release, so check `activation_status` there. `cli/tests/fixtures/activation-results.json` lists each result, what it means, and the exact output.
+
 ## App Analytics
 
 `userland apps analytics` reads owner-visible aggregate analytics from `GET /v0/apps/:app_id/analytics`:
