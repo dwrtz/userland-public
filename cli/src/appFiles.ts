@@ -86,13 +86,18 @@ export async function ensureParentFolders(root: string, target: string): Promise
   let current = root;
   for (const part of relative === "" ? [] : relative.split(path.sep)) {
     current = path.join(current, part);
-    const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+    let stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
       throw error;
     });
     if (stat === null) {
-      await fs.mkdir(current);
-    } else if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      // Files are written a few at a time, so another one may make the same folder first.
+      await fs.mkdir(current).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      });
+      stat = await fs.lstat(current);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error(`${current} is ${stat.isSymbolicLink() ? "a symlink" : "not a folder"}, so the CLI won't write into it.`);
     }
   }
