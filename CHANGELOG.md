@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- CLI and schema: `userland validate` and the `apps publish` check refuse a `runtime.embed_origins` entry under `userland.link`, where Userland apps are moving, as they already refuse one under `userland.fun`, with the API's message (`cannot be a Userland address: other apps and Userland sites can never show this app in a frame`). `schemas/resource-manifest-v0.schema.json` refuses both domains in any letter case. Before, the CLI let `https://shop.userland.link` through and the API refused it at publish.
 - CLI: `userland --help` ("Short addresses and domains") and the README say that `apps unpublish` also removes the short addresses and custom domains that a smaller plan or an unpaid invoice turned off, and keeps those short addresses for the account for 30 days, as `apps slugs remove` does, after the working ones. One that Userland support turned off still stays with the unpublished app until support turns it back on or releases it, and publishing the app again with its app id brings back none of the ones it removed. Before, both said a short address turned off by a smaller plan or an unpaid invoice stayed with an unpublished app and should be removed first. Userland's API changed this on 2026-10-04 for every CLI version; only the words change here.
 
 ## 0.11.0 - 2026-10-03

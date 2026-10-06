@@ -51,7 +51,7 @@ npm run validate:manifests
 - Do not expose secret values in static code.
 - Do not create undeclared resources at runtime.
 - Do not publish files under `_userland/`.
-- Never list another Userland app or address (`*.apps.userland.fun`, `userland.fun`, docs, the console) in `runtime.embed_origins`, and never try to allow every site; the API refuses both.
+- Never list another Userland app or address (`*.apps.userland.fun`, `*.userland.link`, `userland.fun`, docs, the console) in `runtime.embed_origins`, and never try to allow every site; the API refuses both.
 
 ## References
 
