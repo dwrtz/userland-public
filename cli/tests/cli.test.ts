@@ -3307,6 +3307,122 @@ describe("apps download", () => {
   });
 });
 
+describe("apps export", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+    await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+  async function emptyDir(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "userland-export-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  function exportRoutes(): Record<string, unknown> {
+    const record = (id: string, data: Record<string, unknown>) => ({ id, data, owner_app_user_id: id === "r1" ? "appusr_a" : null, created_at: "2026-10-06T12:00:00.000Z", updated_at: "2026-10-06T12:30:00.000Z" });
+    const logo = Buffer.from("PNG!");
+    const photo = Buffer.from("JPG!");
+    const file = (id: string, store: string, filePath: string, bytes: Buffer) => ({
+      id,
+      store,
+      path: filePath,
+      content_type: "image/png",
+      size_bytes: bytes.length,
+      sha256: sha256(bytes),
+      metadata: {},
+      created_at: "2026-10-06T12:40:00.000Z",
+      updated_at: "2026-10-06T12:40:00.000Z"
+    });
+    return {
+      "GET /v0/apps/app_x/data": { app_id: "app_x", account_id: "acct_owner", collections: [{ name: "orders", record_count: 3 }, { name: "notes", record_count: 0 }] },
+      "GET /v0/apps/app_x/data/orders?limit=1000": {
+        app_id: "app_x",
+        account_id: "acct_owner",
+        collection: "orders",
+        records: [record("r1", { item: "Cake", total: 12 }), record("r2", { item: "=HYPERLINK(\"http://evil.example\")", note: "a, \"quoted\"\nline" })],
+        next_cursor: "c1"
+      },
+      "GET /v0/apps/app_x/data/orders?limit=1000&cursor=c1": { app_id: "app_x", account_id: "acct_owner", collection: "orders", records: [record("r3", { item: "Pie", tags: ["x"] })], next_cursor: null },
+      "GET /v0/apps/app_x/data/notes?limit=1000": { app_id: "app_x", account_id: "acct_owner", collection: "notes", records: [], next_cursor: null },
+      "GET /v0/apps/app_x/app-users?limit=1000": {
+        app_id: "app_x",
+        account_id: "acct_owner",
+        app_users: [
+          { id: "appusr_a", email: "ada@customer.example", roles: ["admin", "staff"], created_at: "2026-10-01T00:00:00.000Z", updated_at: "2026-10-01T00:00:00.000Z", disabled_at: null },
+          { id: "appusr_b", email: "+bo@customer.example", roles: [], created_at: "2026-10-02T00:00:00.000Z", updated_at: "2026-10-03T00:00:00.000Z", disabled_at: "2026-10-03T00:00:00.000Z" }
+        ],
+        next_cursor: null
+      },
+      "GET /v0/apps/app_x/files?limit=1000": { app_id: "app_x", account_id: "acct_owner", files: [file("file_1", "media", "logo.png", logo), file("file_2", "media", "photos/été.jpg", photo)], next_cursor: null },
+      "GET /v0/apps/app_x/files/file_1": { __raw: logo },
+      "GET /v0/apps/app_x/files/file_2": { __raw: photo }
+    };
+  }
+
+  test("writes records, people and uploaded files into a folder, with spreadsheet formulas escaped", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, exportRoutes());
+    const target = path.join(await emptyDir(), "data");
+
+    const result = await runCli(["apps", "export", "app_x", target], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`Exported the saved data of app_x to ${target}\napp_id=app_x\ndir=${target}\ncollections=2\nrecords=3\npeople=2\nfiles=2\nfile_bytes=8\n`);
+
+    const orders = JSON.parse(await fs.readFile(path.join(target, "records", "orders.json"), "utf8"));
+    expect(orders.map((record: { id: string }) => record.id)).toEqual(["r1", "r2", "r3"]);
+    expect(orders[0]).toEqual({ id: "r1", created_at: "2026-10-06T12:00:00.000Z", updated_at: "2026-10-06T12:30:00.000Z", owner_app_user_id: "appusr_a", data: { item: "Cake", total: 12 } });
+    expect(JSON.parse(await fs.readFile(path.join(target, "records", "notes.json"), "utf8"))).toEqual([]);
+
+    const csv = await fs.readFile(path.join(target, "records", "orders.csv"), "utf8");
+    expect(csv.split("\r\n")[0]).toBe("id,created_at,updated_at,owner_app_user_id,item,note,tags,total");
+    expect(csv).toContain("r1,2026-10-06T12:00:00.000Z,2026-10-06T12:30:00.000Z,appusr_a,Cake,,,12\r\n");
+    expect(csv).toContain(`r2,2026-10-06T12:00:00.000Z,2026-10-06T12:30:00.000Z,,"'=HYPERLINK(""http://evil.example"")","a, ""quoted""\nline",,\r\n`);
+    expect(csv).toContain('r3,2026-10-06T12:00:00.000Z,2026-10-06T12:30:00.000Z,,Pie,,"[""x""]",\r\n');
+
+    const people = await fs.readFile(path.join(target, "people.csv"), "utf8");
+    expect(people).toBe(
+      "id,email,roles,created_at,updated_at,disabled_at\r\n" +
+        "appusr_a,ada@customer.example,admin;staff,2026-10-01T00:00:00.000Z,2026-10-01T00:00:00.000Z,\r\n" +
+        "appusr_b,'+bo@customer.example,,2026-10-02T00:00:00.000Z,2026-10-03T00:00:00.000Z,2026-10-03T00:00:00.000Z\r\n"
+    );
+    expect(JSON.parse(await fs.readFile(path.join(target, "people.json"), "utf8"))).toHaveLength(2);
+    expect(await fs.readFile(path.join(target, "files", "media", "photos", "été.jpg"), "utf8")).toBe("JPG!");
+    expect(await fs.readFile(path.join(target, "files", "index.csv"), "utf8")).toContain("media,photos/été.jpg,image/png,4,");
+    expect(await fs.readFile(path.join(target, "README.txt"), "utf8")).toContain("Not included: passwords");
+  });
+
+  test("saves one collection with --collection, leaves files out with --no-files, and checks the account", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, exportRoutes());
+    const one = path.join(await emptyDir(), "one");
+    const result = await runCli(["apps", "export", "app_x", one, "--collection", "orders", "--json"], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ app_id: "app_x", collections: 1, records: 3, people: 0, files: 0 });
+    expect((await fs.readdir(one)).sort()).toEqual(["README.txt", "records"]);
+    expect(requests.some((request) => request.url.includes("/app-users") || request.url.includes("/files"))).toBe(false);
+
+    const noFiles = path.join(await emptyDir(), "nofiles");
+    const skipped = await runCli(["apps", "export", "app_x", noFiles, "--no-files"], api.baseUrl);
+    expect(skipped.code, skipped.stderr).toBe(0);
+    expect(skipped.stdout).toContain("files=skipped\n");
+    await expect(fs.access(path.join(noFiles, "files"))).rejects.toThrow();
+
+    const other = await runCli(["apps", "export", "app_x", path.join(await emptyDir(), "x"), "--account", "acct_other"], api.baseUrl);
+    expect(other.code).toBe(1);
+    expect(other.stderr).toContain("app_x belongs to account acct_owner, not acct_other. Nothing was exported.");
+  });
+
+  test("passes the API's refusal through for a role that can't export", async () => {
+    const api = await startMockApi([], { "GET /v0/apps/app_x/data": { __status: 403, error: { code: "forbidden", message: "Your account role cannot perform this operation." } } });
+    const result = await runCli(["apps", "export", "app_x", path.join(await emptyDir(), "x")], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("API 403: Your account role cannot perform this operation.");
+  });
+});
+
 function accountsResponse(): Record<string, unknown> {
   return {
     accounts: [{ id: "acct_owner", account_id: "acct_owner", role: "owner", name: "Alice", owner_user_id: "usr_alice" }],
