@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 - 2026-10-11
+## 0.12.0 - 2026-10-06
 
 - CLI: the README (the one on npm) and the repo README say the CLI needs Node.js 20 or newer, how to check (`node --version`), and where to get it, and that `npx @userland.fun/cli` runs the CLI without a global install when `npm install -g` fails with a permission error. The repo README lists Node.js 20+ among an agent's inputs. The requirement itself is unchanged (`engines.node` has been `>=20`).
 - CLI and schema: `userland validate` and the `apps publish` check refuse `"visibility": "private"` before anything is uploaded, with the API's message: `error=invalid_app_manifest`, `manifest_path=app.visibility`, "Private apps aren't available yet. Remove app.visibility or set it to public, and use sign-in with roles to limit who can see your app's pages and data." Userland never kept private apps private (anyone with the address could open them), so its API now refuses them too (dwrtz/userland#244). `schemas/resource-manifest-v0.schema.json` allows only `"public"`, and the plan check no longer reports a `private_apps` feature. `schemas/plans-v0.json` and `cli/tests/fixtures/plan-parity.json` drop `private_apps`, regenerated from the API's plan rules. Before, the CLI accepted `private` on Business and Business Plus and reported "Private apps: requires Business" on lower plans.
