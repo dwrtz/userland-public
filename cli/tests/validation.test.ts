@@ -499,7 +499,17 @@ describe("runtime.embed_origins", () => {
     "https://*.apps.userland.fun",
     "https://*.shop.apps.userland.fun",
     "HTTPS://Shop.Apps.Userland.Fun",
-    "https://Shop.Apps.Userland.Fun"
+    "https://Shop.Apps.Userland.Fun",
+    // App addresses on userland.link.
+    "https://userland.link",
+    "https://www.userland.link",
+    "https://shop.userland.link",
+    "https://evil00000001.userland.link",
+    "https://example-check.userland.link:8443",
+    "https://*.userland.link",
+    "https://*.shop.userland.link",
+    "HTTPS://Shop.UserLand.Link",
+    "https://Shop.Userland.LINK"
   ];
 
   test.each(accepted)("accepts %s as %s", (value, origin) => {
@@ -620,12 +630,31 @@ describe("runtime.embed_origins", () => {
     const schemaIssues = (embed_origins: unknown) => validateAgainstSchema({ app: { name: "Embed" }, runtime: { static_root: "public", embed_origins } }, schema);
 
     expect(schemaIssues(["https://OTHER-APP.APPS.USERLAND.FUN"])).toEqual([{ code: "schema", manifest_path: "runtime.embed_origins[0]", message: "is not allowed" }]);
-    const lowercaseScheme = [...userlandHosts, "https://userland.FUN", "https://Docs.Userland.Fun", "https://*.USERLAND.fun", "https://Shop.Apps.UserLand.Fun:8443"].filter((host) => host.startsWith("https://"));
+    expect(schemaIssues(["https://OTHER-APP.USERLAND.LINK"])).toEqual([{ code: "schema", manifest_path: "runtime.embed_origins[0]", message: "is not allowed" }]);
+    const lowercaseScheme = [
+      ...userlandHosts,
+      "https://userland.FUN",
+      "https://Docs.Userland.Fun",
+      "https://*.USERLAND.fun",
+      "https://Shop.Apps.UserLand.Fun:8443",
+      "https://userland.LINK",
+      "https://*.USERLAND.link",
+      "https://Shop.UserLand.Link:8443"
+    ].filter((host) => host.startsWith("https://"));
     for (const host of lowercaseScheme) {
       expect(schemaIssues([host]).map((issue) => issue.manifest_path), host).toEqual(["runtime.embed_origins[0]"]);
     }
     // Sites that only look like Userland stay allowed.
-    for (const host of ["https://notuserland.fun", "https://userland.fun.example.com", "https://USERLAND.FUN.example.com", "https://NotUserland.Fun"]) {
+    for (const host of [
+      "https://notuserland.fun",
+      "https://userland.fun.example.com",
+      "https://USERLAND.FUN.example.com",
+      "https://NotUserland.Fun",
+      "https://notuserland.link",
+      "https://userland.link.example.com",
+      "https://shop.userland.links",
+      "https://NotUserland.Link"
+    ]) {
       expect(schemaIssues([host]), host).toEqual([]);
       expect(checkEmbedOrigin(host).ok, host).toBe(true);
     }

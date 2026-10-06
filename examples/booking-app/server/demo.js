@@ -23,7 +23,7 @@
 //
 // Demo mode is on only for requests to the hosts in DEMO_HOSTS: the demo's
 // short address and, on purpose, the demo app's own app-id address, on both
-// apps.userland.fun and userland.link (where Userland apps are moving), so every
+// apps.userland.fun and userland.link, so every
 // page of the demo deployment is marked noindex. Anywhere else, including the
 // Userland address of your own copy and any custom domain, the owner pages require an app user with the "owner" role, so a copy
 // of this example is never published with an open owner desk.
@@ -35,8 +35,8 @@
 
 import { openDays, studioTimeToDate } from "./schedule.js";
 
-// The public demo's short address and the demo app's own address, on the old
-// and the new Userland app domain. They belong to the Userland demo deployment
+// The public demo's short address and the demo app's own address, on
+// apps.userland.fun and on userland.link. They belong to the Userland demo deployment
 // only; replace them if you publish your own demo.
 export const DEMO_HOSTS = [
   "booking-demo.apps.userland.fun",

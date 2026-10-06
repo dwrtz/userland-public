@@ -278,7 +278,7 @@ describe("demo mode", () => {
     expect(home.status).toBe(303);
     expect(location(home)).toBe("https://invoice-demo.userland.link/?x=1");
     expect(location(await requestQuote(ctx, own))).toBe("https://invoice-demo.userland.link/");
-    // The old domain still sends visitors to the old demo address until it is retired.
+    // On apps.userland.fun, the app's own address still sends visitors to the demo address there.
     expect(location(await send(ctx, "https://3ls259ymzm94r65h4v4.apps.userland.fun/"))).toBe("https://invoice-demo.apps.userland.fun/");
 
     for (const other of ["https://example-check.userland.link", "https://example-check.apps.userland.fun"]) {

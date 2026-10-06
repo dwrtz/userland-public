@@ -17,7 +17,7 @@
 //
 // Demo mode is only on for the hostnames in DEMO_HOSTS: the demo's named
 // address and, on purpose, the demo app's own app-id address, each on both
-// apps.userland.fun and userland.link (where Userland apps are moving), so no
+// apps.userland.fun and userland.link, so no
 // page of the demo deployment collects real signups or gets indexed. A copy of
 // this app published anywhere else (including your own <app-id> address) runs
 // as a normal waitlist with a signed-in owner.

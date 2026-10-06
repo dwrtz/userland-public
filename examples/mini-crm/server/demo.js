@@ -55,8 +55,8 @@
 
 import { DELETE_BATCH, STAGES, byNewest, byReceived, normalizeActivity, summarizeLeads } from "./leads.js";
 
-// The public demo's short address and the demo app's own address, on the old
-// and the new Userland app domain (apps.userland.fun and userland.link). They
+// The public demo's short address and the demo app's own address, on
+// apps.userland.fun and on userland.link. They
 // belong to the Userland demo deployment only; replace them if you publish your
 // own demo.
 export const DEMO_HOSTS = new Set([
