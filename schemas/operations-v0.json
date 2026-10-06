@@ -1,0 +1,2226 @@
+{
+  "$schema": "https://docs.userland.fun/schemas/operations-v0.schema.json",
+  "version": "v0",
+  "cli_source": {
+    "cli_version": "0.11.0",
+    "public_commit": "9a2446e5f6a0d64d0835fa38a2754ab6ca31bbe8"
+  },
+  "environment": [
+    {
+      "name": "USERLAND_API_KEY",
+      "role": "local_credential",
+      "description": "The API key to use, ahead of the saved credentials file."
+    },
+    {
+      "name": "USERLAND_API_BASE_URL",
+      "role": "interface",
+      "description": "The API to call; https only (http only for localhost)."
+    },
+    {
+      "name": "USERLAND_ACCOUNT_ID",
+      "role": "account",
+      "description": "The selected business when --account isn't given, ahead of the saved one."
+    },
+    {
+      "name": "USERLAND_CONSOLE_URL",
+      "role": "interface",
+      "description": "The console that sign-in links must point at."
+    },
+    {
+      "name": "USERLAND_CREDENTIALS_FILE",
+      "role": "local_credential",
+      "description": "Where credentials are saved instead of ~/.userland/credentials.json."
+    }
+  ],
+  "operations": [
+    {
+      "id": "auth.login",
+      "area": "auth",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Sign in or sign up in the browser; the CLI gets a new API key.",
+      "cli": {
+        "command": "login",
+        "aliases": [
+          "signup",
+          "auth login",
+          "auth signup"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--email",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "An email hint printed next to the sign-in link."
+        },
+        {
+          "cli": "--no-browser",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "interface",
+          "description": "Print the sign-in link without opening a browser."
+        },
+        {
+          "cli": "--api-base-url",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The API to sign in to."
+        },
+        {
+          "cli": "--console-url",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The console the sign-in link must point at."
+        },
+        {
+          "cli": "--no-save",
+          "source": "flag",
+          "aliases": [
+            "--save=false"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "local_credential",
+          "description": "Print the new API key instead of saving it to the credentials file (decision 48: local credential mechanics)."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/auth/device/start",
+          "when": "always",
+          "account_header": false
+        },
+        {
+          "method": "POST",
+          "path": "/v0/auth/device/poll",
+          "when": "until the browser approves or denies",
+          "account_header": false
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/auth/api-keys/:api_key_id",
+          "when": "when saving replaces a key an earlier login saved for the same API",
+          "account_header": false
+        }
+      ],
+      "permission": "none",
+      "safeguards": [],
+      "mcp": {
+        "via": "connection",
+        "status": "planned",
+        "note": "Connecting the assistant: OAuth sign-in or sign-up on the console's /connect page (or a paste token). The tokens stay with the assistant, so nothing is saved or printed."
+      }
+    },
+    {
+      "id": "auth.status",
+      "area": "auth",
+      "kind": "local",
+      "effect": "local",
+      "summary": "Show which API, credentials and business the CLI will use.",
+      "cli": {
+        "command": "auth status",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [],
+      "api": [],
+      "permission": "none",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "auth_status",
+        "status": "planned",
+        "note": "Reports the connection: who is signed in, the grant's scope and the selected business."
+      }
+    },
+    {
+      "id": "auth.save_key",
+      "area": "auth",
+      "kind": "local_credential",
+      "effect": "local",
+      "summary": "Save an existing API key (and optionally a business) to the credentials file.",
+      "cli": {
+        "command": "auth save-key",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "stdin",
+          "source": "stdin",
+          "required": false,
+          "takes_value": true,
+          "role": "local_credential",
+          "description": "The API key, or a hidden prompt in a terminal."
+        },
+        {
+          "cli": "--api-key",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "local_credential",
+          "description": "The API key on the command line (warned against)."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "local_credential",
+          "description": "Saves this business with the key; MCP selects a business with accounts.use."
+        },
+        {
+          "cli": "--api-base-url",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The API to sign in to."
+        },
+        {
+          "cli": "--console-url",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The console the sign-in link must point at."
+        }
+      ],
+      "api": [],
+      "permission": "none",
+      "safeguards": [],
+      "mcp": {
+        "via": "local_credential",
+        "counterparts": [
+          "auth.login",
+          "api_keys.create",
+          "accounts.use"
+        ],
+        "note": "An assistant's credential comes from connecting it (auth.login); a key for another tool comes from api_keys.create with protected delivery (decision 30)."
+      }
+    },
+    {
+      "id": "auth.logout",
+      "area": "auth",
+      "kind": "local",
+      "effect": "write",
+      "summary": "Remove the saved credentials; with --revoke, also revoke the saved API key.",
+      "cli": {
+        "command": "auth logout",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--revoke",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "input",
+          "mcp_input": "revoke",
+          "description": "Revoke the credential too, not just forget it locally."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/auth/api-keys/:api_key_id",
+          "when": "with --revoke, when the saved key has an id",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "auth_logout",
+        "status": "planned",
+        "note": "Without revoke this is the assistant's own disconnect, which the server can't see; with revoke the tool revokes the connector grant, which stops its next call."
+      }
+    },
+    {
+      "id": "api_keys.list",
+      "area": "api_keys",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List your API keys.",
+      "cli": {
+        "command": "auth api-keys list",
+        "aliases": [
+          "api-keys list"
+        ],
+        "status": "released"
+      },
+      "inputs": [],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/auth/api-keys",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "api_keys_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "api_keys.create",
+      "area": "api_keys",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Create an API key and show it once.",
+      "cli": {
+        "command": "auth api-keys create",
+        "aliases": [
+          "api-keys create"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--name",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "name",
+          "api_field": "name",
+          "description": "A name for the key."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/auth/api-keys",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "api_keys_create",
+        "status": "planned",
+        "note": "The new key is shown on a single-use Userland page, never in chat (decision 30). Keys made through a connector are never admin keys and die with the grant (decision 26)."
+      }
+    },
+    {
+      "id": "api_keys.rename",
+      "area": "api_keys",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Rename an API key.",
+      "cli": {
+        "command": "auth api-keys rename",
+        "aliases": [
+          "api-keys rename"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<api-key-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "api_key_id",
+          "api_field": ":api_key_id",
+          "description": "The key."
+        },
+        {
+          "cli": "--name",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "name",
+          "api_field": "name",
+          "description": "The new name."
+        }
+      ],
+      "api": [
+        {
+          "method": "PATCH",
+          "path": "/v0/auth/api-keys/:api_key_id",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "api_keys_rename",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "api_keys.revoke",
+      "area": "api_keys",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Revoke an API key.",
+      "cli": {
+        "command": "auth api-keys revoke",
+        "aliases": [
+          "api-keys revoke"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<api-key-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "api_key_id",
+          "api_field": ":api_key_id",
+          "description": "The key."
+        },
+        {
+          "cli": "--yes",
+          "source": "flag",
+          "aliases": [
+            "-y"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "confirmation",
+          "mcp_input": "confirm",
+          "description": "Skip the terminal prompt; required when there is no terminal."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/auth/api-keys/:api_key_id",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [
+        "confirm_without_terminal",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "api_keys_revoke",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "accounts.list",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List the businesses you belong to, and your default.",
+      "cli": {
+        "command": "accounts list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "accounts.use",
+      "area": "accounts",
+      "kind": "local",
+      "effect": "local",
+      "summary": "Select the business later commands act in.",
+      "cli": {
+        "command": "accounts use",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<account-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "account_id",
+          "description": "The business."
+        }
+      ],
+      "api": [],
+      "permission": "none",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_use",
+        "status": "planned",
+        "note": "Stores the selection on the connector grant, server-side, so later calls send it as x-userland-account-id (ADR-0005)."
+      }
+    },
+    {
+      "id": "accounts.status",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Show a business's plan, flags and warnings.",
+      "cli": {
+        "command": "accounts status",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no business is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts/:account_id/status",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_status",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "accounts.limits",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Show a business's plan limits and this period's usage.",
+      "cli": {
+        "command": "accounts limits",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no business is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts/:account_id/limits",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_limits",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "accounts.downgrade_preview",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Show what would stop working on a smaller plan.",
+      "cli": {
+        "command": "accounts downgrade preview",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--to",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "plan",
+          "api_field": "query:plan",
+          "description": "The plan to compare with."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no business is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts/:account_id/downgrade-preview",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.read",
+      "safeguards": [
+        "plan_key_check",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_downgrade_preview",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "support.open",
+      "area": "support",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Send a support request, optionally about one app.",
+      "cli": {
+        "command": "support open",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--subject",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "subject",
+          "api_field": "subject",
+          "description": "The subject line."
+        },
+        {
+          "cli": "--message",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "message",
+          "api_field": "message",
+          "description": "The message. Without it the CLI reads standard input; one of the two is required."
+        },
+        {
+          "cli": "stdin",
+          "source": "stdin",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "message",
+          "api_field": "message",
+          "description": "The message, when --message isn't given."
+        },
+        {
+          "cli": "--app",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": "app_id",
+          "description": "The app the request is about."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/support/requests",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "support_open",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.validate",
+      "area": "validation",
+      "kind": "local",
+      "effect": "local",
+      "summary": "Check an app folder against the manifest schema, file rules and plan limits, offline.",
+      "cli": {
+        "command": "validate",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<dir>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "files",
+          "mcp_input": "draft_id",
+          "description": "The app folder. MCP refers to a draft or upload session holding the same files (decision 32)."
+        },
+        {
+          "cli": "--plan",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "plan",
+          "description": "Check against this plan; without it, report the smallest plan that fits."
+        },
+        {
+          "cli": "--strict",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "input",
+          "mcp_input": "strict",
+          "description": "Fail on schema_strict warnings too."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [],
+      "permission": "none",
+      "safeguards": [
+        "file_safety",
+        "plan_key_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_validate",
+        "status": "planned",
+        "note": "Calls POST /v0/apps/validate (250l), which runs publish's checks and writes nothing; the CLI keeps its offline rules in parity through 286i."
+      }
+    },
+    {
+      "id": "apps.publish",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Publish a folder as a new app, or as a new version of an existing one.",
+      "cli": {
+        "command": "apps publish",
+        "aliases": [
+          "publish"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<dir>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "files",
+          "mcp_input": "draft_id",
+          "description": "The app folder. MCP refers to a draft or upload session holding the same files (decision 32)."
+        },
+        {
+          "cli": "--app",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Publish a new version of this app; without it, create a new app."
+        },
+        {
+          "cli": "--message",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "message",
+          "api_field": "message",
+          "description": "A note kept with the version."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--plan",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "local_validation",
+          "description": "Run the offline preflight against this plan instead of the business's plan."
+        },
+        {
+          "cli": "--skip-local-validation",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "local_validation",
+          "description": "Skip the offline preflight; the API still checks everything."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id",
+          "when": "with --app and without --plan or --skip-local-validation, to find the app's business for the preflight",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "for the preflight, when neither --app nor a business is selected",
+          "account_header": false
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts/:account_id/limits",
+          "when": "without --plan or --skip-local-validation, for the preflight",
+          "account_header": true
+        },
+        {
+          "method": "PUT",
+          "path": "/v0/apps",
+          "when": "without --app",
+          "account_header": true
+        },
+        {
+          "method": "PUT",
+          "path": "/v0/apps/:app_id",
+          "when": "with --app",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "file_safety",
+        "path_segment_check",
+        "plan_key_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_publish",
+        "status": "planned",
+        "note": "Commits a draft or upload session through the shared upload-and-publish API (decision 32). A new app needs apps.create; a new version needs apps.publish."
+      }
+    },
+    {
+      "id": "apps.list",
+      "area": "apps",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List the business's apps.",
+      "cli": {
+        "command": "apps list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.status",
+      "area": "apps",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Show an app's address, live version and state.",
+      "cli": {
+        "command": "apps status",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_status",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.releases",
+      "area": "apps",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List an app's kept versions.",
+      "cli": {
+        "command": "apps releases",
+        "aliases": [
+          "releases",
+          "versions"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/releases",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_releases",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.rollback",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Make an earlier kept version live again.",
+      "cli": {
+        "command": "apps rollback",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<release-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "release_id",
+          "api_field": "release_id",
+          "description": "The version to make live."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/rollback",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.rollback",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_rollback",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.unpublish",
+      "area": "apps",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Take an app offline and remove its addresses; its versions are kept.",
+      "cli": {
+        "command": "apps unpublish",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--yes",
+          "source": "flag",
+          "aliases": [
+            "-y"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "confirmation",
+          "mcp_input": "confirm",
+          "description": "Skip the terminal prompt; required when there is no terminal."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id",
+          "when": "when a business is selected (and, without --yes, to show what will change)",
+          "account_header": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/apps/:app_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.delete",
+      "safeguards": [
+        "confirm_without_terminal",
+        "selected_account_guard",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_unpublish",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "secrets.list",
+      "area": "secrets",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List an app's secret names and when each was set; never the values.",
+      "cli": {
+        "command": "apps secrets list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/secrets",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "secrets_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "secrets.set",
+      "area": "secrets",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Set or replace an app secret.",
+      "cli": {
+        "command": "apps secrets set",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<NAME>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "name",
+          "api_field": ":name",
+          "description": "The secret's name."
+        },
+        {
+          "cli": "stdin",
+          "source": "stdin",
+          "required": false,
+          "takes_value": true,
+          "role": "secret_value",
+          "description": "The value. MCP takes it only through protected entry (decision 30)."
+        },
+        {
+          "cli": "--value",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "secret_value",
+          "description": "The value on the command line (warned against)."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "PUT",
+          "path": "/v0/apps/:app_id/secrets/:name",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "secrets.write",
+      "safeguards": [
+        "secret_name_check",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "secrets_set",
+        "status": "planned",
+        "note": "Starts the change and returns a single-use Userland page (or URL-mode elicitation) where the owner types the value; the same operation completes when it is submitted."
+      }
+    },
+    {
+      "id": "secrets.delete",
+      "area": "secrets",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Delete an app secret.",
+      "cli": {
+        "command": "apps secrets delete",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<NAME>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "name",
+          "api_field": ":name",
+          "description": "The secret's name."
+        },
+        {
+          "cli": "--yes",
+          "source": "flag",
+          "aliases": [
+            "-y"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "confirmation",
+          "mcp_input": "confirm",
+          "description": "Skip the terminal prompt; required when there is no terminal."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id",
+          "when": "when a business is selected (and, without --yes, to show what will change)",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/secrets",
+          "when": "always, to check the secret exists",
+          "account_header": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/apps/:app_id/secrets/:name",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "secrets.write",
+      "safeguards": [
+        "confirm_without_terminal",
+        "selected_account_guard",
+        "secret_name_check",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "secrets_delete",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "invites.create",
+      "area": "app_users",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Invite someone to sign in to an app, with roles and an expiry.",
+      "cli": {
+        "command": "apps invites create",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--email",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "email",
+          "api_field": "email",
+          "description": "Who to invite."
+        },
+        {
+          "cli": "--role",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "repeatable": true,
+          "role": "input",
+          "mcp_input": "roles",
+          "api_field": "roles",
+          "description": "A role to give; repeat for more."
+        },
+        {
+          "cli": "--expires-in-days",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expires_in_days",
+          "api_field": "expires_in_seconds",
+          "description": "Days the invite lasts, 1 to 30 (the API's default is 7)."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id",
+          "when": "when a business is selected",
+          "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/admin-invites",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "app_admin_invites.create",
+      "safeguards": [
+        "selected_account_guard",
+        "invite_expiry_range",
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "invites_create",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.events",
+      "area": "observation",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List an app's events, newest first, with filters and a cursor.",
+      "cli": {
+        "command": "apps events",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--type",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "type",
+          "api_field": "query:type",
+          "description": "Only this event type."
+        },
+        {
+          "cli": "--severity",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "severity",
+          "api_field": "query:severity",
+          "description": "Only this level."
+        },
+        {
+          "cli": "--release",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "release_id",
+          "api_field": "query:release_id",
+          "description": "Only this version."
+        },
+        {
+          "cli": "--limit",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "limit",
+          "api_field": "query:limit",
+          "description": "How many to return."
+        },
+        {
+          "cli": "--cursor",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "cursor",
+          "api_field": "query:cursor",
+          "description": "Continue from an earlier page."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/events",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_events",
+        "status": "planned",
+        "note": "Event text from apps is fenced as data, because app visitors can write it."
+      }
+    },
+    {
+      "id": "apps.analytics",
+      "area": "observation",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Show an app's visits and top pages for a range.",
+      "cli": {
+        "command": "apps analytics",
+        "aliases": [
+          "analytics"
+        ],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--range",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "range",
+          "api_field": "query:range",
+          "description": "7d, 30d or 90d."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/analytics",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_analytics",
+        "status": "planned",
+        "note": "A 402 entitlement_required keeps its upgrade details, as the CLI shows them."
+      }
+    },
+    {
+      "id": "routes.list",
+      "area": "routes",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List all of an app's addresses.",
+      "cli": {
+        "command": "apps routes list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/routes",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "routes_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "slugs.list",
+      "area": "routes",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List an app's short addresses.",
+      "cli": {
+        "command": "apps slugs list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/slugs",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "slugs_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "slugs.add",
+      "area": "routes",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Add a short address to an app.",
+      "cli": {
+        "command": "apps slugs add",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<slug>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "slug",
+          "api_field": "slug",
+          "description": "The short address name."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/slugs",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "slugs_add",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "slugs.remove",
+      "area": "routes",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Remove a short address from an app.",
+      "cli": {
+        "command": "apps slugs remove",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<slug>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "slug",
+          "api_field": ":slug",
+          "description": "The short address name."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/apps/:app_id/slugs/:slug",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "slugs_remove",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "domains.list",
+      "area": "routes",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List an app's custom domains with their DNS and certificate state.",
+      "cli": {
+        "command": "apps domains list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/domains",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "domains_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "domains.add",
+      "area": "routes",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Add a custom domain to an app and get its DNS steps.",
+      "cli": {
+        "command": "apps domains add",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<hostname>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "hostname",
+          "api_field": "hostname",
+          "description": "The domain."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/domains",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "domains_add",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "domains.verify",
+      "area": "routes",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Check a custom domain's DNS and certificate now.",
+      "cli": {
+        "command": "apps domains verify",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<hostname>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "hostname",
+          "api_field": ":hostname",
+          "description": "The domain."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/domains/:hostname/verify",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "domains_verify",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "domains.remove",
+      "area": "routes",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Remove a custom domain from an app.",
+      "cli": {
+        "command": "apps domains remove",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "<hostname>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "hostname",
+          "api_field": ":hostname",
+          "description": "The domain."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/apps/:app_id/domains/:hostname",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "domains_remove",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.download",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Save the files of an app's live version, or any kept version, exactly as they were published.",
+      "cli": {
+        "command": "apps download",
+        "aliases": [
+          "apps pull"
+        ],
+        "status": "planned"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "--release",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "release_id",
+          "api_field": ":release_id",
+          "description": "The version to read; without it, the live version (`live` in the path)."
+        },
+        {
+          "cli": "--out",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The folder to save into. MCP reads the files or makes a draft from the version instead."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/releases/:release_id/files",
+          "when": "always",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/releases/:release_id/files/:file_path",
+          "when": "for each file; file_path is the rest of the URL, one or more segments",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_download",
+        "status": "planned",
+        "note": "Lists the version's files and reads each one's original bytes (256a), or starts a draft from the version (250m). The CLI's option set is settled in public#38 (p38a); update this entry then."
+      }
+    }
+  ]
+}
