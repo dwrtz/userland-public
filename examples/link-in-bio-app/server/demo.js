@@ -41,12 +41,23 @@ import { starterLinks, socials } from "./content.js";
 import { addStarterLinks, claimSlot, createInboxItem, createLink, listLinks, MAX_ROWS, pause, signupSlot, starterSlot } from "./store.js";
 import { escapeHtml, layout } from "./views.js";
 
-// The public demo's short address and the demo app's own address. Both belong
-// to the Userland demo deployment only, so every page of it is marked noindex;
-// replace them if you publish your own demo.
-export const DEMO_HOSTS = ["link-in-bio-demo.apps.userland.fun", "7hc3cpnov6tzt3v6rdd.apps.userland.fun"];
+// The public demo's short address and the demo app's own address, on the old
+// and the new Userland app domain (apps.userland.fun and userland.link). They
+// belong to the Userland demo deployment only, so every page of it is marked
+// noindex; replace them if you publish your own demo.
+export const DEMO_HOSTS = [
+  "link-in-bio-demo.apps.userland.fun",
+  "7hc3cpnov6tzt3v6rdd.apps.userland.fun",
+  "link-in-bio-demo.userland.link",
+  "7hc3cpnov6tzt3v6rdd.userland.link"
+];
 export const EXAMPLE_PAGE_URL = "https://userland.fun/examples/link-in-bio-app/";
-export const DEMO_HOME_URL = "https://link-in-bio-demo.apps.userland.fun/";
+const DEMO_NAME = "link-in-bio-demo";
+
+/** The plain demo address to share, on the same domain as the request. */
+export function demoHomeUrl(hostname) {
+  return `https://${DEMO_NAME}.${hostname.slice(hostname.indexOf(".") + 1)}/`;
+}
 
 // A key is the UTC hour it was made (YYYYMMDDHH), the visitor's number in that
 // hour, and 24 random hex digits. Keys sort oldest hour first, which the
@@ -76,6 +87,7 @@ class Demo {
     // a copy and send people to it.
     this.trusted = fromThisSite(request, url);
     this.candidate = this.trusted ? url.searchParams.get("visit") : null;
+    this.homeUrl = demoHomeUrl(url.hostname);
   }
 
   // Picks up the visitor's key from the address, or from a form's hidden
@@ -165,7 +177,7 @@ class Demo {
   ownerNotice() {
     return `<aside class="notice" aria-label="About this demo">
   <p><strong>This is the owner view of a demo.</strong> Sign-in is turned off so you can look around. The messages and signups are made up, plus anything you send from <a href="${escapeHtml(this.href("/"))}" rel="nofollow">the page</a>. Other visitors get their own copy and can't see yours.</p>
-  <p class="notice-small">Your copy is tied to the address in your browser, so anyone you give that exact address to can open it. To show someone the demo, share <a href="${DEMO_HOME_URL}">link-in-bio-demo.apps.userland.fun</a>. Email addresses are partly hidden, and your copy is cleared after a few hours.</p>
+  <p class="notice-small">Your copy is tied to the address in your browser, so anyone you give that exact address to can open it. To show someone the demo, share <a href="${escapeHtml(this.homeUrl)}">${escapeHtml(new URL(this.homeUrl).hostname)}</a>. Email addresses are partly hidden, and your copy is cleared after a few hours.</p>
 </aside>`;
   }
 

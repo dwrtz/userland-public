@@ -22,10 +22,10 @@
 //   fill the demo's storage for everyone else.
 //
 // Demo mode is on only for requests to the hosts in DEMO_HOSTS: the demo's
-// short address and, on purpose, the demo app's own apps.userland.fun address,
-// so every page of the demo deployment is marked noindex. Anywhere else,
-// including the apps.userland.fun address of your own copy and any custom
-// domain, the owner pages require an app user with the "owner" role, so a copy
+// short address and, on purpose, the demo app's own app-id address, on both
+// apps.userland.fun and userland.link (where Userland apps are moving), so every
+// page of the demo deployment is marked noindex. Anywhere else, including the
+// Userland address of your own copy and any custom domain, the owner pages require an app user with the "owner" role, so a copy
 // of this example is never published with an open owner desk.
 //
 // To remove demo mode completely, delete this file and every line in index.js
@@ -35,9 +35,15 @@
 
 import { openDays, studioTimeToDate } from "./schedule.js";
 
-// The public demo's short address and the demo app's own address. Both belong
-// to the Userland demo deployment only; replace them if you publish your own demo.
-export const DEMO_HOSTS = ["booking-demo.apps.userland.fun", "1pkr8yilzutyu2y0nid.apps.userland.fun"];
+// The public demo's short address and the demo app's own address, on the old
+// and the new Userland app domain. They belong to the Userland demo deployment
+// only; replace them if you publish your own demo.
+export const DEMO_HOSTS = [
+  "booking-demo.apps.userland.fun",
+  "1pkr8yilzutyu2y0nid.apps.userland.fun",
+  "booking-demo.userland.link",
+  "1pkr8yilzutyu2y0nid.userland.link"
+];
 
 /** True when this request is for the public demo address. */
 export function isDemoHost(url) {

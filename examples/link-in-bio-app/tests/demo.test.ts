@@ -6,6 +6,8 @@
 import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
+// @ts-expect-error Example server files are plain JavaScript app bundles.
+import { DEMO_HOSTS } from "../server/demo.js";
 import { APP, Ctx, DEMO, get, hourStamp, keyFrom, makeCtx, post } from "./helpers.js";
 
 async function newVisitor(ctx: Ctx) {
@@ -248,6 +250,28 @@ describe("public demo", () => {
     // A sample address signed up again stays one signup.
     await post(ctx, `${DEMO}/subscribe`, { visit: key, email: "maya.k@example.com" });
     expect(ctx.state.inbox.filter((r) => r.demo_key === key && r.email === "maya.k@example.com")).toHaveLength(1);
+  });
+
+  it("runs at the demo's addresses on both apps.userland.fun and userland.link, and shares the address on the same domain", async () => {
+    const hosts = ["link-in-bio-demo.apps.userland.fun", "7hc3cpnov6tzt3v6rdd.apps.userland.fun", "link-in-bio-demo.userland.link", "7hc3cpnov6tzt3v6rdd.userland.link"];
+    expect([...DEMO_HOSTS].sort()).toEqual([...hosts].sort());
+    for (const host of hosts) {
+      const ctx = makeCtx();
+      const start = await get(ctx, `https://${host}/admin`);
+      expect(start.status, host).toBe(303);
+      const key = keyFrom(start);
+      expect(key, host).not.toBeNull();
+      const inbox = await (await get(ctx, `https://${host}/admin?visit=${key}`)).text();
+      expect(inbox, host).toContain('<meta name="robots" content="noindex,follow">');
+      const shared = host.endsWith(".userland.link") ? "link-in-bio-demo.userland.link" : "link-in-bio-demo.apps.userland.fun";
+      expect(inbox, host).toContain(`share <a href="https://${shared}/">${shared}</a>`);
+    }
+    for (const host of ["example-check.userland.link", "example-check.apps.userland.fun"]) {
+      const ctx = makeCtx();
+      const page = await get(ctx, `https://${host}/admin`);
+      expect(keyFrom(page), host).toBeNull();
+      expect(await (await get(ctx, `https://${host}/`)).text(), host).not.toContain("noindex");
+    }
   });
 
   it("tells demo visitors that made-up details are fine", async () => {
