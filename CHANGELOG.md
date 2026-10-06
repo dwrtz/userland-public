@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- CLI: the README (the one on npm) and the repo README say the CLI needs Node.js 20 or newer, how to check (`node --version`), and where to get it, and that `npx @userland.fun/cli` runs the CLI without a global install when `npm install -g` fails with a permission error. The repo README lists Node.js 20+ among an agent's inputs. The requirement itself is unchanged (`engines.node` has been `>=20`).
 - CLI: `userland --help` ("Short addresses and domains") and the README say that `apps unpublish` also removes the short addresses and custom domains that a smaller plan or an unpaid invoice turned off, and keeps those short addresses for the account for 30 days, as `apps slugs remove` does, after the working ones. One that Userland support turned off still stays with the unpublished app until support turns it back on or releases it, and publishing the app again with its app id brings back none of the ones it removed. Before, both said a short address turned off by a smaller plan or an unpaid invoice stayed with an unpublished app and should be removed first. Userland's API changed this on 2026-10-04 for every CLI version; only the words change here.
 
 ## 0.11.0 - 2026-10-03

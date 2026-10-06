@@ -17,6 +17,7 @@ Goal: choose an example, adapt it into a valid Userland app bundle, validate it,
 Inputs:
 
 - App idea and desired capabilities.
+- Node.js 20 or newer for the Userland CLI (check with `node --version`).
 - `USERLAND_API_KEY` in the environment, or an API key saved after browser approval with `userland signup` or `userland login`.
 - Optional `USERLAND_ACCOUNT_ID` or saved CLI account selection for team/client workspaces.
 - Optional target `app_id` for updates.
@@ -55,11 +56,15 @@ During this phase, `cli/` is the public CLI source of truth. CLI changes should 
 
 ## CLI
 
+The CLI needs Node.js 20 or newer. Check with `node --version`; if Node is missing or older, install the current LTS release from https://nodejs.org/ first.
+
 Install the public CLI globally:
 
 ```sh
 npm install -g @userland.fun/cli
 ```
+
+If a global install fails with a permission error (`EACCES`), run it without installing instead: `npx @userland.fun/cli --version`, then use `npx @userland.fun/cli` wherever these docs say `userland`.
 
 Then run:
 

@@ -8,11 +8,15 @@ Docs:
 - https://docs.userland.fun/reference/cli
 - https://docs.userland.fun/guides/troubleshooting
 
+Requires Node.js 20 or newer. Check with `node --version`; if Node is missing or older, install the current LTS release from https://nodejs.org/ first.
+
 Install globally:
 
 ```sh
 npm install -g @userland.fun/cli
 ```
+
+If a global install fails with a permission error (`EACCES`), run the CLI without installing it: `npx @userland.fun/cli --version`, then use `npx @userland.fun/cli` in place of `userland` in the commands below.
 
 Then run:
 
