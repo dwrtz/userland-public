@@ -500,7 +500,7 @@ describe("runtime.embed_origins", () => {
     "https://*.shop.apps.userland.fun",
     "HTTPS://Shop.Apps.Userland.Fun",
     "https://Shop.Apps.Userland.Fun",
-    // Userland apps are moving to userland.link.
+    // App addresses on userland.link.
     "https://userland.link",
     "https://www.userland.link",
     "https://shop.userland.link",

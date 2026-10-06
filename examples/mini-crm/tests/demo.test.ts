@@ -33,7 +33,7 @@ async function seedEntries(ctx: Ctx, count: number, { savedAt = new Date().toISO
 describe("demo mode", () => {
   it("turns on in the published app only at the demo's addresses", async () => {
     expect([...DEMO_HOSTS]).toContain(new URL(DEMO_ORIGIN).hostname);
-    // The old and the new Userland app domain, until the old one is retired.
+    // Both Userland app domains.
     expect([...DEMO_HOSTS].sort()).toEqual(
       ["mini-crm-demo.apps.userland.fun", "4ismmfcftg3tn4d41mf.apps.userland.fun", "mini-crm-demo.userland.link", "4ismmfcftg3tn4d41mf.userland.link"].sort()
     );

@@ -41,8 +41,8 @@ import { starterLinks, socials } from "./content.js";
 import { addStarterLinks, claimSlot, createInboxItem, createLink, listLinks, MAX_ROWS, pause, signupSlot, starterSlot } from "./store.js";
 import { escapeHtml, layout } from "./views.js";
 
-// The public demo's short address and the demo app's own address, on the old
-// and the new Userland app domain (apps.userland.fun and userland.link). They
+// The public demo's short address and the demo app's own address, on
+// apps.userland.fun and on userland.link. They
 // belong to the Userland demo deployment only, so every page of it is marked
 // noindex; replace them if you publish your own demo.
 export const DEMO_HOSTS = [

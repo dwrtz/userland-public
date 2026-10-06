@@ -16,9 +16,8 @@
 // its own address always requires the owner sign-in. The one exception is the
 // demo app's own Userland address (SHOWCASE_HOSTS): its public pages send
 // visitors to the demo address, and its desk keeps the normal owner sign-in.
-// Both lists hold the address on apps.userland.fun and on userland.link (where
-// Userland apps are moving), and the app's own address sends visitors to the
-// demo address on the same domain.
+// Both lists hold the address on apps.userland.fun and on userland.link, and
+// the app's own address sends visitors to the demo address on the same domain.
 //
 // To remove demo mode from your copy:
 //   1. Delete this file and tests/demo.test.ts.
