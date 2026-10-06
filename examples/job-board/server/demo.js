@@ -32,10 +32,16 @@
 import { html } from "./views.js";
 import { toListing, withHistory } from "./listings.js";
 
-// The public demo's short address and the demo app's own address. Both belong
-// to the Userland demo deployment only, so every page of it is marked noindex;
-// replace them if you publish your own demo.
-const DEMO_HOSTS = new Set(["job-board-demo.apps.userland.fun", "4fz14jppml2y13cxqx1.apps.userland.fun"]);
+// The public demo's short address and the demo app's own address, on
+// apps.userland.fun and on userland.link. They
+// belong to the Userland demo deployment only, so every page of it is marked
+// noindex; replace them if you publish your own demo.
+export const DEMO_HOSTS = new Set([
+  "job-board-demo.apps.userland.fun",
+  "4fz14jppml2y13cxqx1.apps.userland.fun",
+  "job-board-demo.userland.link",
+  "4fz14jppml2y13cxqx1.userland.link"
+]);
 const EXAMPLE_PAGE = "https://userland.fun/examples/job-board/";
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/u;
 const MAX_ROWS_PER_VISITOR = 30;

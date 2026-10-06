@@ -3,7 +3,7 @@
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { toCsv } from "../server/waitlist.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { sampleSignups } from "../server/demo.js";
+import { DEMO_HOSTS, sampleSignups } from "../server/demo.js";
 import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
@@ -25,6 +25,21 @@ describe("public demo", () => {
     const archived = sampleSignups().filter((row: { status: string }) => row.status === "archived").length;
     expect(archived).toBeGreaterThan(0);
     expect(await (await call(ctx, `${DEMO}/`)).text()).toContain(`<b>${sampleSignups().length - archived}</b> runners have already joined.`);
+  });
+
+  it("runs at the demo's addresses on both apps.userland.fun and userland.link, and nowhere else", async () => {
+    const hosts = ["waitlist-demo.apps.userland.fun", "2yuafo8fwc1sdrlhysh.apps.userland.fun", "waitlist-demo.userland.link", "2yuafo8fwc1sdrlhysh.userland.link"];
+    expect([...DEMO_HOSTS].sort()).toEqual([...hosts].sort());
+    for (const host of hosts) {
+      const admin = await call(makeCtx(), `https://${host}/admin`);
+      expect(admin.status, host).toBe(200);
+      expect(await admin.text(), host).toContain('<meta name="robots" content="noindex,follow">');
+    }
+    for (const host of ["example-check.userland.link", "example-check.apps.userland.fun"]) {
+      const admin = await call(makeCtx(), `https://${host}/admin`);
+      expect(admin.status, host).not.toBe(200);
+      expect(await (await call(makeCtx(), `https://${host}/`)).text(), host).not.toContain("noindex");
+    }
   });
 
   it("keeps the visitor's demo on message pages", async () => {

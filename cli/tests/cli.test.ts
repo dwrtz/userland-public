@@ -19,6 +19,16 @@ const tempDirs: string[] = [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPackageJsonPath = path.join(repoRoot, "cli", "package.json");
 const stdinIsTtyPreload = path.join(repoRoot, "cli", "tests", "fixtures", "stdin-is-tty.mjs");
+interface ActivationCase {
+  name: string;
+  args: string[];
+  response: { app_id: string; activation: { status: string } };
+  meaning: { live: boolean; serving: string; address_restricted: boolean; missing_secrets: string[] };
+  stdout_lines: string[];
+}
+const activationFixture = JSON.parse(await fs.readFile(path.join(repoRoot, "cli", "tests", "fixtures", "activation-results.json"), "utf8")) as {
+  cases: ActivationCase[];
+};
 const plansArtifact = JSON.parse(await fs.readFile(path.join(repoRoot, "schemas", "plans-v0.json"), "utf8")) as {
   plans: Record<string, { features: Record<string, boolean>; manifest_limits: Record<string, unknown>; release_limits: Record<string, number | null> }>;
 };
@@ -76,13 +86,13 @@ describe("public CLI", () => {
       "GET /v0/accounts": accountsResponse(),
       "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
       "PUT /v0/apps": {
-        status: "created",
+        status: "published",
         app_id: "app_hello",
         release_id: "rel_hello",
         origin: "https://app_hello.apps.userland.fun/",
         previous_release_id: null,
         activation: {
-          status: "active",
+          status: "live",
           reasons: [],
           previous_release_id: null
         }
@@ -120,6 +130,72 @@ describe("public CLI", () => {
     expect(Buffer.from(index?.content_base64 ?? "", "base64").toString("utf8")).toContain("Hello from Userland");
   });
 
+  test.each(activationFixture.cases.map((entry) => [entry.name, entry] as const))(
+    "prints the truthful publish result for %s, and exits 0",
+    async (_name, entry) => {
+      const requests: RequestRecord[] = [];
+      const appRoute = entry.args.includes("--app") ? `PUT /v0/apps/${entry.response.app_id}` : "PUT /v0/apps";
+      const api = await startMockApi(requests, { [appRoute]: entry.response });
+
+      const result = await runCli(["apps", "publish", "examples/hello-static", "--skip-local-validation", ...entry.args], api.baseUrl, {
+        env: { USERLAND_CONSOLE_URL: "https://console.example.test/" }
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe(["local_validation=skipped", ...entry.stdout_lines, ""].join("\n"));
+      // "Published" appears only when the new release serves.
+      expect(result.stdout.includes("Published ")).toBe(entry.meaning.live);
+      expect(result.stdout.includes("not live")).toBe(!entry.meaning.live);
+      expect(result.stdout.includes("is still live at")).toBe(entry.meaning.serving === "previous_release");
+      for (const name of entry.meaning.missing_secrets) {
+        expect(result.stdout).toContain(`userland apps secrets set app_fixture ${name}\n`);
+      }
+    }
+  );
+
+  test("suggests commands that keep --account and quote the folder, and links to the console only when it is known", async () => {
+    const requests: RequestRecord[] = [];
+    const pending = activationFixture.cases.find((entry) => entry.name === "pending_secrets_update")?.response;
+    const api = await startMockApi(requests, { "PUT /v0/apps/app_fixture": pending });
+    const dir = await temporaryAppDir({ app: { name: "Spaced" }, runtime: { static_root: "public" } });
+    const spaced = path.join(dir, "my app's folder");
+    await fs.rename(path.join(dir, "public"), path.join(dir, "keep-public"));
+    await fs.mkdir(spaced);
+    await fs.rename(path.join(dir, "manifest.userland.json"), path.join(spaced, "manifest.userland.json"));
+    await fs.rename(path.join(dir, "keep-public"), path.join(spaced, "public"));
+
+    const result = await runCli(["apps", "publish", spaced, "--skip-local-validation", "--app", "app_fixture", "--account", "acct_owner"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`Next: printf '%s' "$VALUE" | userland apps secrets set app_fixture STRIPE_SECRET_KEY --account acct_owner\n`);
+    expect(result.stdout).toContain(`Next: userland apps publish '${spaced.replaceAll("'", `'\\''`)}' --app app_fixture --account acct_owner\n`);
+    // A local API has no known console, so there is no add-key link.
+    expect(result.stdout).not.toContain("add-key=");
+  });
+
+  test("still says a release is not live when an older API leaves out missing_secrets", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "PUT /v0/apps": {
+        status: "stored",
+        app_id: "app_old_api",
+        release_id: "rel_new",
+        origin: "https://app_old_api.apps.userland.fun/",
+        previous_release_id: null,
+        activation: { status: "pending_secrets", reasons: ["Required secret API_TOKEN is not set."], previous_release_id: null }
+      }
+    });
+
+    const result = await runCli(["apps", "publish", "examples/hello-static", "--skip-local-validation"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Stored, not live: this release is not serving yet.\nWhy: Required secret API_TOKEN is not set.\n");
+    expect(result.stdout).toContain("Next: userland apps publish examples/hello-static --app app_old_api\n");
+    expect(result.stdout).not.toContain("Published");
+    expect(result.stdout).not.toContain("secrets set");
+  });
+
   test("supports list, releases, events, rollback, and secrets commands", async () => {
     const requests: RequestRecord[] = [];
     const api = await startMockApi(requests, {
@@ -140,7 +216,7 @@ describe("public CLI", () => {
             release_id: "rel_live",
             created_at: "2026-05-05T00:00:00.000Z",
             is_live: true,
-            activation_status: "active",
+            activation_status: "live",
             message: "live"
           }
         ]
@@ -163,7 +239,7 @@ describe("public CLI", () => {
         release_id: "rel_prev",
         previous_release_id: "rel_live",
         origin: "https://app_ops.apps.userland.fun/",
-        status: "active"
+        status: "rolled_back"
       },
       "PUT /v0/apps/app_ops/secrets/API_TOKEN": {
         name: "API_TOKEN",
@@ -1986,12 +2062,12 @@ describe("public CLI", () => {
       "GET /v0/accounts": accountsResponse(),
       "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
       "PUT /v0/apps": {
-        status: "created",
+        status: "published",
         app_id: "app_embed",
         release_id: "rel_embed",
         origin: "https://app_embed.apps.userland.fun/",
         previous_release_id: null,
-        activation: { status: "active", reasons: [], previous_release_id: null }
+        activation: { status: "live", reasons: [], missing_secrets: [], previous_release_id: null }
       }
     });
 
@@ -2053,12 +2129,12 @@ describe("public CLI", () => {
       "GET /v0/accounts": accountsResponse(),
       "GET /v0/accounts/acct_owner/limits": limitsResponse("acct_owner", "free"),
       "PUT /v0/apps": {
-        status: "created",
+        status: "published",
         app_id: "app_message",
         release_id: "rel_message",
         origin: "https://app_message.apps.userland.fun/",
         previous_release_id: null,
-        activation: { status: "active", reasons: [], previous_release_id: null }
+        activation: { status: "live", reasons: [], missing_secrets: [], previous_release_id: null }
       }
     });
 
@@ -2719,7 +2795,7 @@ recent_errors:
     await expectCommand(["apps", "rollback", "app#frag", "rel_1"], api.baseUrl, "Rolled back");
     const secret = await runCli(["apps", "secrets", "set", "app/x", "API_TOKEN"], api.baseUrl, { stdin: "value" });
     expect(secret.code).toBe(0);
-    await expectCommand(["apps", "publish", "examples/hello-static", "--app", "app one", "--plan", "free"], api.baseUrl, "Published");
+    await expectCommand(["apps", "publish", "examples/hello-static", "--app", "app one", "--plan", "free"], api.baseUrl, "Next: userland apps publish examples/hello-static --app 'app one'");
     await expectCommand(["apps", "unpublish", "app/../other", "--yes"], api.baseUrl, "Unpublished app/../other");
     await expectCommand(["apps", "secrets", "list", "app/x"], api.baseUrl, "API_TOKEN");
     await expectCommand(["apps", "secrets", "delete", "app/x", "API_TOKEN", "--yes"], api.baseUrl, "Deleted secret API_TOKEN from app/x.");
@@ -3095,12 +3171,12 @@ function limitsResponse(accountId: string, planKey: string): { features: Record<
 
 function publishResponse(appId: string): Record<string, unknown> {
   return {
-    status: "created",
+    status: "stored",
     app_id: appId,
     release_id: "rel_new",
     origin: `https://${appId}.apps.userland.fun/`,
     previous_release_id: null,
-    activation: { status: "pending_secrets", reasons: [], previous_release_id: null }
+    activation: { status: "pending_secrets", reasons: [], missing_secrets: [], previous_release_id: null }
   };
 }
 

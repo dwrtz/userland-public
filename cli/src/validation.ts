@@ -677,16 +677,19 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
 // runtime.embed_origins (mirrors checkEmbedOrigin and validateEmbedOrigins in the API)
 // ---------------------------------------------------------------------------
 
-// The other sites allowed to show the app in a frame on its *.apps.userland.fun addresses. Apps
-// there share one site in browsers (apps.userland.fun is not on the Public Suffix List), so by
-// default only the app's own pages may frame it. The API writes each entry into the app's
+// The other sites allowed to show the app in a frame on its Userland addresses (*.apps.userland.fun and
+// *.userland.link). Apps there share one site in browsers (neither domain is on the Public Suffix
+// List), so by default only the app's own pages may frame it. The API writes each entry into the app's
 // `Content-Security-Policy: frame-ancestors` header, so an entry must be exactly one https origin.
 
 /** runtime.embed_origins can list at most this many sites. */
 export const EMBED_ORIGINS_MAX_COUNT = 20;
 export const EMBED_ORIGIN_MAX_LENGTH = 255;
-/** Every host under this domain is Userland's (apps, the product site, docs, the console, the API). */
-const USERLAND_DOMAIN = "userland.fun";
+/**
+ * Every host under these domains is Userland's: userland.fun (the product site, docs, the console,
+ * the API, and apps) and userland.link (apps).
+ */
+const USERLAND_DOMAINS = ["userland.fun", "userland.link"];
 const DNS_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 // Two labels at least: a single label (`localhost`) is not a site, and a wildcard over one (`*.com`)
 // would allow every site under a top-level domain.
@@ -697,8 +700,9 @@ export type EmbedOriginCheck = { ok: true; origin: string } | { ok: false; reaso
 
 /**
  * Checks one runtime.embed_origins entry the way the API does, with the API's wording. The origin
- * is returned in lowercase, as the API stores it. The API also refuses its own deployment's domains;
- * for Userland that is every host under userland.fun, which is refused here too.
+ * is returned in lowercase, as the API stores it. The API also refuses its own deployment's domains.
+ * This refuses every host under userland.fun and userland.link; the API refuses userland.fun hosts
+ * today and will refuse userland.link hosts too.
  */
 export function checkEmbedOrigin(value: unknown): EmbedOriginCheck {
   if (typeof value !== "string") {
@@ -735,8 +739,8 @@ export function checkEmbedOrigin(value: unknown): EmbedOriginCheck {
   if (port !== undefined && Number(port) > 65535) {
     return { ok: false, reason: `(${shown}) has a port above 65535` };
   }
-  // A wildcard over userland.fun's own base (`*.fun`) is already refused by the pattern.
-  if (host === USERLAND_DOMAIN || host.endsWith(`.${USERLAND_DOMAIN}`)) {
+  // A wildcard over a Userland domain's own base (`*.fun`, `*.link`) is already refused by the pattern.
+  if (USERLAND_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`))) {
     return { ok: false, reason: `(${shown}) cannot be a Userland address: other apps and Userland sites can never show this app in a frame` };
   }
   return { ok: true, origin };

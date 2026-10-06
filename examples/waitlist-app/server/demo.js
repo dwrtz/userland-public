@@ -16,7 +16,8 @@
 //   - Every page carries a noindex tag and a small "Demo app" note.
 //
 // Demo mode is only on for the hostnames in DEMO_HOSTS: the demo's named
-// address and, on purpose, the demo app's own apps.userland.fun address, so no
+// address and, on purpose, the demo app's own app-id address, each on both
+// apps.userland.fun and userland.link, so no
 // page of the demo deployment collects real signups or gets indexed. A copy of
 // this app published anywhere else (including your own <app-id> address) runs
 // as a normal waitlist with a signed-in owner.
@@ -30,8 +31,13 @@
 import { STATUSES, listAll, toSignup, withReferralCounts } from "./waitlist.js";
 import { escapeHtml, pathWith } from "./views.js";
 
-// Both belong to the Userland demo deployment only; replace them if you publish your own demo.
-export const DEMO_HOSTS = new Set(["waitlist-demo.apps.userland.fun", "2yuafo8fwc1sdrlhysh.apps.userland.fun"]);
+// All of them belong to the Userland demo deployment only; replace them if you publish your own demo.
+export const DEMO_HOSTS = new Set([
+  "waitlist-demo.apps.userland.fun",
+  "2yuafo8fwc1sdrlhysh.apps.userland.fun",
+  "waitlist-demo.userland.link",
+  "2yuafo8fwc1sdrlhysh.userland.link"
+]);
 export const DEMO_COLLECTION = "demo-signups";
 export const EXAMPLE_PAGE_URL = "https://userland.fun/examples/waitlist-app/";
 export const MAX_SIGNUPS_PER_VISITOR = 30;
