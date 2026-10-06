@@ -1,0 +1,215 @@
+{
+  "description": "Publish responses for each activation result, what each one means, and the lines `userland apps publish` prints for it. `cli/tests/cli.test.ts` runs every case. The meanings are the ones every Userland client must agree on (dwrtz/userland#286): `live` says whether the new release serves, `serving` says which release the app's address shows now (`this_release`, `previous_release`, or `nothing`), and `address_restricted` says whether billing or the plan has turned the address off. A publish returns only live, pending_secrets, requires_migration, or failed; `inactive` appears only in release lists.",
+  "cases": [
+    {
+      "name": "live_first_publish",
+      "args": [],
+      "response": {
+        "status": "published",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": null,
+        "activation": { "status": "live", "reasons": [], "missing_secrets": [], "previous_release_id": null }
+      },
+      "meaning": { "live": true, "serving": "this_release", "address_restricted": false, "missing_secrets": [] },
+      "stdout_lines": [
+        "Published https://app_fixture.apps.userland.fun/",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=",
+        "activation_status=live"
+      ]
+    },
+    {
+      "name": "live_update",
+      "args": ["--app", "app_fixture"],
+      "response": {
+        "status": "published",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": "rel_old",
+        "activation": { "status": "live", "reasons": [], "missing_secrets": [], "previous_release_id": "rel_old" }
+      },
+      "meaning": { "live": true, "serving": "this_release", "address_restricted": false, "missing_secrets": [] },
+      "stdout_lines": [
+        "Published https://app_fixture.apps.userland.fun/",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=rel_old",
+        "activation_status=live"
+      ]
+    },
+    {
+      "name": "live_billing_restricted",
+      "args": ["--app", "app_fixture"],
+      "response": {
+        "status": "published",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": "rel_old",
+        "activation": {
+          "status": "live",
+          "reasons": ["Release is live but canonical serving is restricted by billing or plan state."],
+          "missing_secrets": [],
+          "previous_release_id": "rel_old",
+          "billing_restricted": true
+        }
+      },
+      "meaning": { "live": true, "serving": "this_release", "address_restricted": true, "missing_secrets": [] },
+      "stdout_lines": [
+        "Published https://app_fixture.apps.userland.fun/",
+        "The release is live, but the app's web address is turned off for now: the account's billing or plan is restricting this app, so visitors can't open it.",
+        "Next: userland accounts status",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=rel_old",
+        "activation_status=live",
+        "activation_reasons=Release is live but canonical serving is restricted by billing or plan state."
+      ]
+    },
+    {
+      "name": "pending_secrets_first_publish",
+      "args": [],
+      "response": {
+        "status": "stored",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": null,
+        "activation": {
+          "status": "pending_secrets",
+          "reasons": ["Required secret STRIPE_SECRET_KEY is not set.", "Required secret OPENAI_API_KEY is not set."],
+          "missing_secrets": ["STRIPE_SECRET_KEY", "OPENAI_API_KEY"],
+          "previous_release_id": null
+        }
+      },
+      "meaning": { "live": false, "serving": "nothing", "address_restricted": false, "missing_secrets": ["STRIPE_SECRET_KEY", "OPENAI_API_KEY"] },
+      "stdout_lines": [
+        "Stored, not live: this release is not serving yet.",
+        "Why: Required secret STRIPE_SECRET_KEY is not set.",
+        "Why: Required secret OPENAI_API_KEY is not set.",
+        "No release of this app is live yet, so https://app_fixture.apps.userland.fun/ does not show it yet.",
+        "Next: printf '%s' \"$VALUE\" | userland apps secrets set app_fixture STRIPE_SECRET_KEY",
+        "      or the owner adds it at https://console.example.test/apps/app_fixture/settings?add-key=STRIPE_SECRET_KEY",
+        "Next: printf '%s' \"$VALUE\" | userland apps secrets set app_fixture OPENAI_API_KEY",
+        "      or the owner adds it at https://console.example.test/apps/app_fixture/settings?add-key=OPENAI_API_KEY",
+        "Next: userland apps publish examples/hello-static --app app_fixture",
+        "Docs: https://docs.userland.fun/guides/secrets",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=",
+        "activation_status=pending_secrets",
+        "activation_reasons=Required secret STRIPE_SECRET_KEY is not set.; Required secret OPENAI_API_KEY is not set."
+      ]
+    },
+    {
+      "name": "pending_secrets_update",
+      "args": ["--app", "app_fixture"],
+      "response": {
+        "status": "stored",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": "rel_old",
+        "activation": {
+          "status": "pending_secrets",
+          "reasons": ["Required secret STRIPE_SECRET_KEY is not set."],
+          "missing_secrets": ["STRIPE_SECRET_KEY"],
+          "previous_release_id": "rel_old"
+        }
+      },
+      "meaning": { "live": false, "serving": "previous_release", "address_restricted": false, "missing_secrets": ["STRIPE_SECRET_KEY"] },
+      "stdout_lines": [
+        "Stored, not live: this release is not serving yet.",
+        "Why: Required secret STRIPE_SECRET_KEY is not set.",
+        "The previous release (rel_old) is still live at https://app_fixture.apps.userland.fun/",
+        "Next: printf '%s' \"$VALUE\" | userland apps secrets set app_fixture STRIPE_SECRET_KEY",
+        "      or the owner adds it at https://console.example.test/apps/app_fixture/settings?add-key=STRIPE_SECRET_KEY",
+        "Next: userland apps publish examples/hello-static --app app_fixture",
+        "Docs: https://docs.userland.fun/guides/secrets",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=rel_old",
+        "activation_status=pending_secrets",
+        "activation_reasons=Required secret STRIPE_SECRET_KEY is not set."
+      ]
+    },
+    {
+      "name": "requires_migration_update",
+      "args": ["--app", "app_fixture"],
+      "response": {
+        "status": "stored",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": "rel_old",
+        "activation": {
+          "status": "requires_migration",
+          "reasons": ["Collection orders field total changes type from number to string."],
+          "missing_secrets": [],
+          "previous_release_id": "rel_old"
+        }
+      },
+      "meaning": { "live": false, "serving": "previous_release", "address_restricted": false, "missing_secrets": [] },
+      "stdout_lines": [
+        "Stored, not live: this release is not serving yet.",
+        "Why: Collection orders field total changes type from number to string.",
+        "The previous release (rel_old) is still live at https://app_fixture.apps.userland.fun/",
+        "Next: fix what is listed above, then run userland apps publish examples/hello-static --app app_fixture",
+        "Docs: https://docs.userland.fun/guides/resource-migrations",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=rel_old",
+        "activation_status=requires_migration",
+        "activation_reasons=Collection orders field total changes type from number to string."
+      ]
+    },
+    {
+      "name": "failed_first_publish",
+      "args": [],
+      "response": {
+        "status": "stored",
+        "app_id": "app_fixture",
+        "account_id": "acct_owner",
+        "production": false,
+        "release_id": "rel_new",
+        "origin": "https://app_fixture.apps.userland.fun/",
+        "previous_release_id": null,
+        "activation": {
+          "status": "failed",
+          "reasons": ["User Worker upload failed."],
+          "missing_secrets": [],
+          "previous_release_id": null
+        }
+      },
+      "meaning": { "live": false, "serving": "nothing", "address_restricted": false, "missing_secrets": [] },
+      "stdout_lines": [
+        "Stored, not live: this release is not serving yet.",
+        "Why: User Worker upload failed.",
+        "No release of this app is live yet, so https://app_fixture.apps.userland.fun/ does not show it yet.",
+        "Next: fix what is listed above, then run userland apps publish examples/hello-static --app app_fixture",
+        "Docs: https://docs.userland.fun/guides/troubleshooting",
+        "app_id=app_fixture",
+        "release_id=rel_new",
+        "previous_release_id=",
+        "activation_status=failed",
+        "activation_reasons=User Worker upload failed."
+      ]
+    }
+  ]
+}
