@@ -5,8 +5,8 @@ This directory is the source for the public `@userland.fun/cli` npm package.
 Docs:
 
 - https://docs.userland.fun/llms.txt
-- https://docs.userland.fun/reference/cli
-- https://docs.userland.fun/guides/troubleshooting
+- https://docs.userland.fun/reference/cli/
+- https://docs.userland.fun/guides/troubleshooting/
 
 Requires Node.js 20 or newer. Check with `node --version`; if Node is missing or older, install the current LTS release from https://nodejs.org/ first.
 
@@ -325,7 +325,7 @@ The previous release (rel_old) is still live at https://<app_id>.apps.userland.f
 Next: printf '%s' "$VALUE" | userland apps secrets set <app_id> STRIPE_SECRET_KEY
       or the owner adds it at https://console.userland.fun/apps/<app_id>/settings?add-key=STRIPE_SECRET_KEY
 Next: userland apps publish <dir> --app <app_id>
-Docs: https://docs.userland.fun/guides/secrets
+Docs: https://docs.userland.fun/guides/secrets/
 app_id=<app_id>
 release_id=rel_new
 previous_release_id=rel_old
@@ -381,7 +381,7 @@ recent_errors:
 
 API buckets such as `__direct__` (no referrer) print as `(direct)`. Sections with no data are omitted; `auth`, `jobs`, and `webhooks` counts appear when they are non-zero. Without `--range` the API uses 30 days or the plan's retention window, whichever is shorter. When `--range` asks for more, the API clamps the range to the plan's retention window (Starter 7 days, Business 30 days, Business Plus 90 days); the CLI prints a `note=` line when that happens. When no eligible traffic has been served yet, the command says so. `--json` prints the API response unchanged.
 
-App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan, the console link to send the owner (`upgrade_url`, or `support_url` when no plan on sale includes it), and https://docs.userland.fun/guides/app-analytics, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
+App Analytics is a paid feature. Accounts without it get an upgrade message with the required plan, the console link to send the owner (`upgrade_url`, or `support_url` when no plan on sale includes it), and https://docs.userland.fun/guides/app-analytics/, and the command exits `1`; with `--json`, stdout also carries `{ "app_id", "entitlement": { "enabled": false, "plan_key", "required_plan_key" }, "error", "docs" }`. `403` and `404` responses print the API error as other app commands do. `--account` follows the same account selection rules as other app commands.
 
 Status and limits:
 
@@ -642,7 +642,7 @@ npm test
 
 For launch, this `cli/` directory is the public CLI source of truth for agents and publishes as `@userland.fun/cli`. When changing the CLI:
 
-1. Update `cli/src/index.ts` (and `cli/src/validation.ts` for local validation), this README, and `https://docs.userland.fun/reference/cli` together.
+1. Update `cli/src/index.ts` (and `cli/src/validation.ts` for local validation), this README, and `https://docs.userland.fun/reference/cli/` together.
 2. Add or update mocked command tests in `cli/tests`.
 3. Run `npm run typecheck`, `npm run cli:test`, and `npm test`.
 4. Update the public repo changelog and the docs changelog.

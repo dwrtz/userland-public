@@ -626,7 +626,7 @@ describe("public CLI", () => {
     expect(typo.stderr).toContain(
       "No secret named OPENAI_KEY is set for app_dummy, so nothing was deleted. See the names that are set with: userland apps secrets list app_dummy"
     );
-    expect(typo.stderr).toContain("Docs: https://docs.userland.fun/guides/secrets");
+    expect(typo.stderr).toContain("Docs: https://docs.userland.fun/guides/secrets/");
     expect(calls()).toEqual(["GET /v0/apps/app_dummy/secrets"]);
   });
 
@@ -962,8 +962,8 @@ describe("public CLI", () => {
     );
 
     for (const { appId, message } of [
-      { appId: "app_static", message: "API 409: App-user auth is not enabled for this app.\nerror=auth_disabled\nDocs: https://docs.userland.fun/guides/auth\n" },
-      { appId: "app_portal", message: "API 400: Role manager is not declared for this app.\nerror=invalid_role\nDocs: https://docs.userland.fun/guides/auth\n" }
+      { appId: "app_static", message: "API 409: App-user auth is not enabled for this app.\nerror=auth_disabled\nDocs: https://docs.userland.fun/guides/auth/\n" },
+      { appId: "app_portal", message: "API 400: Role manager is not declared for this app.\nerror=invalid_role\nDocs: https://docs.userland.fun/guides/auth/\n" }
     ]) {
       for (const extra of [[], ["--json"]]) {
         const result = await runCli(["apps", "invites", "create", appId, "--email", "jo@example.com", "--role", "manager", ...extra], api.baseUrl);
@@ -1763,7 +1763,7 @@ describe("public CLI", () => {
         "status=503",
         "attempts=10",
         "The rollback did not happen: your app is still on its current release. Run the same command again in a minute.",
-        "Docs: https://docs.userland.fun/guides/rollback",
+        "Docs: https://docs.userland.fun/guides/rollback/",
         ""
       ].join("\n")
     );
@@ -1804,7 +1804,7 @@ describe("public CLI", () => {
         "status=400",
         'upload_error="Your Worker exceeded the size limit of 10 MiB." code=10027',
         `The rollback did not happen: your app is still on its current release. ${support}`,
-        "Docs: https://docs.userland.fun/guides/rollback",
+        "Docs: https://docs.userland.fun/guides/rollback/",
         ""
       ].join("\n")
     );
@@ -1817,7 +1817,7 @@ describe("public CLI", () => {
         "API 502: User Worker upload could not be probed.",
         "error=platform_deploy_failed",
         `The rollback did not happen: your app is still on its current release. ${support}`,
-        "Docs: https://docs.userland.fun/guides/rollback",
+        "Docs: https://docs.userland.fun/guides/rollback/",
         ""
       ].join("\n")
     );
@@ -1906,7 +1906,7 @@ describe("public CLI", () => {
       [
         "API 409: Target release is not compatible with current app state.",
         "error=incompatible_release",
-        "Docs: https://docs.userland.fun/guides/troubleshooting",
+        "Docs: https://docs.userland.fun/guides/troubleshooting/",
         ""
       ].join("\n")
     );
@@ -2610,7 +2610,7 @@ recent_errors:
         "upgrade_url=https://console.userland.fun/billing/plans?plan=starter&for=app_analytics&account=acct_free\n"
     );
     expect(result.stderr).toContain("Upgrade to Starter or higher");
-    expect(result.stderr).toContain("Docs: https://docs.userland.fun/guides/app-analytics");
+    expect(result.stderr).toContain("Docs: https://docs.userland.fun/guides/app-analytics/");
 
     const json = await runCli(["apps", "analytics", "app_free", "--json"], api.baseUrl);
     expect(json.code).toBe(1);
@@ -2618,7 +2618,7 @@ recent_errors:
       app_id: "app_free",
       entitlement: { enabled: false, plan_key: "free", required_plan_key: "starter" },
       error: entitlementError.error,
-      docs: "https://docs.userland.fun/guides/app-analytics"
+      docs: "https://docs.userland.fun/guides/app-analytics/"
     });
   });
 
