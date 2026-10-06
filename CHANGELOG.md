@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- CLI: every docs link the CLI prints (the `Docs:` line under an error or a stored release, the `userland --help` links, and the App Analytics link) ends in `/`, as docs pages do. Before, each one went through a redirect first.
+
 ## 0.12.0 - 2026-10-11
 
 - CLI: the README (the one on npm) and the repo README say the CLI needs Node.js 20 or newer, how to check (`node --version`), and where to get it, and that `npx @userland.fun/cli` runs the CLI without a global install when `npm install -g` fails with a permission error. The repo README lists Node.js 20+ among an agent's inputs. The requirement itself is unchanged (`engines.node` has been `>=20`).
