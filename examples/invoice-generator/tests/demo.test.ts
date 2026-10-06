@@ -265,6 +265,30 @@ describe("demo mode", () => {
     expect(ctx.auth.requireRole).toHaveBeenCalledWith(expect.any(Request), "owner");
   });
 
+  it("works the same on userland.link, sending the app's own address to the demo on the same domain", async () => {
+    const ctx = makeCtx();
+    const desk = await send(ctx, "https://invoice-demo.userland.link/desk");
+    expect(desk.status).toBe(200);
+    const html = await text(desk);
+    expect(html).toContain("Open the studio desk");
+    expect(html).toContain('<meta name="robots" content="noindex,follow">');
+
+    const own = "https://3ls259ymzm94r65h4v4.userland.link";
+    const home = await send(ctx, `${own}/?x=1`);
+    expect(home.status).toBe(303);
+    expect(location(home)).toBe("https://invoice-demo.userland.link/?x=1");
+    expect(location(await requestQuote(ctx, own))).toBe("https://invoice-demo.userland.link/");
+    // The old domain still sends visitors to the old demo address until it is retired.
+    expect(location(await send(ctx, "https://3ls259ymzm94r65h4v4.apps.userland.fun/"))).toBe("https://invoice-demo.apps.userland.fun/");
+
+    for (const other of ["https://example-check.userland.link", "https://example-check.apps.userland.fun"]) {
+      const response = await send(ctx, `${other}/desk`);
+      expect(response.status, other).toBe(303);
+      expect(location(response), other).toContain("/_userland/auth/login");
+      expect((await send(ctx, `${other}/`)).status, other).not.toBe(303);
+    }
+  });
+
   it("the clear-demo job deletes one visitor workspace and never real data", async () => {
     const ctx = makeCtx();
     await requestQuote(ctx, SITE);

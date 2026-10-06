@@ -3,7 +3,7 @@
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import { createApp, validateBooking } from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { MAX_VISITOR_ROWS, sweepExpiredRows } from "../server/demo.js";
+import { DEMO_HOSTS, MAX_VISITOR_ROWS, sweepExpiredRows } from "../server/demo.js";
 import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 import { NOW, ORIGIN, allTabs, book, get, holds, logged, openTime, post, requests, rows, runtime, type Runtime } from "./helpers.js";
 
@@ -259,6 +259,21 @@ describe("demo address", () => {
     const customDomain = await (await get(app, rt, "/", "https://lessons.example.com")).text();
     expect(customDomain).not.toContain("noindex");
     expect(customDomain).not.toContain("Built with Userland");
+  });
+
+  it("turns demo mode on at the demo's addresses on both apps.userland.fun and userland.link", async () => {
+    const rt = runtime();
+    const hosts = ["booking-demo.apps.userland.fun", "1pkr8yilzutyu2y0nid.apps.userland.fun", "booking-demo.userland.link", "1pkr8yilzutyu2y0nid.userland.link"];
+    expect([...DEMO_HOSTS].sort()).toEqual([...hosts].sort());
+    for (const host of hosts) {
+      const studio = await get(app, rt, "/studio", `https://${host}`);
+      expect(studio.status, host).toBe(200);
+      expect(await (await get(app, rt, "/", `https://${host}`)).text(), host).toContain('<meta name="robots" content="noindex,follow">');
+    }
+    for (const host of ["example-check.userland.link", "example-check.apps.userland.fun"]) {
+      expect((await get(app, rt, "/studio", `https://${host}`)).status, host).toBe(303);
+      expect(await (await get(app, rt, "/", `https://${host}`)).text(), host).not.toContain("noindex");
+    }
   });
 });
 
