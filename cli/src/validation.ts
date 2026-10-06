@@ -595,12 +595,22 @@ function validateCliKeys(cliKeys: Record<string, unknown>): { errors: Validation
   return { errors, schema_strict: schemaStrict };
 }
 
+/** The API's message for `app.visibility: "private"`. */
+export const PRIVATE_APPS_REFUSED =
+  "Private apps aren't available yet. Remove app.visibility or set it to public, and use sign-in with roles to limit who can see your app's pages and data.";
+
 /** Cross-field rules the API enforces that JSON Schema cannot express. */
 function semanticManifestErrors(document: Record<string, unknown>): ValidationIssue[] {
   const errors: ValidationIssue[] = [];
   const app = document.app as Record<string, unknown>;
   if (typeof app.name === "string" && app.name.trim().length === 0) {
     errors.push({ code: "invalid_manifest", manifest_path: "app.name", message: "must not be blank" });
+  }
+  // Private apps were never enforced (Userland served them to everyone), so the API refuses them
+  // until it can protect them (dwrtz/userland#244). The schema allows only "public"; this gives the
+  // API's own message instead of the schema's.
+  if (app.visibility === "private") {
+    errors.push({ code: "invalid_app_manifest", manifest_path: "app.visibility", message: PRIVATE_APPS_REFUSED });
   }
   const runtime = document.runtime as Record<string, unknown>;
   for (const key of ["static_root", "server_entry"]) {
@@ -667,16 +677,19 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
 // runtime.embed_origins (mirrors checkEmbedOrigin and validateEmbedOrigins in the API)
 // ---------------------------------------------------------------------------
 
-// The other sites allowed to show the app in a frame on its *.apps.userland.fun addresses. Apps
-// there share one site in browsers (apps.userland.fun is not on the Public Suffix List), so by
-// default only the app's own pages may frame it. The API writes each entry into the app's
+// The other sites allowed to show the app in a frame on its Userland addresses (*.apps.userland.fun and
+// *.userland.link). Apps there share one site in browsers (neither domain is on the Public Suffix
+// List), so by default only the app's own pages may frame it. The API writes each entry into the app's
 // `Content-Security-Policy: frame-ancestors` header, so an entry must be exactly one https origin.
 
 /** runtime.embed_origins can list at most this many sites. */
 export const EMBED_ORIGINS_MAX_COUNT = 20;
 export const EMBED_ORIGIN_MAX_LENGTH = 255;
-/** Every host under this domain is Userland's (apps, the product site, docs, the console, the API). */
-const USERLAND_DOMAIN = "userland.fun";
+/**
+ * Every host under these domains is Userland's: userland.fun (the product site, docs, the console,
+ * the API, and apps) and userland.link (apps).
+ */
+const USERLAND_DOMAINS = ["userland.fun", "userland.link"];
 const DNS_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 // Two labels at least: a single label (`localhost`) is not a site, and a wildcard over one (`*.com`)
 // would allow every site under a top-level domain.
@@ -687,8 +700,9 @@ export type EmbedOriginCheck = { ok: true; origin: string } | { ok: false; reaso
 
 /**
  * Checks one runtime.embed_origins entry the way the API does, with the API's wording. The origin
- * is returned in lowercase, as the API stores it. The API also refuses its own deployment's domains;
- * for Userland that is every host under userland.fun, which is refused here too.
+ * is returned in lowercase, as the API stores it. The API also refuses its own deployment's domains.
+ * This refuses every host under userland.fun and userland.link; the API refuses userland.fun hosts
+ * today and will refuse userland.link hosts too.
  */
 export function checkEmbedOrigin(value: unknown): EmbedOriginCheck {
   if (typeof value !== "string") {
@@ -725,8 +739,8 @@ export function checkEmbedOrigin(value: unknown): EmbedOriginCheck {
   if (port !== undefined && Number(port) > 65535) {
     return { ok: false, reason: `(${shown}) has a port above 65535` };
   }
-  // A wildcard over userland.fun's own base (`*.fun`) is already refused by the pattern.
-  if (host === USERLAND_DOMAIN || host.endsWith(`.${USERLAND_DOMAIN}`)) {
+  // A wildcard over a Userland domain's own base (`*.fun`, `*.link`) is already refused by the pattern.
+  if (USERLAND_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`))) {
     return { ok: false, reason: `(${shown}) cannot be a Userland address: other apps and Userland sites can never show this app in a frame` };
   }
   return { ok: true, origin };
@@ -1088,7 +1102,6 @@ export function analyzeManifestRequirements(input: ManifestInput): Requirement[]
   if (typeof runtime.static_root === "string" && runtime.static_root.length > 0) feature("runtime.static", "runtime.static_root", runtime.static_root);
   if (runtime.server_entry !== undefined) feature("runtime.server", "runtime.server_entry", runtime.server_entry);
   if (runtime.fallback === "server") feature("runtime.server", "runtime.fallback", runtime.fallback);
-  if (app.visibility === "private") feature("private_apps", "app.visibility", app.visibility);
 
   const auth = isPlainObject(resources.auth) ? resources.auth : undefined;
   if (auth?.mode === "app_users") feature("auth.app_users", "resources.auth.mode", auth.mode);
@@ -1222,7 +1235,6 @@ function requirementAllowed(requirement: Requirement, allowed: ManifestLimitValu
 const FEATURE_LABELS: Record<string, string> = {
   "runtime.static": "Static files",
   "runtime.server": "Server runtime",
-  private_apps: "Private apps",
   "auth.app_users": "App-user sign-in",
   "auth.public_signup": "Public app-user signup",
   "auth.email_verification": "App-user email verification",

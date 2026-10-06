@@ -4,7 +4,7 @@ import { expectHeadLikeGet } from "../../../scripts/runtime-harness.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
 import app from "../server/index.js";
 // @ts-expect-error Example server files are plain JavaScript app bundles.
-import { demoMode } from "../server/demo.js";
+import { DEMO_HOSTS, demoMode } from "../server/demo.js";
 import { APP_ORIGIN, DEMO_ORIGIN, countingCtx, get, makeCtx, post, validListing, type Ctx } from "./helpers.js";
 
 describe("public demo", () => {
@@ -258,6 +258,20 @@ describe("public demo", () => {
     expect((await post(app, ctx, `${APP_ORIGIN}/post`, validListing)).status).toBe(303);
     expect(ctx.state.listings).toHaveLength(1);
     expect(ctx.state["demo-listings"]).toHaveLength(0);
+  });
+
+  it("turns demo mode on at the demo's addresses on both apps.userland.fun and userland.link", async () => {
+    const ctx = makeCtx();
+    const hosts = ["job-board-demo.apps.userland.fun", "4fz14jppml2y13cxqx1.apps.userland.fun", "job-board-demo.userland.link", "4fz14jppml2y13cxqx1.userland.link"];
+    expect([...DEMO_HOSTS].sort()).toEqual([...hosts].sort());
+    for (const host of hosts) {
+      const owner = await get(app, ctx, `https://${host}/owner`);
+      expect(owner.status, host).toBe(200);
+      expect(await owner.text(), host).toContain("noindex");
+    }
+    for (const host of ["example-check.userland.link", "example-check.apps.userland.fun"]) {
+      expect((await get(app, ctx, `https://${host}/owner`)).status, host).toBe(303);
+    }
   });
 
   it("answers HEAD like GET on demo pages without saving anything", async () => {

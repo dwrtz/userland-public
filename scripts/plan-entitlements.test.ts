@@ -19,7 +19,7 @@ it("takes the plan list from the CLI's plan data: self-serve plans only", () => 
 it("allows only manifest and release keys as paid features", () => {
   const keys = paidFeatureKeys();
   expect(allowedPaidFeatures).toEqual(keys);
-  for (const key of ["private_apps", "auth.public_signup", "files.private_stores", "jobs.scheduled", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.provider.github", "webhooks.provider.stripe"]) {
+  for (const key of ["auth.public_signup", "files.private_stores", "jobs.scheduled", "webhooks.enabled", "webhooks.provider.generic_hmac", "webhooks.provider.github", "webhooks.provider.stripe"]) {
     expect(keys.has(key), key).toBe(true);
   }
   for (const key of Object.keys(planData().plans.free!.manifest_limits)) expect(keys.has(key), key).toBe(true);
@@ -43,7 +43,6 @@ it("finds the lowest plan for features and limits", () => {
   });
   expect(computePlanMetadata(manifest({ jobs: { tidy: { trigger: "schedule", schedule: "hourly" } } })).required_plan).toBe("business");
   expect(computePlanMetadata(manifest({ auth: { mode: "app_users", public_signup: true } })).required_plan).toBe("business");
-  expect(computePlanMetadata(manifest({}, { app: { name: "Private", visibility: "private" } })).required_plan).toBe("business");
   expect(computePlanMetadata(manifest({ data: { collections: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`c${index}`, { fields: {} }])) } })).required_plan).toBe("business");
   expect(computePlanMetadata(manifest({ auth: { mode: "app_users", roles: Array.from({ length: 21 }, (_, index) => `r${index}`) } })).required_plan).toBe("business_plus");
 });

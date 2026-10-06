@@ -77,8 +77,7 @@
         "visibility": {
           "type": "string",
           "enum": [
-            "public",
-            "private"
+            "public"
           ],
           "default": "public"
         },
@@ -135,13 +134,13 @@
           "default": [],
           "uniqueItems": true,
           "maxItems": 20,
-          "description": "Other sites allowed to show the app in a frame on its *.apps.userland.fun addresses; the app's own pages always can. Each entry is https://, a domain name and an optional port, with an optional leading *. for its subdomains, and no path. At most 20. Userland addresses are refused. Custom domains are not affected.",
+          "description": "Other sites allowed to show the app in a frame on its Userland addresses; the app's own pages always can. Each entry is https://, a domain name and an optional port, with an optional leading *. for its subdomains, and no path. At most 20. Userland addresses (anything under userland.fun or userland.link) are refused. Custom domains are not affected.",
           "items": {
             "type": "string",
             "maxLength": 255,
             "pattern": "^https://(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[1-9][0-9]{0,4})?$",
             "not": {
-              "pattern": "(?:^https://(?:\\*\\.)?|\\.)[Uu][Ss][Ee][Rr][Ll][Aa][Nn][Dd]\\.[Ff][Uu][Nn](?::[0-9]+)?$"
+              "pattern": "(?:^https://(?:\\*\\.)?|\\.)[Uu][Ss][Ee][Rr][Ll][Aa][Nn][Dd]\\.(?:[Ff][Uu][Nn]|[Ll][Ii][Nn][Kk])(?::[0-9]+)?$"
             }
           }
         }

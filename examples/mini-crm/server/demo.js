@@ -55,10 +55,16 @@
 
 import { DELETE_BATCH, STAGES, byNewest, byReceived, normalizeActivity, summarizeLeads } from "./leads.js";
 
-// The public demo's short address and the demo app's own address. Both belong
-// to the Userland demo deployment only; replace them if you publish your own
-// demo.
-export const DEMO_HOSTS = new Set(["mini-crm-demo.apps.userland.fun", "4ismmfcftg3tn4d41mf.apps.userland.fun"]);
+// The public demo's short address and the demo app's own address, on
+// apps.userland.fun and on userland.link. They
+// belong to the Userland demo deployment only; replace them if you publish your
+// own demo.
+export const DEMO_HOSTS = new Set([
+  "mini-crm-demo.apps.userland.fun",
+  "4ismmfcftg3tn4d41mf.apps.userland.fun",
+  "mini-crm-demo.userland.link",
+  "4ismmfcftg3tn4d41mf.userland.link"
+]);
 
 const KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 

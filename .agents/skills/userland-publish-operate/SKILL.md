@@ -58,7 +58,7 @@ If `secrets list`, `secrets delete`, `invites create`, or `--cursor` is not foun
 
 - Authentication is available from `USERLAND_API_KEY` or saved CLI credentials.
 - Required secrets are set (`userland apps secrets list <app-id>`). If activation is `pending_secrets`, send the `?add-key=<NAME>` link for each missing secret, and publish again with `--app <app-id>` once the owner says it's saved.
-- Activation status is reported.
+- Activation status is reported. Tell the owner the app is live only when `activation_status=live`. When the output starts with `Stored, not live`, say so, pass on its `Why:` lines, and follow its `Next:` lines; the exit code is still `0`, so don't publish again without `--app`.
 - Rollback release id is recorded.
 - An app that the user's website embeds keeps its `runtime.embed_origins` in every release. The list belongs to the release: publishing without it stops the embed, and a rollback brings back the list of the release rolled back to.
 

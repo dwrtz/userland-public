@@ -22,7 +22,6 @@
       "features": {
         "runtime.static": true,
         "runtime.server": true,
-        "private_apps": false,
         "auth.app_users": true,
         "auth.public_signup": false,
         "auth.email_verification": false,
@@ -63,7 +62,6 @@
       "features": {
         "runtime.static": true,
         "runtime.server": true,
-        "private_apps": false,
         "auth.app_users": true,
         "auth.public_signup": false,
         "auth.email_verification": false,
@@ -106,7 +104,6 @@
       "features": {
         "runtime.static": true,
         "runtime.server": true,
-        "private_apps": true,
         "auth.app_users": true,
         "auth.public_signup": true,
         "auth.email_verification": false,
@@ -151,7 +148,6 @@
       "features": {
         "runtime.static": true,
         "runtime.server": true,
-        "private_apps": true,
         "auth.app_users": true,
         "auth.public_signup": true,
         "auth.email_verification": false,
