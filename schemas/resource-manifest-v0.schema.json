@@ -77,8 +77,7 @@
         "visibility": {
           "type": "string",
           "enum": [
-            "public",
-            "private"
+            "public"
           ],
           "default": "public"
         },

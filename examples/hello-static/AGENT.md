@@ -2,7 +2,7 @@
 
 Goal: adapt a static-only Userland app.
 
-Plan: `required_plan` is `free`; `paid_features` is `[]`. A static app with `app.visibility: "public"` publishes on every plan. Setting `visibility` to `private` requires a paid plan (`private_apps`).
+Plan: `required_plan` is `free`; `paid_features` is `[]`. A static app with `app.visibility: "public"` publishes on every plan. Private apps (`visibility: "private"`) aren't available yet; use sign-in with roles to limit who can see the app's pages and data.
 
 Inputs:
 

@@ -22,6 +22,7 @@ import {
   planData,
   planDisplayName,
   planRequirementText,
+  PRIVATE_APPS_REFUSED,
   releaseFileProblem,
   releasePathError,
   releaseRequirements,
@@ -125,7 +126,7 @@ describe("plan parity with the API plan rules", () => {
 
   test("covers every public plan and the issue #2 feature matrix", () => {
     const names = parity.cases.map((entry) => entry.name);
-    for (const required of ["private-app", "public-signup", "scheduled-daily", "scheduled-hourly", "scheduled-every_15_minutes", "webhook-generic_hmac", "webhook-github", "webhook-stripe", "private-store", "secrets-2", "collections-3", "roles-3", "stores-2", "indexes-3"]) {
+    for (const required of ["public-signup", "scheduled-daily", "scheduled-hourly", "scheduled-every_15_minutes", "webhook-generic_hmac", "webhook-github", "webhook-stripe", "private-store", "secrets-2", "collections-3", "roles-3", "stores-2", "indexes-3"]) {
       expect(names).toContain(required);
     }
     expect(new Set(parity.cases.map((entry) => entry.required_plan_key))).toEqual(new Set(["free", "starter", "business", "business_plus", SUPPORT_ONLY_PLAN_KEY]));
@@ -134,7 +135,6 @@ describe("plan parity with the API plan rules", () => {
 
 describe("offline entitlement checks", () => {
   const cases: Array<{ name: string; mutate: (manifest: ManifestInput) => void; key: string; path: string; free: boolean; starter: boolean; business: boolean }> = [
-    { name: "private apps", mutate: (m) => (m.app.visibility = "private"), key: "private_apps", path: "app.visibility", free: false, starter: false, business: true },
     { name: "public signup", mutate: (m) => (m.resources.auth = { mode: "app_users", public_signup: true }), key: "auth.public_signup", path: "resources.auth.public_signup", free: false, starter: false, business: true },
     { name: "daily scheduled job", mutate: (m) => (m.resources.jobs = { nightly: { trigger: "schedule", schedule: "daily" } }), key: "jobs.scheduled", path: "resources.jobs.nightly.trigger", free: false, starter: true, business: true },
     { name: "hourly scheduled job", mutate: (m) => (m.resources.jobs = { sweep: { trigger: "schedule", schedule: "hourly" } }), key: "jobs.schedule.allowed", path: "resources.jobs.sweep.schedule", free: false, starter: false, business: true },
@@ -206,9 +206,9 @@ describe("offline entitlement checks", () => {
 
   test("account entitlements override the plan table", () => {
     const manifest = base();
-    manifest.app.visibility = "private";
+    manifest.resources.auth = { mode: "app_users", public_signup: true };
     const requirements = analyzeManifestRequirements(manifest);
-    const comped = { ...planData().plans.free, features: { ...planData().plans.free.features, private_apps: true } };
+    const comped = { ...planData().plans.free, features: { ...planData().plans.free.features, "auth.public_signup": true } };
     expect(evaluateRequirements(requirements, "free", comped)).toEqual([]);
     expect(evaluateRequirements(requirements, "free", planData().plans.free)).toHaveLength(1);
   });
@@ -270,6 +270,23 @@ describe("manifest schema validation", () => {
     }
   });
 
+  test("refuses private apps with the API's message, because Userland never kept them private", () => {
+    const refused = checkManifestDocument({ app: { name: "Internal", visibility: "private" }, runtime: { static_root: "public" } });
+    expect(refused.errors).toEqual([{ code: "invalid_app_manifest", manifest_path: "app.visibility", message: PRIVATE_APPS_REFUSED }]);
+    expect(PRIVATE_APPS_REFUSED).toBe(
+      "Private apps aren't available yet. Remove app.visibility or set it to public, and use sign-in with roles to limit who can see your app's pages and data."
+    );
+    // The bundled schema allows only "public", so editors refuse "private" too.
+    expect(validateAgainstSchema({ app: { name: "Internal", visibility: "private" }, runtime: { static_root: "public" } }, manifestSchema())).toEqual([
+      { code: "schema", manifest_path: "app.visibility", message: "must be one of: public" }
+    ]);
+    expect(checkManifestDocument({ app: { name: "Open", visibility: "public" }, runtime: { static_root: "public" } }).errors).toEqual([]);
+    // The plan check never asks for a plan for it: no plan includes private apps.
+    expect(analyzeManifestRequirements({ app: { name: "Internal", visibility: "private" }, runtime: { static_root: "public" }, resources: {} }).map((requirement) => requirement.key)).not.toContain(
+      "private_apps"
+    );
+  });
+
   test("reports shape errors with manifest paths", () => {
     const errors = validateManifestDocument({
       app: { name: "Bad", visibility: "secret", tags: ["secrets"] },
@@ -285,7 +302,7 @@ describe("manifest schema validation", () => {
     });
     const byPath = Object.fromEntries(errors.map((error) => [error.manifest_path, error.message]));
     expect(byPath).toMatchObject({
-      "app.visibility": "must be one of: public, private",
+      "app.visibility": "must be one of: public",
       "app.tags[0]": '"secrets" is reserved',
       "runtime.fallback": "must be one of: server, index.html, 404",
       "resources.auth.mode": "must be one of: none, app_users",
@@ -949,7 +966,7 @@ describe("validateAppDirectory", () => {
   });
 
   test("applies plans to one analysis without re-reading the directory", async () => {
-    const dir = await appDir({ app: { name: "Plan", visibility: "private" }, runtime: { static_root: "public" } });
+    const dir = await appDir({ app: { name: "Plan" }, runtime: { static_root: "public" }, resources: { auth: { mode: "app_users", public_signup: true } } });
     const analysis = await analyzeAppDirectory(dir);
     expect(analysis.report.plan).toBeNull();
     expect(analysis.requirements).not.toBeNull();
@@ -958,7 +975,7 @@ describe("validateAppDirectory", () => {
     const free = applyPlan(analysis, { planKey: "free", planSource: "account" });
     expect(free.ok).toBe(false);
     expect(free.plan_source).toBe("account");
-    expect(free.violations.map((finding) => finding.feature_key)).toEqual(["private_apps"]);
+    expect(free.violations.map((finding) => finding.feature_key)).toEqual(["auth.public_signup"]);
     const business = applyPlan(analysis, { planKey: "business" });
     expect(business.ok).toBe(true);
     expect(business.plan_source).toBe("flag");

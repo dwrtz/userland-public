@@ -34,7 +34,7 @@ const FREE_PLAN = SELF_SERVE_PLANS[0]!;
 // Features a manifest can turn on (analyzeManifestRequirements reports only
 // these). Account-level features such as custom_domains or app_analytics are
 // not manifest features and never appear in paid_features.
-const MANIFEST_FEATURE_PREFIXES = ["runtime", "private_apps", "auth", "data", "files", "secrets", "jobs", "webhooks"];
+const MANIFEST_FEATURE_PREFIXES = ["runtime", "auth", "data", "files", "secrets", "jobs", "webhooks"];
 
 /**
  * Keys that can appear in `paid_features`: the manifest features Free does
