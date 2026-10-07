@@ -881,14 +881,44 @@
         {
           "method": "PUT",
           "path": "/v0/apps",
-          "when": "without --app",
+          "when": "without --app, for a bundle of 16 MiB or less",
           "account_header": true
         },
         {
           "method": "PUT",
           "path": "/v0/apps/:app_id",
-          "when": "with --app",
+          "when": "with --app, for a bundle of 16 MiB or less",
           "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v0/uploads",
+          "when": "without --app, for a bundle over 16 MiB: declares the files",
+          "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/uploads",
+          "when": "with --app, for a bundle over 16 MiB: declares the files",
+          "account_header": true
+        },
+        {
+          "method": "PUT",
+          "path": "/v0/uploads/:upload_id/files/:file_path",
+          "when": "for each file the session needs; file_path is the rest of the URL, one or more segments",
+          "account_header": false
+        },
+        {
+          "method": "POST",
+          "path": "/v0/uploads/:upload_id/commit",
+          "when": "once every needed file is in, with an Idempotency-Key",
+          "account_header": false
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/uploads/:upload_id",
+          "when": "when the publish stops before the commit (a refused file, or Ctrl-C)",
+          "account_header": false
         }
       ],
       "permission": "apps.publish",
