@@ -33,7 +33,7 @@ Safety:
 - Do not turn on `public_signup`. It is a paid feature and lets anyone create an account.
 - Escape every stored or submitted value with `esc()` before it goes into HTML.
 - Keep length limits, email checks, the honeypot field, and `REQUEST_LIMITS` on public forms, including the second limit check after a request is saved (it catches requests sent at the same moment). Userland doesn't pass visitor IP addresses to app code.
-- Keep the `Origin` check on every POST. Owner routes rely on the sign-in cookie, and every app on apps.userland.fun counts as the same site, so owner posts must carry this host's `Origin` (or `Sec-Fetch-Site: same-origin`); `Origin: null` and other hosts are refused.
+- Keep the `Origin` check on every POST. Owner routes rely on the sign-in cookie, and every app on userland.link counts as the same site, so owner posts must carry this host's `Origin` (or `Sec-Fetch-Site: same-origin`); `Origin: null` and other hosts are refused.
 - Build `mailto:` links with `encodeURIComponent`, and keep the strict email pattern.
 - Tell the owner about the Free plan's 1,000-row limit and the **Clear out** button (README "Spam and storage").
 - Log ids and statuses with `ctx.log`, not names, emails, or phone numbers.

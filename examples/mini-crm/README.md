@@ -4,7 +4,7 @@ Lead inbox with a public request form and an owner-only board for stages, notes,
 
 The example is dressed as Bevel & Brace, a fictional home-renovation contractor. Customers request a free estimate on the home page. The owner signs in to a lead board, filters by stage, opens a lead, moves it from new to won or lost, sets a follow-up date, adds notes, and deletes spam. Every change lands in a history that also feeds the board's recent activity.
 
-Live demo: https://mini-crm-demo.apps.userland.fun/
+Live demo: https://mini-crm-demo.userland.link/
 Example page: https://userland.fun/examples/mini-crm/
 
 ## Capabilities
@@ -55,7 +55,7 @@ Each request from the form uses 2 data rows (the lead and its history entry), an
 
 Sign-in, sign-out, and invite acceptance are Userland's reserved routes under `/_userland/auth/*`.
 
-Every form post must come from the app's own pages. Other apps on `*.apps.userland.fun` count as the same site for cookies, so the owner's sign-in cookie would ride along on their form posts; `isSameOrigin()` in `server/index.js` refuses a post whose `Origin` (or, without it, `Sec-Fetch-Site` or `Referer`) isn't this app. Owner routes also refuse a post that has none of the three. Form bodies over 16 KiB are refused while they're being read, with or without a `Content-Length` header.
+Every form post must come from the app's own pages. Other apps on `*.userland.link` count as the same site for cookies, so the owner's sign-in cookie would ride along on their form posts; `isSameOrigin()` in `server/index.js` refuses a post whose `Origin` (or, without it, `Sec-Fetch-Site` or `Referer`) isn't this app. Owner routes also refuse a post that has none of the three. Form bodies over 16 KiB are refused while they're being read, with or without a `Content-Length` header.
 
 ## Data model
 
@@ -108,7 +108,7 @@ The owner opens the invite link, sets a password, and signs in at `/_userland/au
 
 ## Demo mode
 
-`server/demo.js` exists for the public demo. It only turns on for requests to the hostnames in `DEMO_HOSTS` (`mini-crm-demo.apps.userland.fun` and the demo app's own address). Anywhere else the owner routes require a signed-in owner and leads are saved normally, even with `demo.js` still in place. On the demo addresses it lets visitors see the owner side without signing in and keeps visitors' entries apart: each visitor gets a random key in the page address, and the owner view shows the sample leads plus only rows saved with that key. Changes to a sample lead are saved as history for that visitor only.
+`server/demo.js` exists for the public demo. It only turns on for requests to the hostnames in `DEMO_HOSTS` (`mini-crm-demo.userland.link` and the demo app's own address). Anywhere else the owner routes require a signed-in owner and leads are saved normally, even with `demo.js` still in place. On the demo addresses it lets visitors see the owner side without signing in and keeps visitors' entries apart: each visitor gets a random key in the page address, and the owner view shows the sample leads plus only rows saved with that key. Changes to a sample lead are saved as history for that visitor only.
 
 The demo saves only `activity` rows, tagged with the visitor's key and the time (`demo_visitor`, `demo_saved_at`); a lead a visitor adds is its first row. The key is the only thing tying entries to a visitor, so anyone who has a visitor's link sees that visitor's entries. The demo pages say this plainly and ask visitors to use made-up details. Visitors who only look around save nothing.
 

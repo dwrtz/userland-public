@@ -4,7 +4,7 @@ A pre-launch waitlist for a startup: a landing page that collects signups, a pri
 
 The example is dressed as **Velto**, a made-up running app. Swap the name, copy, colors, and questions for your own launch.
 
-Live demo: https://waitlist-demo.apps.userland.fun/ (example page: https://userland.fun/examples/waitlist-app/)
+Live demo: https://waitlist-demo.userland.link/ (example page: https://userland.fun/examples/waitlist-app/)
 
 ## What it does
 
@@ -44,7 +44,7 @@ Usage limits still apply, and a busy launch can reach them:
 - **Requests:** Free allows 10,000 requests a month across all your apps on the account. Every page, form post, and file counts, and a first visit to the landing page is about six (page, stylesheet, two fonts, script, icon). If your launch may get shared widely, plan on Starter (100,000 a month).
 - **Compute per request:** the landing page reads only one page of signups (100 rows). The private place-in-line page and the owner view read the whole list, 100 rows per query, every page until the end (never a cut-off list), so they take longer as the list grows. Free gives each request 10 ms of compute and Starter 25 ms. Before launch day, test those two pages with a list the size you expect.
 
-A short address (like `waitlist-demo.apps.userland.fun`), a custom domain, and App Analytics are account features on paid plans; the app works without them.
+A short address (like `waitlist-demo.userland.link`), a custom domain, and App Analytics are account features on paid plans; the app works without them.
 
 ## Spam and privacy
 
@@ -82,7 +82,7 @@ tests/                   vitest tests with an in-memory ctx; demo.test.ts covers
 | `POST /admin/signups/:id/delete` | Owner | Delete an archived person for good |
 | `POST /admin/bulk` | Owner | Archive people matching a search or filter, or delete archived people, 50 per click |
 
-Every form post checks that it came from this app's own pages (`Origin`), and rejects other sites, other `*.apps.userland.fun` apps, and `null` origins.
+Every form post checks that it came from this app's own pages (`Origin`), and rejects other sites, other `*.userland.link` apps, and `null` origins.
 
 ## Publish
 
@@ -114,7 +114,7 @@ Open the invite link, choose a password, and you're signed in. Later, sign in at
 This adds a real signup to your list, so use your own email. Afterwards, archive it in the owner view, then delete it from the Archived list.
 
 ```sh
-ORIGIN=https://<app-id>.apps.userland.fun
+ORIGIN=https://<app-id>.userland.link
 
 # Join with your own email and follow the redirect to the private page
 curl -si -X POST "$ORIGIN/join" --data 'email=you@yourcompany.com&name=You' | grep -i location
@@ -140,7 +140,7 @@ userland validate . --plan free --strict
 
 ## Demo mode
 
-`server/demo.js` powers the public demo at `waitlist-demo.apps.userland.fun`. It only turns on for hostnames in `DEMO_HOSTS` (the demo's short address and the demo app's own address), so your copy runs as a normal waitlist anywhere else, including at your own `<app-id>.apps.userland.fun` address. In demo mode:
+`server/demo.js` powers the public demo at `waitlist-demo.userland.link`. It only turns on for hostnames in `DEMO_HOSTS` (the demo's short address and the demo app's own address), so your copy runs as a normal waitlist anywhere else, including at your own `<app-id>.userland.link` address. In demo mode:
 
 - The owner view opens without signing in.
 - It shows made-up sample signups (all `@example.com`) plus only the signups that visitor added. A visitor's signups are tagged with a random key that travels in the link (`?demo=...`), because Userland passes only its own sign-in cookie to app code.

@@ -20,7 +20,7 @@ const launch = {
   slug: "booking-app",
   path: "examples/booking-app",
   launch_role: "launch-example",
-  demo_url: "https://booking-demo.apps.userland.fun/",
+  demo_url: "https://booking-demo.userland.link/",
   page_url: "https://userland.fun/examples/booking-app/"
 };
 
@@ -51,7 +51,7 @@ it.each([
   ["unknown field", { ...fixture, pricing: "free" }, /unknown catalog field/u],
   ["launch example without demo_url", { ...launch, demo_url: undefined }, /demo_url/u],
   ["launch example without page_url", { ...launch, page_url: undefined }, /page_url/u],
-  ["http demo_url", { ...launch, demo_url: "http://booking-demo.apps.userland.fun/" }, /demo_url/u],
+  ["http demo_url", { ...launch, demo_url: "http://booking-demo.userland.link/" }, /demo_url/u],
   ["demo_url on another host", { ...launch, demo_url: "https://booking-demo.example.com/" }, /demo_url/u],
   ["page_url for another slug", { ...launch, page_url: "https://userland.fun/examples/other/" }, /page_url/u],
   ["http page_url", { ...launch, page_url: "http://userland.fun/examples/booking-app/" }, /page_url/u]

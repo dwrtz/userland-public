@@ -18,7 +18,7 @@ userland login
 userland apps publish examples/hello-static
 ```
 
-The publish output includes the app id, the app address (`https://<app-id>.apps.userland.fun/`), the new release, and whether it is live.
+The publish output includes the app id, the app address (`https://<app-id>.userland.link/`), the new release, and whether it is live.
 
 ## Change or undo a release
 

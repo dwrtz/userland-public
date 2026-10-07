@@ -4,7 +4,7 @@ A link-in-bio page for a creator, with featured products, a list of links, an em
 
 The sample business is **Kiln & Crumb**, a made-up potter who sells pie dishes and mugs. Swap in your own name, colors, and links.
 
-- Live demo: https://link-in-bio-demo.apps.userland.fun/
+- Live demo: https://link-in-bio-demo.userland.link/
 - Example page: https://userland.fun/examples/link-in-bio-app/
 - Plan: runs on the **Free** plan. A custom domain (like `links.yourstudio.com`) needs Starter.
 - Room to grow: the Free plan saves up to 1,000 items per account, and links, messages, and email-list signups all count toward it. Starter saves 25,000. When the space is full, visitors see a "this page is full for now" page and the owner view says how to make room.
@@ -101,7 +101,7 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 
 ## Demo mode
 
-`server/demo.js` only switches on for `link-in-bio-demo.apps.userland.fun`, so your copy already requires sign-in for the owner view. On the demo host it:
+`server/demo.js` only switches on for `link-in-bio-demo.userland.link`, so your copy already requires sign-in for the owner view. On the demo host it:
 
 - opens the owner view without sign-in,
 - gives each visitor a private key in the page address (`?visit=...`) and their own copy of made-up messages, signups, and links, because Userland passes only its own sign-in cookie to app code,

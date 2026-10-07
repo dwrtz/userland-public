@@ -39,7 +39,7 @@ Always pass `--app <app-id>` when publishing again. Without it, the CLI creates 
 Point the sending service at:
 
 ```text
-https://<app-id>.apps.userland.fun/_userland/webhooks/automation
+https://<app-id>.userland.link/_userland/webhooks/automation
 ```
 
 Userland checks every request before the app sees it, using the `generic_hmac` scheme:
@@ -57,7 +57,7 @@ Send a signed test event from a terminal:
 body='{"external_id":"test-1","type":"test"}'
 ts=$(date +%s)
 sig=$(printf '%s%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$AUTOMATION_WEBHOOK_SECRET" | sed 's/^.* //')
-curl -X POST https://<app-id>.apps.userland.fun/_userland/webhooks/automation \
+curl -X POST https://<app-id>.userland.link/_userland/webhooks/automation \
   -H 'content-type: application/json' \
   -H "X-Userland-Timestamp: $ts" \
   -H "X-Userland-Signature: sha256=$sig" \

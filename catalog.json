@@ -13,7 +13,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://booking-demo.apps.userland.fun/",
+      "demo_url": "https://booking-demo.userland.link/",
       "page_url": "https://userland.fun/examples/booking-app/"
     },
     {
@@ -27,7 +27,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://waitlist-demo.apps.userland.fun/",
+      "demo_url": "https://waitlist-demo.userland.link/",
       "page_url": "https://userland.fun/examples/waitlist-app/"
     },
     {
@@ -41,7 +41,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://mini-crm-demo.apps.userland.fun/",
+      "demo_url": "https://mini-crm-demo.userland.link/",
       "page_url": "https://userland.fun/examples/mini-crm/"
     },
     {
@@ -55,7 +55,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://invoice-demo.apps.userland.fun/",
+      "demo_url": "https://invoice-demo.userland.link/",
       "page_url": "https://userland.fun/examples/invoice-generator/"
     },
     {
@@ -69,7 +69,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://link-in-bio-demo.apps.userland.fun/",
+      "demo_url": "https://link-in-bio-demo.userland.link/",
       "page_url": "https://userland.fun/examples/link-in-bio-app/"
     },
     {
@@ -83,7 +83,7 @@
       "required_plan": "free",
       "paid_features": [],
       "launch_role": "launch-example",
-      "demo_url": "https://job-board-demo.apps.userland.fun/",
+      "demo_url": "https://job-board-demo.userland.link/",
       "page_url": "https://userland.fun/examples/job-board/"
     },
     {

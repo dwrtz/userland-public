@@ -35,18 +35,18 @@ userland apps publish examples/booking-lite
 
 ## Try it
 
-Open `https://<app-id>.apps.userland.fun/` and book a time. The sample schedule offers an intro call tomorrow and a planning session the day after, at 16:00 UTC.
+Open `https://<app-id>.userland.link/` and book a time. The sample schedule offers an intro call tomorrow and a planning session the day after, at 16:00 UTC.
 
 Or list open slots with curl:
 
 ```sh
-curl https://<app-id>.apps.userland.fun/api/slots
+curl https://<app-id>.userland.link/api/slots
 ```
 
 Book a slot:
 
 ```sh
-curl -X POST https://<app-id>.apps.userland.fun/api/bookings \
+curl -X POST https://<app-id>.userland.link/api/bookings \
   -H 'content-type: application/json' \
   --data '{"slot_id":"<slot-id>","name":"Ada","email":"ada@example.test"}'
 ```

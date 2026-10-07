@@ -30,7 +30,7 @@ Steps:
 Safety:
 
 - Keep the owner gate (`ownerAccess` in `server/index.js`) in front of every `/owner` route, including POST and delete routes.
-- Keep the same-origin check (`isSameOrigin`) on every POST. The sign-in cookie is SameSite=Lax and all `*.apps.userland.fun` apps are same-site, so this is what stops another app's page from posting owner actions.
+- Keep the same-origin check (`isSameOrigin`) on every POST. The sign-in cookie is SameSite=Lax and all `*.userland.link` apps are same-site, so this is what stops another app's page from posting owner actions.
 - Keep `access.read` and `access.write` at `server_only` so contact details are only reachable through server code.
 - Render visitor text only through the `html` tag in `server/views.js`, which escapes it. Use `raw()` only for markup you wrote.
 - Keep contact email, private notes, and history out of public pages (`publicListing()` strips them).

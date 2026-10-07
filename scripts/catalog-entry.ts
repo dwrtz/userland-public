@@ -27,7 +27,7 @@ const requiredKeys = [
 ];
 const launchExampleKeys = ["demo_url", "page_url"];
 const allowedKeys = new Set([...requiredKeys, ...launchExampleKeys]);
-const demoUrlPattern = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.apps\.userland\.fun\/$/u;
+const demoUrlPattern = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.userland\.link\/$/u;
 
 export type CatalogEntry = {
   slug: string;
@@ -128,7 +128,7 @@ function assertLaunchMetadata(entry: CatalogEntry): void {
   }
   if (entry.demo_url !== undefined) {
     if (typeof entry.demo_url !== "string" || !demoUrlPattern.test(entry.demo_url)) {
-      throw new Error(`${entry.slug} demo_url must look like https://<demo-slug>.apps.userland.fun/; got ${JSON.stringify(entry.demo_url)}.`);
+      throw new Error(`${entry.slug} demo_url must look like https://<demo-slug>.userland.link/; got ${JSON.stringify(entry.demo_url)}.`);
     }
   }
   if (entry.page_url !== undefined) {

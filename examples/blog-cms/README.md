@@ -9,7 +9,7 @@ A blog where admins write posts and upload images, and anyone can read published
 - A `posts` data collection. Visitors only ever see published posts.
 - A public `media` file store for images (up to 5 MB each).
 - A home page that lists posts 20 at a time with a "Show more" button. Signed-in admins also get a post editor and a list of drafts with Publish buttons; everyone else gets a sign-in link.
-- Admin actions only work from the blog's own pages. Another site, including another app on `apps.userland.fun`, cannot post to them on a signed-in admin's behalf.
+- Admin actions only work from the blog's own pages. Another site, including another app on `userland.link`, cannot post to them on a signed-in admin's behalf.
 
 ## Plan
 
@@ -42,7 +42,7 @@ Once the admin has set a password, they open the blog, choose **sign in**, and t
 ## Try it
 
 ```sh
-curl https://<app-id>.apps.userland.fun/api/posts
+curl https://<app-id>.userland.link/api/posts
 ```
 
 The list returns up to 20 posts and, when there are more, a `cursor`. Pass it back as `?cursor=<cursor>` for the next page.

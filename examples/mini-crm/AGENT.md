@@ -46,7 +46,7 @@ Safety:
 - Never serve owner pages or lead data from a route that skips `requireOwner()` (outside demo mode).
 - Keep both collections `server_only`. Public routes may create a lead but never read one back.
 - Escape everything shown in HTML with `escapeHtml()`, and build `mailto:` links with `mailtoHref()`. Keep the length limits, the honeypot field, and `REQUEST_LIMITS` on public forms, and keep the owner's "Delete lead" so spam can be cleaned up.
-- Keep the `isSameOrigin()` check on every form post. Other apps on `*.apps.userland.fun` are the same site for cookies, so without it they could post owner actions with the owner's session. Owner routes refuse posts with no `Origin`, `Sec-Fetch-Site`, or `Referer`.
+- Keep the `isSameOrigin()` check on every form post. Other apps on `*.userland.link` are the same site for cookies, so without it they could post owner actions with the owner's session. Owner routes refuse posts with no `Origin`, `Sec-Fetch-Site`, or `Referer`.
 - Catch `quota_exceeded` (the app is out of data rows) and show a page that tells visitors how else to reach the business, as `expectedErrorPage()` in `server/index.js` does.
 - Don't log names, emails, phone numbers, or notes with `ctx.log`. Log ids and stages only.
 - Keep any API keys (email or SMS providers) in Userland secrets and read them with `ctx.secrets` on the server.

@@ -33,7 +33,7 @@ Safety:
 - Do not show one person's details to another. Private pages use an unguessable token in the link.
 - Keep the honeypot field (`TRAP_FIELD`, hidden with `display: none`; don't rename it to something autofill knows, like `company` or `website`), the length limits, and `escapeHtml()` on every value in HTML.
 - Keep the neutral `/thanks` answer for repeat emails; an "already on the list" error lets anyone check who signed up. It does not hide everything: a new email still goes to its private page, and whoever types an email first holds that private link. Don't claim more than that. The owner's **New link** button (`POST /admin/signups/:id/link`) fixes a lost or taken link; emailing the link instead of showing it closes the gap.
-- Check `Origin` on every form post (`isSameOrigin()`); other `*.apps.userland.fun` apps count as the same site to the browser, so the sign-in cookie alone is not enough.
+- Check `Origin` on every form post (`isSameOrigin()`); other `*.userland.link` apps count as the same site to the browser, so the sign-in cookie alone is not enough.
 - Only archived people can be deleted, bulk archive needs a search or filter, and bulk changes stop at `BULK_LIMIT` (50) per click.
 - Catch `quota_exceeded` on writes that add rows and show a plain page; never let a raw error reach visitors.
 - If you keep a public demo, keep its cleanup: `demo_expires_at`, `sweepExpired()`, and the per-visitor and demo-wide limits in `server/demo.js`.

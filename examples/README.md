@@ -34,7 +34,7 @@ Launch examples also set a live demo and a marketing page:
 ```json
 {
   "launch_role": "launch-example",
-  "demo_url": "https://<demo-slug>.apps.userland.fun/",
+  "demo_url": "https://<demo-slug>.userland.link/",
   "page_url": "https://userland.fun/examples/<slug>/"
 }
 ```
@@ -53,12 +53,12 @@ Launch examples (live demos, each with a page at `https://userland.fun/examples/
 
 | Example | Demo | Plan needed | Why |
 | --- | --- | --- | --- |
-| `booking-app` | https://booking-demo.apps.userland.fun/ | Free | One owner role and two collections. |
-| `waitlist-app` | https://waitlist-demo.apps.userland.fun/ | Free | One owner role and two collections. |
-| `mini-crm` | https://mini-crm-demo.apps.userland.fun/ | Free | One owner role and two collections. |
-| `invoice-generator` | https://invoice-demo.apps.userland.fun/ | Free | One owner role, two collections, and one manual job. |
-| `link-in-bio-app` | https://link-in-bio-demo.apps.userland.fun/ | Free | One owner role and two collections. |
-| `job-board` | https://job-board-demo.apps.userland.fun/ | Free | One owner role and two collections. |
+| `booking-app` | https://booking-demo.userland.link/ | Free | One owner role and two collections. |
+| `waitlist-app` | https://waitlist-demo.userland.link/ | Free | One owner role and two collections. |
+| `mini-crm` | https://mini-crm-demo.userland.link/ | Free | One owner role and two collections. |
+| `invoice-generator` | https://invoice-demo.userland.link/ | Free | One owner role, two collections, and one manual job. |
+| `link-in-bio-app` | https://link-in-bio-demo.userland.link/ | Free | One owner role and two collections. |
+| `job-board` | https://job-board-demo.userland.link/ | Free | One owner role and two collections. |
 
 Capability examples:
 

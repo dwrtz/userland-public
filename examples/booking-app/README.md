@@ -2,7 +2,7 @@
 
 Lesson booking for **Wrenhouse Music Studio**, a made-up piano and voice teacher. Visitors pick a lesson, request a time, and get a confirmation. The owner signs in to a private studio desk to confirm or decline requests, edit lessons and prices, and review recent activity.
 
-- Live demo: https://booking-demo.apps.userland.fun/
+- Live demo: https://booking-demo.userland.link/
 - Example page: https://userland.fun/examples/booking-app/
 - Plan: works on the **Free** plan (see [Plans](#plans)).
 
@@ -75,7 +75,7 @@ The Free plan saves up to 1,000 rows across both collections. Each request is on
 
 ## Demo mode
 
-The public demo at https://booking-demo.apps.userland.fun/ lets anyone open the owner pages without signing in. That behavior lives in `server/demo.js`:
+The public demo at https://booking-demo.userland.link/ lets anyone open the owner pages without signing in. That behavior lives in `server/demo.js`:
 
 - Each visitor gets a random key the first time they submit a form. Their bookings and edits are stored with that key and shown only to them. Everyone else sees made-up sample data.
 - The first owner-side change copies the samples into the visitor's own set (`demo_copy_of` records which sample each copy came from), so their changes never reach anyone else. If a double-click copies a sample twice, the oldest copy is the one shown and changed.
@@ -84,7 +84,7 @@ The public demo at https://booking-demo.apps.userland.fun/ lets anyone open the 
 - The ribbon asks visitors to use made-up details, since anyone with a page's link (which carries the key) can see them.
 - Every page is marked `noindex` with a "Built with Userland" note.
 
-**Demo mode only turns on at the addresses in `DEMO_HOSTS`** (the Userland demo deployment). On any other address, including your app's own `*.apps.userland.fun` origin and your custom domain, the owner pages require sign-in, public pages are indexable, and the demo notes disappear. A copy of this example is never published with an open owner desk.
+**Demo mode only turns on at the addresses in `DEMO_HOSTS`** (the Userland demo deployment). On any other address, including your app's own `*.userland.link` origin and your custom domain, the owner pages require sign-in, public pages are indexable, and the demo notes disappear. A copy of this example is never published with an open owner desk.
 
 To remove demo mode completely:
 
@@ -145,7 +145,7 @@ userland apps rollback "$APP_ID" "$RELEASE_ID"
 
 The manifest publishes on the **Free** plan: server routes, app-user auth with one role and no public sign-up, and two data collections (`services` with one index, `bookings` with two, one of them unique). Free includes up to 1,000 saved rows and 10,000 requests a month; see [Spam and storage](#spam-and-storage) for keeping bookings under the row limit.
 
-Paid plans add things around the app, not in the manifest: a short address such as `your-studio.apps.userland.fun` or your own domain (Starter and up), and traffic analytics for visits, popular pages, and referrers (Starter and up). Adding email reminders with a scheduled job would also need Starter.
+Paid plans add things around the app, not in the manifest: a short address such as `your-studio.userland.link` or your own domain (Starter and up), and traffic analytics for visits, popular pages, and referrers (Starter and up). Adding email reminders with a scheduled job would also need Starter.
 
 ## Userland docs
 

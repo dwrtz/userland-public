@@ -31,7 +31,7 @@ Safety:
 
 - Escape every value with `esc()` in views. Don't build HTML from unescaped input.
 - Don't show drafts or requests through `/p/:token`; `getDocumentByToken` filters them.
-- Every form post goes through `readForm`, which refuses posts whose `Origin` isn't this app's own origin (other `*.apps.userland.fun` apps and `null` included) and bodies over 64 KB.
+- Every form post goes through `readForm`, which refuses posts whose `Origin` isn't this app's own origin (other `*.userland.link` apps and `null` included) and bodies over 64 KB.
 - Keep the public form's caps (`LIMITS.pendingRequests`, `LIMITS.requestsPerClient`) so a bot can't fill the Free plan's 1,000 rows. A count taken before saving misses requests saved at the same moment, so `createRequest` counts again after saving and removes what it added when it went over; keep that pattern for any new cap.
 - Log ids and document numbers only; never log client names or emails.
 - Keep payment or email API keys in app secrets and read them only in server code with `ctx.secrets`. Nothing secret goes in `public/`.

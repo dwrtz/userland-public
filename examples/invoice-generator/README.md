@@ -2,7 +2,7 @@
 
 Quotes and invoices for a small service business. Clients request a quote from a public page, the owner prices it with line items, sends a private link, and turns the accepted quote into a printable invoice.
 
-Live demo: https://invoice-demo.apps.userland.fun/ (a made-up design and photography studio, Kern & Frame)
+Live demo: https://invoice-demo.userland.link/ (a made-up design and photography studio, Kern & Frame)
 Example page: https://userland.fun/examples/invoice-generator/
 
 ## What it does
@@ -21,7 +21,7 @@ For the owner (app user with the `owner` role):
 
 ## Plan
 
-Publishes on the **Free** plan. The manifest uses app-user auth with one role (`owner`, no public signup), two data collections with two indexes each (the Free plan's limits), and one manual job. No secrets, files, webhooks, or scheduled jobs. A custom domain or a short address such as `invoice-demo.apps.userland.fun` is an account feature on paid plans; the app itself doesn't need one.
+Publishes on the **Free** plan. The manifest uses app-user auth with one role (`owner`, no public signup), two data collections with two indexes each (the Free plan's limits), and one manual job. No secrets, files, webhooks, or scheduled jobs. A custom domain or a short address such as `invoice-demo.userland.link` is an account feature on paid plans; the app itself doesn't need one.
 
 ## How it's built
 
@@ -44,7 +44,7 @@ tests/                   vitest tests on the shared fake runtime (scripts/runtim
 - **Lists that don't stop at one page.** `where` and `order_by` fields must be in an index; `documents.for_lists` holds the fields the desk filters and sorts on. Desk totals read every row of each status they count, and long lists show 50 rows with a link to the next page.
 - **Private client links** use a random 24-character token. Drafts and new requests are never visible through a link.
 - **App events.** Requests, new documents, status changes, client answers, and conversions are logged with `ctx.log.info` using ids and numbers only, never emails or names. Read them with `userland apps events <app-id>`.
-- **Safety.** All output is escaped, inputs have length limits (a form body over 64 KB is refused even without a `Content-Length`), and pages send a strict Content-Security-Policy. Form posts must come from this app's own pages: every app on `*.apps.userland.fun` counts as the same site for cookies, so the `Origin` header has to match exactly (`null` and other Userland apps are refused), with `Sec-Fetch-Site` as a fallback. Desk forms need one of the two.
+- **Safety.** All output is escaped, inputs have length limits (a form body over 64 KB is refused even without a `Content-Length`), and pages send a strict Content-Security-Policy. Form posts must come from this app's own pages: every app on `*.userland.link` counts as the same site for cookies, so the `Origin` header has to match exactly (`null` and other Userland apps are refused), with `Sec-Fetch-Site` as a fallback. Desk forms need one of the two.
 - **Spam and storage limits.** The public form has a hidden honeypot field and caps in `LIMITS` (`server/store.js`): no new requests while 50 are waiting for a reply, or while one email address has 3 waiting. The caps hold when a bot sends many requests at the same moment: each request counts again after it is saved and takes itself (and a client it just added) back out if it went over, so refused requests leave no rows behind (see `createRequest`). When so many arrive at once that no free number is found, the visitor is asked to send again. Userland doesn't pass visitor IP addresses to app code, so there is no per-address limit. A request that uses a known client's email with a different name is flagged on the desk. If the app reaches its plan's row limit, visitors and the owner see a plain "can't be saved right now" page instead of an error; delete spam requests to make room.
 
 ## The owner sign-in
@@ -72,7 +72,7 @@ See https://docs.userland.fun/guides/auth for invites and sessions.
 
 ## Demo mode
 
-`server/demo.js` powers the public demo. It is active only on the hosts listed in `DEMO_HOSTS` (`invoice-demo.apps.userland.fun`), so a copy published anywhere else always requires the owner sign-in. On the demo app's own Userland address (`SHOWCASE_HOSTS`), public pages redirect to the demo address and `/desk` keeps the normal owner sign-in.
+`server/demo.js` powers the public demo. It is active only on the hosts listed in `DEMO_HOSTS` (`invoice-demo.userland.link`), so a copy published anywhere else always requires the owner sign-in. On the demo app's own Userland address (`SHOWCASE_HOSTS`), public pages redirect to the demo address and `/desk` keeps the normal owner sign-in.
 
 On the demo host, anyone can open the studio desk. Each visitor gets a private workspace named by a random key in the page address (`?demo=...`), filled with fictional sample clients and documents. Userland only passes its own sign-in cookie to app code, so the key travels in links and forms instead of a cookie. Visitors only ever see their own workspace, and the `clear-demo` job deletes it six hours later.
 
