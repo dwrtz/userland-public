@@ -316,6 +316,24 @@ With a `files` list, exactly those files are uploaded, including dotfiles you li
 
 The Userland API remains authoritative. Local validation mirrors the API's manifest and plan rules for fast feedback; the API can still reject a publish because of billing state, account flags, deployment limits, usage quotas, or newer rules, and returns structured `402` details when it does.
 
+### Large bundles
+
+A bundle over 16 MiB (the files' own sizes added up) is more than one request can carry, so CLI 0.13.0 and later publish it in an upload session instead of one `PUT /v0/apps`:
+
+1. **Declare.** The CLI sends the manifest with each file's path, content type, size and SHA-256, but none of its bytes (`POST /v0/apps/:app_id/uploads` with `--app`, or `POST /v0/uploads` for a new app, in the selected account). Userland checks the manifest and the plan's limits first, so a bundle the plan doesn't allow is refused before anything is uploaded, with the same errors as a publish. It answers with the files it needs: a file the app's live release, or a release Userland still keeps, already has with the same size and SHA-256 is copied by Userland instead of being sent again.
+2. **Upload.** The CLI sends each needed file's bytes, four at a time, and checks each one is still the file it declared. A file may be at most 20 MiB, as in any publish.
+3. **Publish.** The CLI commits the session, which publishes the release exactly as `PUT /v0/apps` does.
+
+The output is the same as for any publish, with three more lines at the end:
+
+```text
+upload_id=up_...
+upload_files_sent=2
+upload_files_copied=41
+```
+
+The CLI tries a file or the commit again after a rate limit, a server error or a lost connection, and the commit carries one `Idempotency-Key`, so trying it again never publishes twice. If the publish stops before the commit (a file was refused, the CLI gave up, or you pressed Ctrl-C), it deletes the session, and nothing is published: run the same command again. The CLI names the session when it starts (`Upload session upl_... started; it lasts 24 hours.`), so you can tell runs apart. A session lasts 24 hours. An API without upload sessions makes the CLI stop with `This Userland API can't take a bundle over 16 MiB: it doesn't have upload sessions yet.` A bundle of 16 MiB or less is still one request, as before.
+
 ### Publish output
 
 `apps publish` starts with `Published <address>` only when the new release is live. A release can also be stored without going live: `activation_status` is then `pending_secrets` (a required secret is not set), `requires_migration` (a change to saved data needs a migration first), or `failed` (the server code could not be started). The output then starts with `Stored, not live`, one `Why:` line for each reason, what the app's address shows now, and the commands to run next:

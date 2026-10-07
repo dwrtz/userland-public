@@ -12,7 +12,10 @@ interface RequestRecord {
   url: string;
   authorization: string | undefined;
   accountId: string | undefined;
+  /** The JSON body; undefined for a body that isn't JSON (an uploaded file), whose bytes are in rawBody. */
   body: unknown;
+  rawBody: Buffer;
+  headers: IncomingMessage["headers"];
 }
 
 const servers: Array<{ close: () => Promise<void> }> = [];
@@ -3423,6 +3426,171 @@ describe("apps export", () => {
   });
 });
 
+describe("apps publish in an upload session (bundles over 16 MiB)", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+    await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+  const MIB = 1024 * 1024;
+  const manifest = { app: { name: "Big" }, runtime: { static_root: "public" } };
+  // 17 MiB in all: over the 16 MiB a single request holds, each file under the 20 MiB a file may be.
+  const big = "a".repeat(9 * MIB);
+  const video = "b".repeat(8 * MIB);
+  const files = { "public/index.html": "<h1>big</h1>", "public/big.bin": big, "public/media/intro video.mp4": video };
+  const live = { status: "published", app_id: "app_big", release_id: "rel_big", origin: "https://app_big.userland.link/", previous_release_id: "rel_old", activation: { status: "live", reasons: [], previous_release_id: "rel_old" } };
+  const session = (needed: string[], copied: string[] = []) => ({ __status: 201, upload_id: "up_1", app_id: "app_big", account_id: "acct_owner", expires_at: "2026-10-08T03:00:00.000Z", file_count: 3, total_bytes: 17 * MIB + 12, needed, copied });
+  const filePath = (releasePath: string) => `/v0/uploads/up_1/files/${releasePath.split("/").map(encodeURIComponent).join("/")}`;
+  const received = (releasePath: string, remaining: number) => ({ upload_id: "up_1", path: releasePath, size: Buffer.byteLength(files[releasePath as keyof typeof files]), sha256: sha256(files[releasePath as keyof typeof files]), remaining });
+
+  test("declares every file, sends only the ones Userland doesn't have, and commits with one key", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_big/uploads": session(["public/big.bin", "public/media/intro video.mp4"], ["public/index.html"]),
+      [`PUT ${filePath("public/big.bin")}`]: received("public/big.bin", 1),
+      [`PUT ${filePath("public/media/intro video.mp4")}`]: received("public/media/intro video.mp4", 0),
+      "POST /v0/uploads/up_1/commit": live
+    });
+
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation", "--message", "bigger"], api.baseUrl);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Published https://app_big.userland.link/");
+    expect(result.stdout).toContain("app_id=app_big\nrelease_id=rel_big\nprevious_release_id=rel_old\nactivation_status=live\nupload_id=up_1\nupload_files_sent=2\nupload_files_copied=1\n");
+    expect(result.stderr).toContain("The bundle is 17.0 MiB, more than one request holds (16 MiB), so it goes in an upload session.");
+    expect(result.stderr).toContain("Uploading 2 of 3 files; Userland already has the other 1.");
+    expect(requests.map((request) => `${request.method} ${request.url}`).sort()).toEqual(
+      ["POST /v0/apps/app_big/uploads", `PUT ${filePath("public/big.bin")}`, `PUT ${filePath("public/media/intro video.mp4")}`, "POST /v0/uploads/up_1/commit"].sort()
+    );
+    expect(requests.some((request) => request.url === "/v0/apps/app_big" && request.method === "PUT")).toBe(false);
+
+    // The publish body, with each file declared by size and SHA-256 instead of its bytes.
+    const declared = requests.find((request) => request.url === "/v0/apps/app_big/uploads")!.body as { app: unknown; message: string; files: Array<Record<string, unknown>> };
+    expect(declared.app).toEqual({ name: "Big" });
+    expect(declared.message).toBe("bigger");
+    expect(declared.files.sort((a, b) => String(a.path).localeCompare(String(b.path)))).toEqual([
+      { path: "public/big.bin", content_type: "application/octet-stream", size: 9 * MIB, sha256: sha256(big) },
+      { path: "public/index.html", content_type: "text/html; charset=utf-8", size: 12, sha256: sha256("<h1>big</h1>") },
+      { path: "public/media/intro video.mp4", content_type: "application/octet-stream", size: 8 * MIB, sha256: sha256(video) }
+    ]);
+
+    // Each needed file's raw bytes, with its SHA-256; never the copied one.
+    const sent = requests.find((request) => request.url === filePath("public/media/intro video.mp4"))!;
+    expect(sent.rawBody.equals(Buffer.from(video))).toBe(true);
+    expect(sent.headers["x-userland-sha256"]).toBe(sha256(video));
+    expect(sent.headers["content-type"]).toBe("application/octet-stream");
+    expect(sent.headers["content-length"]).toBe(String(8 * MIB));
+    const commit = requests.find((request) => request.url === "/v0/uploads/up_1/commit")!;
+    expect(String(commit.headers["idempotency-key"])).toMatch(/^cli-[0-9a-f]{32}$/u);
+  }, 60_000);
+
+  test("starts a new app's session in the selected account", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/uploads": session([], ["public/index.html", "public/big.bin", "public/media/intro video.mp4"]),
+      "POST /v0/uploads/up_1/commit": live
+    });
+    const result = await runCli(["apps", "publish", dir, "--skip-local-validation", "--account", "acct_owner"], api.baseUrl);
+    expect(result.code).toBe(0);
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /v0/uploads", "POST /v0/uploads/up_1/commit"]);
+    expect(requests[0].accountId).toBe("acct_owner");
+    expect(result.stdout).toContain("upload_files_sent=0\nupload_files_copied=3\n");
+  }, 60_000);
+
+  test("tries a file again after a rate limit, and sends what the commit says is missing before committing again with the same key", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_big/uploads": session(["public/big.bin"], ["public/index.html", "public/media/intro video.mp4"]),
+      [`PUT ${filePath("public/big.bin")}`]: [{ __status: 429, error: { code: "rate_limited", message: "Too many uploads." } }, received("public/big.bin", 0)],
+      [`PUT ${filePath("public/media/intro video.mp4")}`]: received("public/media/intro video.mp4", 0),
+      "POST /v0/uploads/up_1/commit": [
+        { __status: 409, error: { code: "upload_incomplete", message: "Files are missing.", details: { missing: ["public/media/intro video.mp4"] } } },
+        { __status: 409, error: { code: "upload_commit_in_progress", message: "Another commit is running." } },
+        live
+      ]
+    });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    expect(requests.filter((request) => request.url === filePath("public/big.bin"))).toHaveLength(2);
+    expect(requests.filter((request) => request.url === filePath("public/media/intro video.mp4"))).toHaveLength(1);
+    const keys = requests.filter((request) => request.url === "/v0/uploads/up_1/commit").map((request) => request.headers["idempotency-key"]);
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys).size).toBe(1);
+  }, 60_000);
+
+  test("says plainly when the API has no upload sessions, and sends nothing else", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "POST /v0/apps/app_big/uploads": { __status: 404, error: { code: "not_found", message: "Not found." } } });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("This Userland API can't take a bundle over 16 MiB: it doesn't have upload sessions yet.");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /v0/apps/app_big/uploads"]);
+  }, 60_000);
+
+  test("passes the API's refusal on as it is, for an app it can't find", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const api = await startMockApi([], { "POST /v0/apps/app_big/uploads": { __status: 404, error: { code: "not_found", message: "App not found." } } });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("API 404: App not found.");
+  }, 60_000);
+
+  test("gives the session up when a file is refused, and says when a session has ended", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_big/uploads": [session(["public/big.bin"]), session(["public/big.bin"])],
+      [`PUT ${filePath("public/big.bin")}`]: [
+        { __status: 409, error: { code: "sha256_mismatch", message: "The bytes don't match the declared SHA-256." } },
+        { __status: 404, error: { code: "upload_not_found", message: "This upload session has ended." } }
+      ],
+      "DELETE /v0/uploads/up_1": { upload_id: "up_1", status: "deleted" }
+    });
+    const refused = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("API 409: The bytes don't match the declared SHA-256.");
+    expect(requests.filter((request) => request.method === "DELETE").map((request) => request.url)).toEqual(["/v0/uploads/up_1"]);
+
+    const ended = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(ended.code).toBe(1);
+    expect(ended.stderr).toContain("The upload session ended before the publish finished (sessions last 24 hours). Run the same publish again; nothing was published.");
+    expect(requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+  }, 60_000);
+
+  test("gives the session up on Ctrl-C before the commit, and publishes nothing", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    // A file upload that takes a while, so the test can press Ctrl-C during it.
+    const slow = () => new Promise((resolve) => setTimeout(() => resolve(received("public/big.bin", 0)), 5000));
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_big/uploads": session(["public/big.bin"], ["public/index.html", "public/media/intro video.mp4"]),
+      [`PUT ${filePath("public/big.bin")}`]: slow,
+      "DELETE /v0/uploads/up_1": { upload_id: "up_1", deleted: true }
+    });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl, { interruptWhen: /Uploading 1 of 3 files/u });
+    expect(result.code).toBe(130);
+    expect(result.stderr).toContain("Upload session up_1 started; it lasts 24 hours.");
+    expect(result.stderr).toContain("Stopped before the publish finished: giving up upload session up_1. Nothing was published.");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("DELETE /v0/uploads/up_1");
+    expect(requests.some((request) => request.url.endsWith("/commit"))).toBe(false);
+  }, 60_000);
+
+  test("keeps one request for a bundle of 16 MiB or less", async () => {
+    const dir = await temporaryAppDir(manifest, { "public/index.html": "<h1>small</h1>", "public/big.bin": "c".repeat(16 * MIB - 14) });
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "PUT /v0/apps/app_big": live });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl);
+    expect(result.code).toBe(0);
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["PUT /v0/apps/app_big"]);
+    expect(result.stdout).not.toContain("upload_id=");
+  }, 60_000);
+});
+
 function accountsResponse(): Record<string, unknown> {
   return {
     accounts: [{ id: "acct_owner", account_id: "acct_owner", role: "owner", name: "Alice", owner_user_id: "usr_alice" }],
@@ -3557,7 +3725,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; tty?: boolean; env?: Record<string, string | undefined> } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; tty?: boolean; env?: Record<string, string | undefined>; interruptWhen?: RegExp } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
@@ -3595,7 +3763,15 @@ async function runCli(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    let interrupted = false;
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      // Ctrl-C, once the CLI has printed what the test waits for.
+      if (options.interruptWhen && !interrupted && options.interruptWhen.test(Buffer.concat(stderr).toString("utf8"))) {
+        interrupted = true;
+        child.kill("SIGINT");
+      }
+    });
     if (options.stdin !== undefined || options.tty) {
       child.stdin?.end(options.stdin ?? "");
     }
@@ -3665,8 +3841,10 @@ async function handleRequest(
   for await (const chunk of request) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  const rawBody = Buffer.concat(chunks).toString("utf8");
+  const bytes = Buffer.concat(chunks);
+  const rawBody = bytes.toString("utf8");
   const key = `${request.method ?? "GET"} ${request.url ?? "/"}`;
+  const isJson = String(request.headers["content-type"] ?? "application/json").includes("json");
   requests.push({
     method: request.method ?? "GET",
     url: request.url ?? "/",
@@ -3674,7 +3852,9 @@ async function handleRequest(
     accountId: Array.isArray(request.headers["x-userland-account-id"])
       ? request.headers["x-userland-account-id"][0]
       : request.headers["x-userland-account-id"],
-    body: rawBody ? JSON.parse(rawBody) : undefined
+    body: rawBody && isJson ? JSON.parse(rawBody) : undefined,
+    rawBody: bytes,
+    headers: request.headers
   });
 
   if (!(key in routes)) {
