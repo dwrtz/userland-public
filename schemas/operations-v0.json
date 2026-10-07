@@ -317,7 +317,7 @@
         "via": "tool",
         "tool": "api_keys_create",
         "status": "planned",
-        "note": "The new key is shown on a single-use Userland page, never in chat (decision 30). Keys made through a connector are never admin keys and die with the grant (decision 26)."
+        "note": "The new key is shown on a single-use Userland page, never in chat (decision 30). Keys made through a connector are never admin keys, and keep working after the connection ends, like keys made in the console (decision 26)."
       }
     },
     {
