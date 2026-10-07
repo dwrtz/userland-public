@@ -37,13 +37,13 @@ userland apps publish examples/server-notes
 
 ## Try it
 
-Open `https://<app-id>.apps.userland.fun/` and add a note, or use curl:
+Open `https://<app-id>.userland.link/` and add a note, or use curl:
 
 ```sh
-curl -X POST https://<app-id>.apps.userland.fun/api/notes \
+curl -X POST https://<app-id>.userland.link/api/notes \
   -H 'content-type: application/json' \
   --data '{"title":"First note","body":"Hello"}'
-curl https://<app-id>.apps.userland.fun/api/notes
+curl https://<app-id>.userland.link/api/notes
 ```
 
 The list returns up to 20 notes and, when there are more, a `cursor`. Pass it back as `?cursor=<cursor>` for the next page.

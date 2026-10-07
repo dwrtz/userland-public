@@ -164,7 +164,7 @@ userland validate <dir> --strict
 It checks:
 
 - `manifest.userland.json` against the published schema (`schemas/resource-manifest-v0.schema.json`), including auth, data collections, file stores, secrets, jobs, and webhooks, plus the cross-field rules the API applies (index fields must be declared, webhook job targets must exist, signed webhooks need a `secret`). A webhook's `provider` is `none`, `generic_hmac`, `github`, or `stripe`; every one but `none` is signed, and its `secret` names the secret that holds the signing key (for `stripe`, the signing secret Stripe shows for the endpoint, `whsec_...`). CLI 0.10.0 and earlier refuse `stripe` (`message=must be "none"` for the webhook's `provider`).
-- `runtime.embed_origins`, the other sites allowed to show the app in a frame on its `*.apps.userland.fun` addresses, with the API's rules and messages. Each entry is `https://`, a domain name, and an optional port, optionally starting with `*.` to cover subdomains (`https://www.example.com`, `https://*.example.com`), with no path or trailing slash. At most 20 entries, and no IP addresses, `localhost`, `*`, `'self'`, or Userland addresses (other apps, slugs, anything under `userland.fun` or `userland.link`, docs, the console, the API). Every bad entry gets its own `error=invalid_runtime_manifest` block (the API stops at the first). When the list is valid, the output shows the sites as the API stores them, in lowercase without repeats: `embed_origins=https://www.example.com,https://*.example.com`.
+- `runtime.embed_origins`, the other sites allowed to show the app in a frame on its `*.userland.link` addresses, with the API's rules and messages. Each entry is `https://`, a domain name, and an optional port, optionally starting with `*.` to cover subdomains (`https://www.example.com`, `https://*.example.com`), with no path or trailing slash. At most 20 entries, and no IP addresses, `localhost`, `*`, `'self'`, or Userland addresses (other apps, slugs, anything under `userland.fun` or `userland.link`, docs, the console, the API). Every bad entry gets its own `error=invalid_runtime_manifest` block (the API stops at the first). When the list is valid, the output shows the sites as the API stores them, in lowercase without repeats: `embed_origins=https://www.example.com,https://*.example.com`.
 - Release files and runtime paths: absolute paths, `..` segments, backslashes, `_userland/` paths, missing files, symlinks listed in `files`, private keys in the folder, `runtime.static_root` with no files, a `runtime.server_entry` that is not in the release, and per-file and bundle size caps. It warns about the dotfiles and symlinks a folder publish leaves out (see "What gets uploaded" below).
 - Plan limits from `schemas/plans-v0.json`: app-user auth, public signup, data collection and index counts, file stores and upload sizes, required secrets, scheduled jobs and schedules, webhooks and providers, and release file count and size.
 
@@ -181,7 +181,7 @@ plan=free
 plan_source=flag
 required_plan=starter
 release_files=7
-release_bytes=18224
+release_bytes=18216
 
 manifest_path=resources.webhooks
 feature=webhooks.enabled
@@ -288,7 +288,7 @@ Docs: https://docs.userland.fun/reference/limits/
   "manifest_file": "manifest.userland.json",
   "release": {
     "file_count": 7,
-    "bundle_bytes": 18224
+    "bundle_bytes": 18216
   },
   "embed_origins": []
 }
@@ -323,7 +323,7 @@ The Userland API remains authoritative. Local validation mirrors the API's manif
 ```text
 Stored, not live: this release is not serving yet.
 Why: Required secret STRIPE_SECRET_KEY is not set.
-The previous release (rel_old) is still live at https://<app_id>.apps.userland.fun/
+The previous release (rel_old) is still live at https://<app_id>.userland.link/
 Next: printf '%s' "$VALUE" | userland apps secrets set <app_id> STRIPE_SECRET_KEY
       or the owner adds it at https://console.userland.fun/apps/<app_id>/settings?add-key=STRIPE_SECRET_KEY
 Next: userland apps publish <dir> --app <app_id>
@@ -419,7 +419,7 @@ userland apps domains verify <app-id> <hostname> --account <account-id>
 userland apps domains remove <app-id> <hostname> --account <account-id>
 ```
 
-A slug is the app's short address on apps.userland.fun. When you remove one with `apps slugs remove`, or unpublish its app, the account keeps it for 30 days: any of the account's own apps can add it again, and another account that adds it gets `API 409` with `error=route_hostname_taken`, as for a short address in use. `apps slugs remove` prints the removed route, whose `verification=` line has `held_for_account_until`, when the hold ends. An account holds at most as many removed short addresses at a time as its plan includes, and at least one (`short_address_holds` in `accounts limits`); a short address removed past that is not kept, so anyone can add it at once, and its `verification=` line has no `held_for_account_until`. Unpublishing an app also removes its short addresses and custom domains that a smaller plan or an unpaid invoice turned off, so there is no need to remove them first, and keeps such a short address the same way, after the working ones: when the account can't keep them all, the working ones are kept first. A short address or custom domain that Userland support turned off stays with the unpublished app until support turns it back on or releases it, and its name can't be added to another app. Publishing the app again with its app id brings back none of the ones unpublishing removed: add them again.
+A slug is the app's short address on userland.link. When you remove one with `apps slugs remove`, or unpublish its app, the account keeps it for 30 days: any of the account's own apps can add it again, and another account that adds it gets `API 409` with `error=route_hostname_taken`, as for a short address in use. `apps slugs remove` prints the removed route, whose `verification=` line has `held_for_account_until`, when the hold ends. An account holds at most as many removed short addresses at a time as its plan includes, and at least one (`short_address_holds` in `accounts limits`); a short address removed past that is not kept, so anyone can add it at once, and its `verification=` line has no `held_for_account_until`. Unpublishing an app also removes its short addresses and custom domains that a smaller plan or an unpaid invoice turned off, so there is no need to remove them first, and keeps such a short address the same way, after the working ones: when the account can't keep them all, the working ones are kept first. A short address or custom domain that Userland support turned off stays with the unpublished app until support turns it back on or releases it, and its name can't be added to another app. Publishing the app again with its app id brings back none of the ones unpublishing removed: add them again.
 
 A custom domain's route line and its `verification=` line are followed by the DNS records the owner adds at their DNS provider, and what Userland's last check found:
 
@@ -553,7 +553,7 @@ When an account is selected (with `--account`, `USERLAND_ACCOUNT_ID`, or the acc
 Output:
 
 ```text
-Unpublished Old test app (https://<app_id>.apps.userland.fun/)
+Unpublished Old test app (https://<app_id>.userland.link/)
 app_id=<app_id>
 status=unpublished
 deleted_at=2026-09-28T00:00:00.000Z
@@ -606,7 +606,7 @@ userland apps invites create <app-id> --email <email> --role owner --account <ac
 ```
 
 ```text
-https://<app_id>.apps.userland.fun/_userland/auth/invite/<invite_id>?token=inv_...
+https://<app_id>.userland.link/_userland/auth/invite/<invite_id>?token=inv_...
 ```
 
 The person opens the link, sets a password, and can then sign in to the app with the roles you gave them. An invite is only for someone who does not have an account in the app yet: the command still prints a link for an email that already has one, but setting a password on it fails with "An app user already exists for this email." (`409 user_exists`) and gives no new role, and the person keeps the password and roles they have. There is no command yet to change the roles of someone who already has an account in the app. People who are invited become users of that app only: the invite does not add them to your Userland account or let them use the CLI or API. Give the link only to that person, because whoever has it can use it once to set the password.

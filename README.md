@@ -101,4 +101,4 @@ The CLI starts a browser device-authorization flow for login and signup, then ke
 - Use `ctx.secrets` only from server runtime code.
 - Do not publish files under `_userland/`.
 - Do not invent platform internals or raw infrastructure config.
-- Use app origins like `https://<app_id>.apps.userland.fun/`.
+- Use app origins like `https://<app_id>.userland.link/`.

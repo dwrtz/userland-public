@@ -2,7 +2,7 @@
 
 A niche job board with public listings, search and category filters, an employer "Post a job" form, and an owner review queue. The example is dressed as **Loamwork**, a made-up board for farm and food jobs in the Pacific Northwest. Rename it, recolor it, and swap the categories to fit your community.
 
-- Live demo: https://job-board-demo.apps.userland.fun/
+- Live demo: https://job-board-demo.userland.link/
 - Walkthrough and copyable prompt: https://userland.fun/examples/job-board/
 - Plan: runs on the **Free** plan. See [Plan notes](#plan-notes).
 
@@ -117,7 +117,7 @@ Publish updates with `userland apps publish examples/job-board --app "$APP_ID" -
 
 ## Demo mode
 
-The public demo lets anyone try the owner side without signing in. That code lives in `server/demo.js` and only switches on for the demo's two addresses, `job-board-demo.apps.userland.fun` and `4fz14jppml2y13cxqx1.apps.userland.fun` (`DEMO_HOSTS` in `demo.js`), so a copy published anywhere else always requires the owner sign-in.
+The public demo lets anyone try the owner side without signing in. That code lives in `server/demo.js` and only switches on for the demo's two addresses, `job-board-demo.userland.link` and `4fz14jppml2y13cxqx1.userland.link` (`DEMO_HOSTS` in `demo.js`), so a copy published anywhere else always requires the owner sign-in.
 
 How the demo keeps visitors apart: sample listings live in `demo.js`, not in your data. The first time a visitor posts a job or makes an owner change, they get a random key that stays in their page links (`?demo=...`). Userland only passes its own sign-in cookie through to server code, so a link key is used instead of a cookie. The visitor's listings, and their changes to sample listings, are saved in the `demo-listings` collection under that key. They stop showing after a day and are deleted the next time anyone uses the demo, up to five at a time on each page view or change, which keeps each request to a handful of data calls. Nobody without the key sees them. Anyone the visitor shares a link with gets the same key, so the banner says so.
 
@@ -138,7 +138,7 @@ The "removing the demo" test in `tests/job-board.test.ts` runs steps 1 to 3 on a
 
 The manifest fits the Free plan: server routes, app-user auth with one role, and two data collections (one if you remove the demo). Things that need a paid plan:
 
-- Your own domain, or a short address like `yourboard.apps.userland.fun`: Starter.
+- Your own domain, or a short address like `yourboard.userland.link`: Starter.
 - App Analytics (visits, top pages, referrers) in the console: Starter.
 - Free includes 1,000 saved rows per app (demo rows count too if you keep demo mode) and 10,000 requests a month across your whole account. Listings stay saved after they're declined or filled, so delete old ones from the owner page now and then. If the board does fill up, posting shows a "new listings are paused" page and the owner page says how to make room. A busy board will want Starter.
 
@@ -153,7 +153,7 @@ The manifest fits the Free plan: server routes, app-user auth with one role, and
 - Email addresses may only use letters, digits, and `. _ + ' -` before the `@`, so an apply address can't slip extra recipients (like `?bcc=`) into the "Email the employer" link.
 - All visitor text is escaped before it goes on a page, and pages send a strict Content Security Policy.
 - New listings stay off the board until the owner approves them.
-- Every form post must come from the board's own pages (the `Origin` header has to match), so a page on another site, including other `*.apps.userland.fun` apps, can't approve, edit, or delete listings while you're signed in.
+- Every form post must come from the board's own pages (the `Origin` header has to match), so a page on another site, including other `*.userland.link` apps, can't approve, edit, or delete listings while you're signed in.
 
 ## Test
 

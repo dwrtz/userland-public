@@ -10,7 +10,7 @@ A small shop: admins add products, signed-in customers place orders, and Stripe 
 - Stock: an order can't ask for more than a product's `inventory_count`, and stock goes down when the payment is confirmed. Shoppers see "Sold out", not the exact count.
 - A customer can have at most 5 unpaid checkouts open at once.
 - The product list comes 50 at a time with a "Show more" button.
-- Shop actions only work from the shop's own pages. Another site, including another app on `apps.userland.fun`, cannot post to them on a signed-in admin's or customer's behalf.
+- Shop actions only work from the shop's own pages. Another site, including another app on `userland.link`, cannot post to them on a signed-in admin's or customer's behalf.
 - A public `product-images` file store.
 - Two server-only secrets for Stripe.
 - A Stripe webhook: Userland checks Stripe's signature, then hands the payment event to a background job.
@@ -66,7 +66,7 @@ It prints the invite link; give it only to that person. `apps invites create` ne
 Stripe sends payment events straight to:
 
 ```text
-https://<app-id>.apps.userland.fun/_userland/webhooks/checkout
+https://<app-id>.userland.link/_userland/webhooks/checkout
 ```
 
 In Stripe's webhook settings, add this address as an endpoint and choose the events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, and `checkout.session.async_payment_failed`. Stripe then shows the endpoint's signing secret (`whsec_...`): save it as `CHECKOUT_WEBHOOK_SECRET` and publish again, as above.

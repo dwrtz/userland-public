@@ -12,7 +12,7 @@ The example uses a stand-in model call that spends nothing. Replace `callMockMod
 - One server route, `/api/run`, that takes a prompt and returns an answer of at most 4,000 characters.
 - A `MODEL_API_KEY` secret that only server code can read. It is never sent to the browser, returned, or logged.
 - Provider errors are logged by status and code only. Visitors get a plain `model_unavailable` error, never the provider's message, which can quote part of the key or your billing state.
-- `/api/run` only accepts JSON from the app's own page. Another site, including another app on `apps.userland.fun`, gets a `403`, and plain form posts get a `415`.
+- `/api/run` only accepts JSON from the app's own page. Another site, including another app on `userland.link`, gets a `403`, and plain form posts get a `415`.
 
 ## Plan
 
@@ -42,7 +42,7 @@ Always pass `--app <app-id>` when publishing again. Without it, the CLI creates 
 ## Try it
 
 ```sh
-curl -X POST https://<app-id>.apps.userland.fun/api/run \
+curl -X POST https://<app-id>.userland.link/api/run \
   -H 'content-type: application/json' \
   --data '{"prompt":"Summarize this"}'
 ```
