@@ -9,6 +9,24 @@ import { Writable } from "node:stream";
 import { contentTypeForPath, csvRow, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
 import {
+  OLD_API_MESSAGE,
+  SESSION_EXPIRED_MESSAGE,
+  STAGED_PUBLISH_THRESHOLD_BYTES,
+  UPLOAD_ATTEMPTS,
+  UPLOAD_CONCURRENCY,
+  bundleBytes,
+  checkedSession,
+  hashFiles,
+  mapLimit,
+  mebibytes,
+  readDeclaredFile,
+  retryDelayMs,
+  uploadFilePath,
+  type HashedUploadFile,
+  type UploadFile,
+  type UploadSessionAnswer
+} from "./uploadSession.js";
+import {
   analyzeAppDirectory,
   applyPlan,
   findManifest,
@@ -462,14 +480,17 @@ class ApiError extends Error {
   readonly code: string | undefined;
   readonly details: unknown;
   readonly body: unknown;
+  /** The answer's Retry-After header, for the requests the CLI tries again (upload sessions). */
+  readonly retryAfter: string | null;
 
-  constructor(message: string, status: number, code: string | undefined, details: unknown, body: unknown) {
+  constructor(message: string, status: number, code: string | undefined, details: unknown, body: unknown, retryAfter: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.details = details;
     this.body = body;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -1191,11 +1212,19 @@ async function publishCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const body = await readPublishDirectory(dir, options);
-  const response = await apiFetch<PublishResponse>(publishPath, {
-    method: "PUT",
-    body: JSON.stringify(body)
-  }, { accountId: options.account, accountScoped: true });
+  const prepared = await readPublishDirectory(dir, options);
+  // A bundle over 16 MiB doesn't fit one JSON request: it goes through an upload session instead.
+  const staged = bundleBytes(prepared.files) > STAGED_PUBLISH_THRESHOLD_BYTES;
+  const published = staged
+    ? await publishThroughUploadSession(prepared, options)
+    : {
+        response: await apiFetch<PublishResponse>(publishPath, {
+          method: "PUT",
+          body: JSON.stringify(await inlinePublishBody(prepared))
+        }, { accountId: options.account, accountScoped: true }),
+        upload: null
+      };
+  const response = published.response;
 
   const consoleUrl = await consoleUrlForLinks();
   for (const line of publishSummaryLines(response, { dir, account: options.account, consoleUrl })) {
@@ -1207,6 +1236,113 @@ async function publishCommand(args: string[]): Promise<void> {
   console.log(`activation_status=${response.activation.status}`);
   if (response.activation.reasons.length > 0) {
     console.log(`activation_reasons=${response.activation.reasons.join("; ")}`);
+  }
+  if (published.upload) {
+    console.log(`upload_id=${terminalSafe(published.upload.uploadId)}`);
+    console.log(`upload_files_sent=${published.upload.sent}`);
+    console.log(`upload_files_copied=${published.upload.copied}`);
+  }
+}
+
+/**
+ * A bundle over STAGED_PUBLISH_THRESHOLD_BYTES, published in steps (uploadSession.ts): declare every file
+ * with its size and SHA-256, send the bytes of the ones Userland doesn't already have, then commit. The
+ * commit answers exactly as `PUT /v0/apps` does, so the output is the same.
+ */
+async function publishThroughUploadSession(prepared: PreparedPublish, options: CliOptions): Promise<{ response: PublishResponse; upload: { uploadId: string; sent: number; copied: number } }> {
+  const total = bundleBytes(prepared.files);
+  console.error(`The bundle is ${mebibytes(total)}, more than one request holds (16 MiB), so it goes in an upload session.`);
+  const files = await hashFiles(prepared.files);
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const createPath = options.app !== undefined ? `/v0/apps/${pathSegment(options.app, "app id")}/uploads` : "/v0/uploads";
+  let session: UploadSessionAnswer;
+  try {
+    const answer = await apiFetch<unknown>(
+      createPath,
+      { method: "POST", body: JSON.stringify({ ...prepared.body, files: files.map((file) => ({ path: file.path, content_type: file.content_type, size: file.size, sha256: file.sha256 })) }) },
+      { accountId: options.account, accountScoped: true, raw: true }
+    );
+    session = checkedSession(answer, new Set(byPath.keys()));
+  } catch (error) {
+    // An API without upload sessions answers its plain "Not found." for the route, never "App not found.".
+    if (error instanceof ApiError && (error.status === 405 || (error.status === 404 && isPlainObject(error.body) && parseApiError(error.body).message === "Not found."))) {
+      throw new Error(OLD_API_MESSAGE);
+    }
+    throw error;
+  }
+
+  const sessionPath = `/v0/uploads/${encodeURIComponent(session.upload_id)}`;
+  const send = async (paths: readonly string[]) => {
+    let done = 0;
+    await mapLimit(paths, UPLOAD_CONCURRENCY, async (filePath) => {
+      const file = byPath.get(filePath) as HashedUploadFile;
+      await uploadRequest(uploadFilePath(session.upload_id, file.path), async () => ({
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream", "x-userland-sha256": file.sha256 },
+        body: await readDeclaredFile(file).then((bytes) => new Uint8Array(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength))
+      }));
+      done += 1;
+      if (done === paths.length || done % 10 === 0) console.error(`Uploaded ${done} of ${paths.length} files.`);
+    });
+  };
+
+  try {
+    if (session.needed.length > 0) {
+      console.error(`Uploading ${session.needed.length} of ${files.length} files; Userland already has the other ${files.length - session.needed.length}.`);
+    }
+    await send(session.needed);
+
+    // One key for this commit, kept across retries: committing again answers with the stored result.
+    const idempotencyKey = `cli-${randomBytes(16).toString("hex")}`;
+    const commit = async () => await uploadRequest<PublishResponse>(`${sessionPath}/commit`, async () => ({ method: "POST", headers: { "idempotency-key": idempotencyKey } }));
+    let response: PublishResponse;
+    try {
+      response = await commit();
+    } catch (error) {
+      // A file the session doesn't have after all (it lists them): send those, then commit again, once.
+      const missing = error instanceof ApiError && error.code === "upload_incomplete" ? missingPaths(error.details, byPath) : null;
+      if (!missing) throw error;
+      await send(missing);
+      response = await commit();
+    }
+    return { response: terminalSafeValue(response), upload: { uploadId: session.upload_id, sent: session.needed.length, copied: files.length - session.needed.length } };
+  } catch (error) {
+    // Nothing was published: give the session up, so what it was sent stops counting toward file storage.
+    // A session that already ended, or was committed, is left alone.
+    if (!(error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) && !(error instanceof ApiError && error.code === "upload_committed")) {
+      await apiFetch(sessionPath, { method: "DELETE" }, { raw: true }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+/** The paths a 409 upload_incomplete lists as missing, when they're all files this publish declared. */
+function missingPaths(details: unknown, declared: ReadonlyMap<string, HashedUploadFile>): string[] | null {
+  const missing = isPlainObject(details) && Array.isArray(details.missing) ? details.missing : null;
+  if (!missing || missing.length === 0 || !missing.every((item): item is string => typeof item === "string" && declared.has(item))) return null;
+  return missing;
+}
+
+/**
+ * One upload-session request, tried again after a rate limit (429), a server error (5xx) or a lost
+ * connection, up to UPLOAD_ATTEMPTS times: sending a file again and committing again with the same key
+ * are both safe. A session that ended (404 upload_not_found) gets its own words. `init` is built for each
+ * try, so a file is read again rather than kept for every retry.
+ */
+async function uploadRequest<T>(apiPath: string, init: () => Promise<RequestInit>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await apiFetch<T>(apiPath, await init(), { raw: true });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "upload_not_found") {
+        throw new Error(SESSION_EXPIRED_MESSAGE);
+      }
+      // A commit another request is still running finishes or is taken over: wait and ask again.
+      const retryable = error instanceof ApiError ? error.status === 429 || error.status >= 500 || error.code === "upload_commit_in_progress" : error instanceof TypeError;
+      if (!retryable || attempt >= UPLOAD_ATTEMPTS) throw error;
+      const retryAfter = error instanceof ApiError ? error.retryAfter : null;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt, retryAfter)));
+    }
   }
 }
 
@@ -2534,7 +2670,13 @@ function printOptionalBoolean(label: string, value: unknown): void {
   }
 }
 
-async function readPublishDirectory(rootDir: string, options: CliOptions): Promise<Record<string, unknown>> {
+/** A publish body before its files are attached: inline as base64, or declared for an upload session. */
+interface PreparedPublish {
+  body: Record<string, unknown>;
+  files: UploadFile[];
+}
+
+async function readPublishDirectory(rootDir: string, options: CliOptions): Promise<PreparedPublish> {
   const absoluteRoot = path.resolve(rootDir);
   const stat = await fs.stat(absoluteRoot).catch(() => null);
   if (!stat?.isDirectory()) {
@@ -2554,13 +2696,27 @@ async function readPublishDirectory(rootDir: string, options: CliOptions): Promi
   const provenance = objectValue(manifest.provenance) ?? {};
 
   return {
-    app,
-    runtime,
-    resources,
-    files,
-    message: options.message ?? stringValue(manifest.message),
-    provenance
+    body: {
+      app,
+      runtime,
+      resources,
+      message: options.message ?? stringValue(manifest.message),
+      provenance
+    },
+    files
   };
+}
+
+/** The single-request publish body: every file inline as base64. */
+async function inlinePublishBody(prepared: PreparedPublish): Promise<Record<string, unknown>> {
+  const files: Array<{ path: string; content_type: string; content_base64: string }> = [];
+  for (const file of prepared.files) {
+    const contents = await fs.readFile(file.absolutePath, { flag: READ_WITHOUT_FOLLOWING_LINKS });
+    files.push({ path: file.path, content_type: file.content_type, content_base64: contents.toString("base64") });
+  }
+  // The same key order as before upload sessions: app, runtime, resources, files, message, provenance.
+  const { app, runtime, resources, message, provenance } = prepared.body;
+  return { app, runtime, resources, files, message, provenance };
 }
 
 const READ_WITHOUT_FOLLOWING_LINKS = fsConstants.O_NOFOLLOW === undefined ? "r" : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
@@ -2575,7 +2731,7 @@ async function readReleaseFiles(
   manifest: Record<string, unknown>,
   manifestFile: string | null,
   output: { printSkipped: boolean }
-): Promise<Array<{ path: string; content_type: string; content_base64: string }>> {
+): Promise<UploadFile[]> {
   if (Array.isArray(manifest.files)) {
     manifest.files.forEach((entry) => {
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
@@ -2595,17 +2751,20 @@ async function readReleaseFiles(
       console.error(formatWarning(warning));
     }
   }
-  const files: Array<{ path: string; content_type: string; content_base64: string }> = [];
+  const files: UploadFile[] = [];
   for (const entry of listing.files) {
     const problem = await releaseFileProblem(rootDir, entry.path);
     if (!problem.ok) {
       throw new Error(`Not publishing: ${entry.path} ${problem.message}`);
     }
-    const contents = await fs.readFile(entry.absolutePath, { flag: READ_WITHOUT_FOLLOWING_LINKS });
+    // Read later, without following links: inline as base64, or sent to an upload session.
+    const handle = await fs.open(entry.absolutePath, READ_WITHOUT_FOLLOWING_LINKS);
+    const size = await handle.stat().then((stat) => stat.size).finally(() => handle.close());
     files.push({
       path: entry.path,
       content_type: entry.contentType ?? contentTypeForPath(entry.path),
-      content_base64: contents.toString("base64")
+      absolutePath: entry.absolutePath,
+      size
     });
   }
 
@@ -2826,12 +2985,12 @@ async function requestJson<T>(baseUrl: string, apiPath: string, init: RequestIni
   try {
     body = text ? (JSON.parse(text) as unknown) : undefined;
   } catch {
-    throw new ApiError(`API ${response.status}: the response was not JSON.`, response.status, undefined, undefined, undefined);
+    throw new ApiError(`API ${response.status}: the response was not JSON.`, response.status, undefined, undefined, undefined, response.headers.get("retry-after"));
   }
   if (!response.ok) {
     const message = errorMessage(body) ?? response.statusText;
     const parsed = isPlainObject(body) ? parseApiError(body) : {};
-    throw new ApiError(`API ${response.status}: ${message}`, response.status, parsed.code, parsed.details, body);
+    throw new ApiError(`API ${response.status}: ${message}`, response.status, parsed.code, parsed.details, body, response.headers.get("retry-after"));
   }
 
   return body as T;
@@ -3705,6 +3864,9 @@ Publishing a folder:
   stored but not live (activation_status pending_secrets, requires_migration, or failed) prints
   "Stored, not live" with the reasons and the commands to run next, and still exits 0: run those
   commands, then publish again with --app <app-id>. Publishing without --app creates a second app.
+  A bundle over 16 MiB goes in an upload session: the CLI sends only the files Userland doesn't
+  already have (same size and SHA-256 in the live or a kept release), then publishes them as one
+  release, with the same output and upload_id= upload_files_sent= upload_files_copied= lines.
 
 Downloading an app:
   apps download (or apps pull) writes the live version, or --version <release-id> from apps releases,

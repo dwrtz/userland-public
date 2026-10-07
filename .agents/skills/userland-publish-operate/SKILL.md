@@ -54,7 +54,7 @@ userland apps unpublish <app-id> --yes [--account <account-id>]
 userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>]
 ```
 
-If `secrets list`, `secrets delete`, `invites create`, `apps download`, `apps export`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`.
+If `secrets list`, `secrets delete`, `invites create`, `apps download`, `apps export`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`. A bundle over 16 MiB needs CLI 0.13.0 or later, which publishes it in an upload session by itself (more lines at the end of the output: `upload_id=`, `upload_files_sent=`, `upload_files_copied=`); an older CLI sends it in one request, which the API can refuse, so update first.
 
 `apps events` prints the newest events first. When there are more, the last line is `cursor=<cursor>`; run the same command again with `--cursor <cursor>` to read the next, older page.
 
