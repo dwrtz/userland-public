@@ -2,8 +2,8 @@
   "$schema": "https://docs.userland.fun/schemas/operations-v0.schema.json",
   "version": "v0",
   "cli_source": {
-    "cli_version": "0.12.0",
-    "public_commit": "3bdb05a2d7eab2410e58bb32337f4826840d4966"
+    "cli_version": "0.13.0",
+    "public_commit": "99626a90da6a54f2b9e0678a6ee2895aeb843a6d"
   },
   "environment": [
     {
