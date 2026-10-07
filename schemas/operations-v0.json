@@ -2298,7 +2298,7 @@
           "required": false,
           "takes_value": true,
           "role": "interface",
-          "description": "The folder to save into; without it, <app-id>-data. MCP reads the same pages, or makes the saved data download and hands back its link, instead."
+          "description": "The folder to save into; without it, <app-id>-data. MCP reads the same pages, or points the person to the console to download all the saved data, instead."
         },
         {
           "cli": "--collection",
@@ -2388,7 +2388,7 @@
         "via": "tool",
         "tool": "apps_export",
         "status": "planned",
-        "note": "With collection, reads the same pages, one per call. Without, reports each collection's record count and how many people sign in, and makes the saved data download (POST /v0/apps/:app_id/exports, 255b), handing back a 15-minute link to its zip once it's ready (250p).",
+        "note": "With collection, reads the same pages, one per call. Without, reports each collection's record count and how many people sign in, and gives the address of the app's Settings in the Userland console, where the person downloads all the saved data with their own session (the zip never passes through the chat, and the API refuses a connection there: download-export-paste-1).",
         "extra_inputs": [
           {
             "name": "cursor",
