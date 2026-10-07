@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { allSkillProblems, loadInventory, loadSkills } from "./skill-operations.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const skillsRoot = path.join(root, ".agents", "skills");
@@ -32,6 +33,10 @@ for (const skill of catalog.skills) {
   }
   if (body.includes("TODO") || body.includes("example.com")) throw new Error(`${skill.name}: contains placeholder text.`);
 }
+
+// Their commands, options and connector tools, against the shared operation inventory (scripts/skill-operations.ts).
+const operationProblems = allSkillProblems(await loadInventory(), await loadSkills());
+if (operationProblems.length > 0) throw new Error(`Skills don't match schemas/operations-v0.json:\n${operationProblems.join("\n")}`);
 
 console.log(`Validated ${catalog.skills.length} skills.`);
 

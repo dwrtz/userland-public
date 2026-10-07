@@ -34,7 +34,7 @@ Outputs:
 1. Read `catalog.json` to choose an example by capability, difficulty, and `required_plan`. Each entry also lists `paid_features`, the manifest features that need more than the Free plan. Check your plan with `userland accounts limits`.
 2. Open the matching example directory.
 3. Read the example `README.md` and `AGENT.md`.
-4. Use the repo-scoped skills in `.agents/skills` when working in Codex.
+4. Use the skills in `.agents/skills` when working in this repo. The same skills, with the Userland connector, are packaged as the Userland plugin for Claude Code and Codex in [`plugins/userland`](plugins/userland/README.md). `npm run plugin:build` copies the skills into it.
 5. Validate before publishing. `userland validate <dir> --plan <plan>` checks the manifest, files, and plan limits offline; `apps publish` runs the same checks first.
 
 ```sh
@@ -46,11 +46,12 @@ npm test
 npm run validate:catalog
 npm run validate:manifests
 npm run validate:skills
+npm run validate:plugin
 ```
 
 ## Repository policy
 
-This repo is canonical for user-facing examples, repo-scoped Codex skills, and the launch public CLI source. The main Userland monorepo may keep smaller platform test fixtures, but docs catalogs and agent workflows should point here.
+This repo is canonical for user-facing examples, the agent skills and the Userland plugin, and the launch public CLI source. The main Userland monorepo may keep smaller platform test fixtures, but docs catalogs and agent workflows should point here.
 
 During this phase, `cli/` is the public CLI source of truth. CLI changes should land here with `npm run typecheck`, `npm run cli:test`, and `npm test` passing, then the main Userland docs should be updated in the same release window.
 

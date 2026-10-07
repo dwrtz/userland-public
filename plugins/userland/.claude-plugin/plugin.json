@@ -1,0 +1,14 @@
+{
+  "name": "userland",
+  "version": "0.1.0",
+  "description": "Build, publish and run apps for your business on Userland: skills for each step, and the Userland connector to do it.",
+  "author": {
+    "name": "Userland",
+    "email": "support@userland.fun",
+    "url": "https://userland.fun/"
+  },
+  "homepage": "https://docs.userland.fun/",
+  "repository": "https://github.com/dwrtz/userland-public",
+  "license": "MIT",
+  "keywords": ["userland", "apps", "publish", "hosting", "small business"]
+}
