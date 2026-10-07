@@ -332,7 +332,7 @@ upload_files_sent=2
 upload_files_copied=41
 ```
 
-The CLI tries a file or the commit again after a rate limit, a server error or a lost connection, and the commit carries one `Idempotency-Key`, so trying it again never publishes twice. If the publish stops before the commit (a file was refused, or the CLI gave up), it deletes the session, and nothing is published: run the same command again. A session lasts 24 hours. An API without upload sessions makes the CLI stop with `This Userland API can't take a bundle over 16 MiB: it doesn't have upload sessions yet.` A bundle of 16 MiB or less is still one request, as before.
+The CLI tries a file or the commit again after a rate limit, a server error or a lost connection, and the commit carries one `Idempotency-Key`, so trying it again never publishes twice. If the publish stops before the commit (a file was refused, the CLI gave up, or you pressed Ctrl-C), it deletes the session, and nothing is published: run the same command again. The CLI names the session when it starts (`Upload session upl_... started; it lasts 24 hours.`), so you can tell runs apart. A session lasts 24 hours. An API without upload sessions makes the CLI stop with `This Userland API can't take a bundle over 16 MiB: it doesn't have upload sessions yet.` A bundle of 16 MiB or less is still one request, as before.
 
 ### Publish output
 

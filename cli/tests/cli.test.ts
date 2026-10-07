@@ -3562,6 +3562,24 @@ describe("apps publish in an upload session (bundles over 16 MiB)", () => {
     expect(requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
   }, 60_000);
 
+  test("gives the session up on Ctrl-C before the commit, and publishes nothing", async () => {
+    const dir = await temporaryAppDir(manifest, files);
+    const requests: RequestRecord[] = [];
+    // A file upload that takes a while, so the test can press Ctrl-C during it.
+    const slow = () => new Promise((resolve) => setTimeout(() => resolve(received("public/big.bin", 0)), 5000));
+    const api = await startMockApi(requests, {
+      "POST /v0/apps/app_big/uploads": session(["public/big.bin"], ["public/index.html", "public/media/intro video.mp4"]),
+      [`PUT ${filePath("public/big.bin")}`]: slow,
+      "DELETE /v0/uploads/up_1": { upload_id: "up_1", deleted: true }
+    });
+    const result = await runCli(["apps", "publish", dir, "--app", "app_big", "--skip-local-validation"], api.baseUrl, { interruptWhen: /Uploading 1 of 3 files/u });
+    expect(result.code).toBe(130);
+    expect(result.stderr).toContain("Upload session up_1 started; it lasts 24 hours.");
+    expect(result.stderr).toContain("Stopped before the publish finished: giving up upload session up_1. Nothing was published.");
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toContain("DELETE /v0/uploads/up_1");
+    expect(requests.some((request) => request.url.endsWith("/commit"))).toBe(false);
+  }, 60_000);
+
   test("keeps one request for a bundle of 16 MiB or less", async () => {
     const dir = await temporaryAppDir(manifest, { "public/index.html": "<h1>small</h1>", "public/big.bin": "c".repeat(16 * MIB - 14) });
     const requests: RequestRecord[] = [];
@@ -3707,7 +3725,7 @@ async function expectCommand(args: string[], baseUrl: string, stdoutNeedle: stri
 async function runCli(
   args: string[],
   apiBaseUrl: string,
-  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; tty?: boolean; env?: Record<string, string | undefined> } = {}
+  options: { accountId?: string; apiKey?: string | null; credentialsFile?: string; stdin?: string; tty?: boolean; env?: Record<string, string | undefined>; interruptWhen?: RegExp } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const credentialsFile = options.credentialsFile ?? (await temporaryCredentialsFile());
   return await new Promise((resolve) => {
@@ -3745,7 +3763,15 @@ async function runCli(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    let interrupted = false;
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      // Ctrl-C, once the CLI has printed what the test waits for.
+      if (options.interruptWhen && !interrupted && options.interruptWhen.test(Buffer.concat(stderr).toString("utf8"))) {
+        interrupted = true;
+        child.kill("SIGINT");
+      }
+    });
     if (options.stdin !== undefined || options.tty) {
       child.stdin?.end(options.stdin ?? "");
     }

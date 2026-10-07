@@ -1286,11 +1286,27 @@ async function publishThroughUploadSession(prepared: PreparedPublish, options: C
     });
   };
 
+  console.error(`Upload session ${terminalSafe(session.upload_id)} started; it lasts 24 hours.`);
+  // Ctrl-C (or a stop signal) before the commit gives the session up, so what it was sent stops counting toward
+  // file storage at once rather than after 24 hours. Nothing was published.
+  let committing = false;
+  const stop = (signal: NodeJS.Signals) => {
+    if (committing) return;
+    console.error(`Stopped before the publish finished: giving up upload session ${terminalSafe(session.upload_id)}. Nothing was published.`);
+    void apiFetch(sessionPath, { method: "DELETE" }, { raw: true })
+      .catch(() => undefined)
+      .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+
   try {
     if (session.needed.length > 0) {
       console.error(`Uploading ${session.needed.length} of ${files.length} files; Userland already has the other ${files.length - session.needed.length}.`);
     }
     await send(session.needed);
+    // From here the release may be published: a stop signal no longer gives the session up.
+    committing = true;
 
     // One key for this commit, kept across retries: committing again answers with the stored result.
     const idempotencyKey = `cli-${randomBytes(16).toString("hex")}`;
@@ -1307,12 +1323,16 @@ async function publishThroughUploadSession(prepared: PreparedPublish, options: C
     }
     return { response: terminalSafeValue(response), upload: { uploadId: session.upload_id, sent: session.needed.length, copied: files.length - session.needed.length } };
   } catch (error) {
+    committing = true;
     // Nothing was published: give the session up, so what it was sent stops counting toward file storage.
     // A session that already ended, or was committed, is left alone.
     if (!(error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) && !(error instanceof ApiError && error.code === "upload_committed")) {
       await apiFetch(sessionPath, { method: "DELETE" }, { raw: true }).catch(() => undefined);
     }
     throw error;
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
   }
 }
 
