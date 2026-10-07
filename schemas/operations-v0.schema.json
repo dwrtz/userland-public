@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.userland.fun/schemas/operations-v0.schema.json",
   "title": "Userland CLI operation inventory",
-  "description": "Every public CLI operation, its inputs, the API routes it calls and its MCP counterpart.",
+  "description": "Every public CLI operation, its inputs, the API routes it calls and its MCP counterpart, and the MCP server's tools with no CLI operation.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,8 @@
     "version",
     "cli_source",
     "environment",
-    "operations"
+    "operations",
+    "mcp_tools"
   ],
   "properties": {
     "$schema": {
@@ -309,6 +310,40 @@
                   "note": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "extra_inputs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "name",
+                        "type",
+                        "required",
+                        "description"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]*$"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "integer",
+                            "boolean"
+                          ]
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "description": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
                   }
                 }
               },
@@ -360,6 +395,111 @@
                 }
               }
             ]
+          }
+        }
+      }
+    },
+    "mcp_tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool",
+          "title",
+          "summary",
+          "effect",
+          "inputs",
+          "api"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write",
+              "destructive"
+            ]
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "type",
+                "required",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                },
+                "type": {
+                  "enum": [
+                    "string",
+                    "integer",
+                    "boolean"
+                  ]
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "api": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "method",
+                "path",
+                "when",
+                "account_header"
+              ],
+              "properties": {
+                "method": {
+                  "enum": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE"
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "pattern": "^/v0(/(:[a-z_]+|[a-z-]+))+$"
+                },
+                "when": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "account_header": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       }
