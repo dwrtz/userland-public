@@ -168,7 +168,7 @@
               "properties": {
                 "cli": {
                   "type": "string",
-                  "pattern": "^(<[A-Za-z][A-Za-z-]*>|--[a-z][a-z-]*|stdin)$"
+                  "pattern": "^(<[A-Za-z][A-Za-z-]*>|\\[[A-Za-z][A-Za-z-]*\\]|--[a-z][a-z-]*|stdin)$"
                 },
                 "source": {
                   "enum": [
@@ -267,7 +267,8 @@
               "apps.delete",
               "apps.rollback",
               "secrets.write",
-              "app_admin_invites.create"
+              "app_admin_invites.create",
+              "apps.export"
             ]
           },
           "safeguards": {

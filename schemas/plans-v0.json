@@ -38,7 +38,6 @@
         "app_slugs": false,
         "custom_domains": false,
         "app_analytics": false,
-        "backups_export": false,
         "priority_support": false
       },
       "manifest_limits": {
@@ -78,7 +77,6 @@
         "app_slugs": true,
         "custom_domains": true,
         "app_analytics": true,
-        "backups_export": false,
         "priority_support": false
       },
       "manifest_limits": {
@@ -120,7 +118,6 @@
         "app_slugs": true,
         "custom_domains": true,
         "app_analytics": true,
-        "backups_export": true,
         "priority_support": true
       },
       "manifest_limits": {
@@ -164,7 +161,6 @@
         "app_slugs": true,
         "custom_domains": true,
         "app_analytics": true,
-        "backups_export": true,
         "priority_support": true
       },
       "manifest_limits": {

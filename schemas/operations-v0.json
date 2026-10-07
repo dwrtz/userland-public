@@ -2,8 +2,8 @@
   "$schema": "https://docs.userland.fun/schemas/operations-v0.schema.json",
   "version": "v0",
   "cli_source": {
-    "cli_version": "0.11.0",
-    "public_commit": "9a2446e5f6a0d64d0835fa38a2754ab6ca31bbe8"
+    "cli_version": "0.12.0",
+    "public_commit": "3bdb05a2d7eab2410e58bb32337f4826840d4966"
   },
   "environment": [
     {
@@ -2155,7 +2155,7 @@
         "aliases": [
           "apps pull"
         ],
-        "status": "planned"
+        "status": "released"
       },
       "inputs": [
         {
@@ -2169,7 +2169,15 @@
           "description": "The app."
         },
         {
-          "cli": "--release",
+          "cli": "[dir]",
+          "source": "argument",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The folder to save into; without it, a folder named after the app. MCP reads the files or makes a draft from the version instead."
+        },
+        {
+          "cli": "--version",
           "source": "flag",
           "required": false,
           "takes_value": true,
@@ -2179,12 +2187,12 @@
           "description": "The version to read; without it, the live version (`live` in the path)."
         },
         {
-          "cli": "--out",
+          "cli": "--force",
           "source": "flag",
           "required": false,
-          "takes_value": true,
+          "takes_value": false,
           "role": "interface",
-          "description": "The folder to save into. MCP reads the files or makes a draft from the version instead."
+          "description": "Write into a folder that isn't empty."
         },
         {
           "cli": "--account",
@@ -2195,6 +2203,14 @@
           "mcp_input": "account_id",
           "api_field": "header:x-userland-account-id",
           "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
         }
       ],
       "api": [
@@ -2213,13 +2229,136 @@
       ],
       "permission": "apps.publish",
       "safeguards": [
-        "path_segment_check"
+        "selected_account_guard",
+        "path_segment_check",
+        "file_safety"
       ],
       "mcp": {
         "via": "tool",
         "tool": "apps_download",
         "status": "planned",
-        "note": "Lists the version's files and reads each one's original bytes (256a), or starts a draft from the version (250m). The CLI's option set is settled in public#38 (p38a); update this entry then."
+        "note": "Lists the version's files and reads each one's original bytes (256a), or starts a draft from the version (250m)."
+      }
+    },
+    {
+      "id": "apps.export",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Save an app's data: every saved record, the people who sign in (no passwords) and the uploaded files.",
+      "cli": {
+        "command": "apps export",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "The app."
+        },
+        {
+          "cli": "[dir]",
+          "source": "argument",
+          "required": false,
+          "takes_value": true,
+          "role": "interface",
+          "description": "The folder to save into; without it, <app-id>-data. MCP reads the same pages, or an export archive (255b), instead."
+        },
+        {
+          "cli": "--collection",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "collection",
+          "api_field": ":collection",
+          "description": "Only this collection's records (no people or files)."
+        },
+        {
+          "cli": "--no-files",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "input",
+          "mcp_input": "no_files",
+          "description": "Leave uploaded files out."
+        },
+        {
+          "cli": "--force",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "interface",
+          "description": "Write into a folder that isn't empty."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/data",
+          "when": "always",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/data/:collection",
+          "when": "a page at a time, for each collection",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/app-users",
+          "when": "a page at a time, without --collection",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/files",
+          "when": "a page at a time, without --collection or --no-files",
+          "account_header": true
+        },
+        {
+          "method": "GET",
+          "path": "/v0/apps/:app_id/files/:file_id",
+          "when": "for each uploaded file",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "selected_account_guard",
+        "path_segment_check",
+        "file_safety"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_export",
+        "status": "planned",
+        "note": "Reads the same pages (255a), or makes an export archive (255b) and hands back its link."
       }
     }
   ]
