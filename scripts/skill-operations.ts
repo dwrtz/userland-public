@@ -48,12 +48,9 @@ export const COMMANDS_HEADER = "| What to do | Connector tool | CLI command |";
 /**
  * Userland CLI commands that skills use but the inventory doesn't list yet, and why. A row with one of these has
  * no connector tool, and its "Connector tool" cell says what to do instead. The check fails once the inventory
- * lists the command, so the row gets its tool and the entry is removed.
+ * lists the command, so the row gets its tool and the entry is removed. Empty while every command is listed.
  */
-export const NOT_IN_INVENTORY: Readonly<Record<string, string>> = {
-  "apps export":
-    "Added to the CLI after the inventory was taken from CLI 0.11.0. Its entry and MCP counterpart come with dwrtz/userland#286 (250p, public#38 p38b); until then, the console's app settings page makes the same copy."
-};
+export const NOT_IN_INVENTORY: Readonly<Record<string, string>> = {};
 
 /** Input roles that never have a tool input of their own: which business (`account_id` is the same for every tool), output format, and CLI-only plumbing. */
 const ROLES_WITHOUT_TOOL_INPUT = new Set(["account", "output", "interface", "local_validation", "local_credential"]);

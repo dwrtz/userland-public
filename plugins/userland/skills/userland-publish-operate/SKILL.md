@@ -46,7 +46,7 @@ When a tool or a command fails, tell the owner what its error says and follow it
 6. Take an app offline only when the owner asks (see Safety rules).
 7. When the owner asks, invite people to sign in to an app that has sign-in, or delete a secret the app no longer uses.
 8. When there's no copy of the app's files (a new chat or session, a lost folder, or the owner asks for one), get them back: with the connector, `apps_download` reads the live version's files (or an earlier version's); with the CLI, `userland apps download <app-id> [dir]` (CLI 0.13.0 or later) saves them to a folder. Change them, check them, and publish with the app id. Tell the owner what the copy doesn't have: the app's saved data, secret values, files whose names start with a dot, and the original source if the app was built before publishing.
-9. When the owner asks for a copy of the app's data (records, the people who sign in, uploaded files): with the CLI, run `userland apps export <app-id> [dir]` (CLI 0.13.0 or later; owners and admins only). With the connector, send the owner to the app's settings page in the console, `https://console.userland.fun/apps/<app-id>/settings`, and its "Download all saved data" button. Tell them the copy has no passwords or secret values, and that it holds their customers' email addresses, so they should keep it somewhere private.
+9. When the owner asks for a copy of the app's data (records, the people who sign in, uploaded files), make one (owners and admins only): with the connector, `apps_export` makes it and hands back a link to download it, which you give only to the owner; with the CLI, `userland apps export <app-id> [dir]` (CLI 0.13.0 or later) saves it to a folder. The owner can also use "Download all saved data" on the app's settings page in the console. Tell them the copy has no passwords or secret values, and that it holds their customers' email addresses, so they should keep it somewhere private.
 
 ## Commands
 
@@ -78,7 +78,8 @@ When a tool or a command fails, tell the owner what its error says and follow it
 | Remove a custom domain | `domains_remove` | `userland apps domains remove <app-id> <hostname>` |
 | Get the files of the live version back | `apps_download` | `userland apps download <app-id> [dir]` |
 | Get the files of an earlier version back | `apps_download` with `release_id` | `userland apps download <app-id> [dir] --version <release-id>` |
-| Get a copy of the app's data | The owner downloads it from the app's settings page in the console | `userland apps export <app-id> [dir]` |
+| Get a copy of the app's data | `apps_export` | `userland apps export <app-id> [dir]` |
+| Get a copy of one collection's records, without uploaded files | `apps_export` with `collection`, `no_files` | `userland apps export <app-id> [dir] --collection <name> --no-files` |
 | Take an app offline | `apps_unpublish` with `confirm` | `userland apps unpublish <app-id> --yes` |
 
 If a CLI command such as `apps download`, `apps export` or `secrets list` isn't found, update the CLI first: `npm install -g @userland.fun/cli`.
