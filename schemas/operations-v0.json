@@ -2632,6 +2632,28 @@
           "account_header": true
         }
       ]
+    },
+    {
+      "tool": "drafts_list",
+      "title": "List your drafts",
+      "summary": "Lists your drafts that haven't been published, in a business, newest change first: each with its app, its file count and size, and what it holds against the business's file storage. Use it to find a draft whose ID was lost, then publish it with apps_publish or delete it with drafts_delete.",
+      "effect": "read",
+      "inputs": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": false,
+          "description": "The business to list drafts in. Without it, the business chosen for this connection, else your default business."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/drafts",
+          "when": "always",
+          "account_header": true
+        }
+      ]
     }
   ]
 }
