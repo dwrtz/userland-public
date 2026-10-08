@@ -176,7 +176,7 @@ File stores can opt into `public: false, read_access: "signed_url", upload_acces
 
 Apps can opt into in-app user administration with `resources.auth.admin_roles: ["admin"]` alongside `mode: "app_users"` and `roles: ["admin", "editor"]`. Every administrator role must also appear in `roles`. Omitting `admin_roles`, or using an empty list, disables administration. The app's server uses `ctx.auth.admin` to manage its own users and invitations after the runtime verifies the signed-in administrator; these roles grant no platform account permissions. Bootstrap the first administrator with `userland apps invites create`. See the [Auth guide](https://docs.userland.fun/guides/auth/).
 
-The file access policies and `admin_roles` are unreleased additions here. They require the next CLI release containing this schema and the matching Userland API/runtime deployment before they can be published and used; installing the current published CLI does not add support yet.
+The file access policies and `admin_roles` require CLI 0.13.1 or later and the matching Userland API/runtime deployment before they can be published and used. Updating the CLI alone does not enable these capabilities on an older API or runtime.
 
 Human output lists one block per problem. This is the complete output for `userland validate examples/webhook-automation --plan free`, which exits `2`:
 
