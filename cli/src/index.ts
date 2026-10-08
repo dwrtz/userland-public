@@ -2138,7 +2138,7 @@ function exportReadme(appId: string, collections: readonly string[], options: Ex
 
 /**
  * DELETE /v0/apps/:app_id. The API takes the app offline, removes its slugs and custom domains, and
- * marks it deleted; its release history is kept. In a terminal the CLI first shows the app's name,
+ * marks it unpublished; Userland keeps its data and versions for 30 days, then deletes them. In a terminal the CLI first shows the app's name,
  * address, and account and asks for the app id or y. Without a terminal it needs --yes and sends
  * nothing otherwise.
  *
@@ -2156,7 +2156,7 @@ async function unpublishCommand(args: string[]): Promise<void> {
   // Checked before anything is sent, like every other app command.
   const appPath = `/v0/apps/${pathSegment(appId, "app id")}`;
   if (!options.yes && !process.stdin.isTTY) {
-    console.error("Unpublishing takes the app offline and removes its slugs and custom domains.");
+    console.error("Unpublishing takes the app offline and removes its slugs and custom domains. Its data and versions are kept for 30 days, then deleted.");
     console.error(
       `There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish ${terminalSafe(appId)} --yes${accountFlag(options.account)}`
     );
@@ -2187,7 +2187,7 @@ async function unpublishCommand(args: string[]): Promise<void> {
   console.log(`app_id=${response.app_id}`);
   console.log(`status=${response.status}`);
   console.log(`deleted_at=${response.deleted_at}`);
-  console.log("The app is offline and its slugs and custom domains are removed. Its release history is kept.");
+  console.log("The app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.");
 }
 
 /**
@@ -2206,7 +2206,7 @@ async function confirmUnpublish(appId: string, app: AppResponse): Promise<boolea
   console.error(`  App id:      ${app.app_id ?? terminalSafe(appId)}`);
   console.error(`  Account:     ${app.account_id || "(none)"}`);
   console.error(`  Production:  ${app.production === true ? "yes" : "no"}`);
-  console.error("Unpublishing takes the app offline and removes its slugs and custom domains. Its release history is kept.");
+  console.error("Unpublishing takes the app offline and removes its slugs and custom domains. Its data and versions are kept for 30 days, then deleted.");
   const answer = await promptLine(`Type the app id (${terminalSafe(appId)}) or y to unpublish it: `, process.stderr);
   return answer === appId || answer === app.app_id || ["y", "yes"].includes(answer.toLowerCase());
 }
@@ -3904,10 +3904,11 @@ Exporting saved data:
 
 Unpublishing:
   apps unpublish takes an app offline, removes its slugs and custom domains, and removes it from
-  apps list. Its release history is kept. In a terminal it shows the app's name, address, and account
-  and asks you to type the app id or y. Without a terminal (scripts, CI, agents) check with the app's
-  owner, then pass --yes. When an account is selected (--account, USERLAND_ACCOUNT_ID, or the saved
-  account), an app that belongs to a different account is not unpublished.
+  apps list. Its data and versions are kept for 30 days, then deleted. In a terminal it shows the
+  app's name, address, and account and asks you to type the app id or y. Without a terminal
+  (scripts, CI, agents) check with the app's owner, then pass --yes. When an account is selected
+  (--account, USERLAND_ACCOUNT_ID, or the saved account), an app that belongs to a different account
+  is not unpublished.
 
 Secrets:
   secrets list shows the name of each secret that is set, when it was first set, and when it was last

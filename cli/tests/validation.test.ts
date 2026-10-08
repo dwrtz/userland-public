@@ -395,7 +395,7 @@ describe("manifest schema validation", () => {
     const check = (app: Record<string, unknown>, webhook: Record<string, unknown> = { provider: "github", secret: "GH_SECRET", deliver_to: "server" }) =>
       checkManifestDocument({ app: { name: "Limits", ...app }, runtime: { static_root: "public" }, resources: { jobs: { sync: {} }, webhooks: { hook: webhook } } });
     expect(check({ summary: "s".repeat(2000), tags: [...tags(49), "t".repeat(64)] }, { provider: "none", deliver_to: "server", path: "p".repeat(512) })).toMatchObject({ errors: [], schema_strict: [] });
-    expect(check({ summary: "s".repeat(2001) }).errors).toEqual([{ code: "schema", manifest_path: "app.summary", message: "must be at most 2000 characters" }]);
+    expect(check({ summary: "s".repeat(2001) }).errors).toEqual([{ code: "schema", manifest_path: "app.summary", message: "must be at most 2,000 characters" }]);
     expect(check({ tags: tags(51) }).errors).toEqual([{ code: "schema", manifest_path: "app.tags", message: "must contain at most 50 items" }]);
     expect(check({ tags: ["t".repeat(65)] }).errors.map((error) => error.manifest_path)).toEqual(["app.tags[0]"]);
     // Every webhook shape carries the path limit, whatever the sender and delivery target.
