@@ -277,7 +277,7 @@ describe("public CLI", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toBe(
       "Unpublished app_dummy\napp_id=app_dummy\nstatus=unpublished\ndeleted_at=2026-09-28T00:00:00.000Z\n" +
-        "The app is offline and its slugs and custom domains are removed. Its release history is kept.\n"
+        "The app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.\n"
     );
     expect(result.stderr).toBe("");
     expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["DELETE /v0/apps/app_dummy"]);
@@ -337,7 +337,7 @@ describe("public CLI", () => {
     expect(matching.stderr).toBe("");
     expect(matching.stdout).toBe(
       "Unpublished Dummy app (https://app_dummy.apps.userland.fun/)\napp_id=app_dummy\nstatus=unpublished\n" +
-        "deleted_at=2026-09-28T00:00:00.000Z\nThe app is offline and its slugs and custom domains are removed. Its release history is kept.\n"
+        "deleted_at=2026-09-28T00:00:00.000Z\nThe app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.\n"
     );
     expect(calls()).toEqual(["GET /v0/apps/app_dummy", "DELETE /v0/apps/app_dummy"]);
     expect(requests.map((request) => request.accountId)).toEqual(["acct_owner", "acct_owner"]);
@@ -369,7 +369,7 @@ describe("public CLI", () => {
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain(
-        "Unpublishing takes the app offline and removes its slugs and custom domains.\n" +
+        "Unpublishing takes the app offline and removes its slugs and custom domains. Its data and versions are kept for 30 days, then deleted.\n" +
           "There is no terminal to confirm in, so check with the app's owner first, then run: userland apps unpublish app_dummy --yes\n"
       );
       expect(result.stderr).toContain("Usage: userland apps unpublish <app-id> [--yes] [--account <account-id>] [--json]");
@@ -417,7 +417,7 @@ describe("public CLI", () => {
         "  App id:      app_dummy\n" +
         "  Account:     acct_owner\n" +
         "  Production:  no\n" +
-        "Unpublishing takes the app offline and removes its slugs and custom domains. Its release history is kept.\n" +
+        "Unpublishing takes the app offline and removes its slugs and custom domains. Its data and versions are kept for 30 days, then deleted.\n" +
         "Type the app id (app_dummy) or y to unpublish it: "
     );
     expect(byId.stdout).toContain("Unpublished Dummy app (https://app_dummy.apps.userland.fun/)\napp_id=app_dummy\nstatus=unpublished\n");

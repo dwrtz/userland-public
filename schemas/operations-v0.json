@@ -1144,7 +1144,7 @@
       "area": "apps",
       "kind": "api",
       "effect": "destructive",
-      "summary": "Take an app offline and remove its addresses; its versions are kept.",
+      "summary": "Take an app offline and remove its addresses; its data and versions are kept for 30 days, then deleted.",
       "cli": {
         "command": "apps unpublish",
         "aliases": [],

@@ -562,7 +562,7 @@ userland apps unpublish <app-id> --yes
 userland apps unpublish <app-id> --yes --json
 ```
 
-Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Its release history is kept, and `userland apps releases <app-id>` still lists it. Slugs and custom domains that a smaller plan or an unpaid invoice turned off are removed too, and the account keeps the removed slugs for 30 days, as described under Route management above. One that Userland support turned off stays with the unpublished app until support turns it back on or releases it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
+Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Userland keeps its data and versions for 30 days, and `userland apps releases <app-id>` still lists its versions in that time; then Userland deletes them. Slugs and custom domains that a smaller plan or an unpaid invoice turned off are removed too, and the account keeps the removed slugs for 30 days, as described under Route management above. One that Userland support turned off stays with the unpublished app until support turns it back on or releases it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
 
 In a terminal, the command first shows the app's name, address, id, account, and whether it is a production app, and asks you to type the app id or `y`. Any other answer, or closing the input, cancels: it prints `Cancelled. <app-id> was not unpublished.` and exits `1`. Without a terminal (scripts, CI, and coding agents), check with the app's owner first, then pass `--yes`. Without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming. The command it suggests running keeps the `--account` you passed.
 
@@ -575,7 +575,7 @@ Unpublished Old test app (https://<app_id>.userland.link/)
 app_id=<app_id>
 status=unpublished
 deleted_at=2026-09-28T00:00:00.000Z
-The app is offline and its slugs and custom domains are removed. Its release history is kept.
+The app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.
 ```
 
 With `--yes` there is no prompt. When the command has not read the app first (`--yes` with no account selected), the first line is `Unpublished <app_id>`. `--json` prints the API response unchanged (`app_id`, `status`, and `deleted_at`); a prompt, when there is one, goes to stderr so stdout stays JSON. Errors print like other app commands and exit `1`: `API 404` for an app id that does not exist or is already unpublished, `API 403` when your account role cannot remove apps (only owners and admins can) or the app or account is suspended, and `API 451` for an app that is unavailable for legal reasons.
