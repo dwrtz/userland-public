@@ -215,6 +215,43 @@ describe("offline entitlement checks", () => {
 });
 
 describe("manifest schema validation", () => {
+  test("app administration requires explicitly declared admin roles and enabled app auth", () => {
+    const manifest = base();
+    manifest.resources.auth = { mode: "app_users", roles: ["admin", "editor"], admin_roles: ["admin"] };
+    expect(checkManifestDocument(manifest)).toMatchObject({ errors: [], schema_strict: [] });
+    for (const auth of [
+      { mode: "none", roles: ["admin"], admin_roles: ["admin"] },
+      { mode: "app_users", roles: ["editor"], admin_roles: ["admin"] },
+      { mode: "app_users", roles: ["admin"], admin_roles: ["admin", "admin"] }
+    ]) {
+      manifest.resources.auth = auth;
+      expect(checkManifestDocument(manifest).errors.length).toBeGreaterThan(0);
+    }
+  });
+  test("accepts file access policies and preserves private-store plan requirements", () => {
+    const manifest = base();
+    manifest.resources.files = { stores: { vault: { public: false, read_access: "signed_url", upload_access: "server_only" }, media: { public: true, upload_access: "server_only" } } };
+    expect(checkManifestDocument(manifest)).toMatchObject({ errors: [], schema_strict: [] });
+    expect(violationsFor(manifest, "starter")).toMatchObject({ "files.private_stores": "business" });
+    expect(violationsFor(manifest, "business")).toEqual({});
+  });
+
+  test.each([
+    { read_access: "signed_url" },
+    { public: true, read_access: "signed_url" },
+    { public: true, read_access: "authenticated" },
+    { public: false, read_access: "owner" },
+    { public: false, read_access: null },
+    { upload_access: "public" },
+    { upload_access: false }
+  ])("refuses conflicting or invalid file policies: %j", (store) => {
+    const manifest = base();
+    manifest.resources.files = { stores: { vault: store } };
+    const check = checkManifestDocument(manifest);
+    expect(check.errors.length).toBeGreaterThan(0);
+    expect(check.schema_strict).toEqual([]);
+  });
+
   test("the validator supports every keyword the published schema uses", () => {
     const used = new Set<string>();
     const visit = (node: unknown, inPropertiesMap = false): void => {

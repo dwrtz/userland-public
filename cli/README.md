@@ -172,6 +172,12 @@ A few schema rules are stricter than the API: unknown keys directly under the to
 
 `--plan` accepts `free`, `starter`, `business`, and `business_plus` (`pro` and `team` are accepted as older names for Starter and Business). Any other value is a usage error that lists the accepted plans. Without `--plan`, validation reports the lowest plan the app needs and lists every plan-gated feature, but does not fail on them. Values that no self-serve plan allows (for example app-user email verification, or more than the Business Plus limits) report `required_plan=internal`, and the message says they are not available on self-serve plans and to contact support. Plan limits are documented at https://docs.userland.fun/reference/limits/.
 
+File stores can opt into `public: false, read_access: "signed_url", upload_access: "server_only"` in `resources.files.stores`. The first policy makes signed-in users obtain a signed link too; the second disables native uploads so the app's server routes can check roles or organization membership first. Private-store reads and native uploads default to `authenticated` when these policies are omitted; public files stay public. `read_access` requires explicit `public: false`; `upload_access: "server_only"` also works for public media stores. See the [Files guide](https://docs.userland.fun/guides/files/). A CLI built before these fields were added rejects them during local validation; update the CLI before publishing a manifest that uses them.
+
+Apps can opt into in-app user administration with `resources.auth.admin_roles: ["admin"]` alongside `mode: "app_users"` and `roles: ["admin", "editor"]`. Every administrator role must also appear in `roles`. Omitting `admin_roles`, or using an empty list, disables administration. The app's server uses `ctx.auth.admin` to manage its own users and invitations after the runtime verifies the signed-in administrator; these roles grant no platform account permissions. Bootstrap the first administrator with `userland apps invites create`. See the [Auth guide](https://docs.userland.fun/guides/auth/).
+
+The file access policies and `admin_roles` are unreleased additions here. They require the next CLI release containing this schema and the matching Userland API/runtime deployment before they can be published and used; installing the current published CLI does not add support yet.
+
 Human output lists one block per problem. This is the complete output for `userland validate examples/webhook-automation --plan free`, which exits `2`:
 
 ```text
