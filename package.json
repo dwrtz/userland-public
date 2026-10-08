@@ -8,13 +8,15 @@
     "cli:build": "rm -rf cli/dist && tsc -p cli/tsconfig.build.json && mkdir -p cli/dist/schemas && cp schemas/resource-manifest-v0.schema.json schemas/plans-v0.json cli/dist/schemas/",
     "cli:test": "vitest run cli/tests",
     "cli:pack": "npm pack ./cli --dry-run",
-    "test": "npm run validate:catalog && npm run validate:manifests && npm run validate:skills && npm run validate:links && npm run validate:cli && npm run cli:build && npm run validate:operations && npm run cli:pack && npm run cli:test && vitest run examples scripts",
+    "test": "npm run validate:catalog && npm run validate:manifests && npm run validate:skills && npm run validate:plugin && npm run validate:links && npm run validate:cli && npm run cli:build && npm run validate:operations && npm run cli:pack && npm run cli:test && vitest run examples scripts",
+    "plugin:build": "tsx scripts/build-plugin.ts",
     "typecheck": "tsc --noEmit",
     "validate:catalog": "tsx scripts/validate-catalog.ts",
     "validate:cli": "tsx scripts/validate-cli.ts",
     "validate:links": "tsx scripts/validate-links.ts",
     "validate:operations": "tsx scripts/validate-operations.ts",
     "validate:manifests": "tsx scripts/validate-manifests.ts",
+    "validate:plugin": "tsx scripts/build-plugin.ts --check",
     "validate:skills": "tsx scripts/validate-skills.ts"
   },
   "devDependencies": {
