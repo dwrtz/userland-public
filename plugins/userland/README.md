@@ -4,7 +4,7 @@ Build, publish and run apps for your business on [Userland](https://userland.fun
 
 ## What's in it
 
-- **The Userland connector**, at `https://mcp.userland.fun/mcp`. It gives your agent Userland's tools: publish an app, read its errors and visits, undo a change, add a custom domain, and the rest. Each tool does the same thing as a command of the [Userland CLI](https://docs.userland.fun/reference/cli/), with the same checks and plan limits ([the full list](https://docs.userland.fun/reference/mcp/)).
+- **The Userland connector**, at `https://mcp.userland.fun/mcp`. It gives your agent Userland's tools: publish an app, read its errors and visits, undo a change, add a custom domain, and the rest. It covers the [Userland CLI's](https://docs.userland.fun/reference/cli/) platform operations with the same checks and plan limits, plus draft tools for building and changing files without a local folder ([the full list](https://docs.userland.fun/reference/mcp/)).
 - **Seven skills**, which tell your agent how to do each job well:
   - `userland-build-app`: from an idea to a published app.
   - `userland-adapt-examples`: start from one of the [public examples](https://github.com/dwrtz/userland-public/tree/main/examples).
