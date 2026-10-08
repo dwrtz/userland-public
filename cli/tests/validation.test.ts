@@ -387,6 +387,33 @@ describe("manifest schema validation", () => {
     expect(schemaProviders).toEqual([["none"], ["generic_hmac", "github", "stripe"], ["none"], ["generic_hmac", "github", "stripe"], ["none"], ["generic_hmac", "github", "stripe"]]);
   });
 
+  // The API's limits on these strings and lists (dwrtz/userland#426): app.summary at most 2,000
+  // characters, at most 50 tags (each a resource name, so at most 64 characters), and a webhook's
+  // reserved path at most 512 characters.
+  test("holds app.summary, app.tags and a webhook's path to the API's limits", () => {
+    const tags = (count: number) => Array.from({ length: count }, (_, n) => `tag-${n}`);
+    const check = (app: Record<string, unknown>, webhook: Record<string, unknown> = { provider: "github", secret: "GH_SECRET", deliver_to: "server" }) =>
+      checkManifestDocument({ app: { name: "Limits", ...app }, runtime: { static_root: "public" }, resources: { jobs: { sync: {} }, webhooks: { hook: webhook } } });
+    expect(check({ summary: "s".repeat(2000), tags: [...tags(49), "t".repeat(64)] }, { provider: "none", deliver_to: "server", path: "p".repeat(512) })).toMatchObject({ errors: [], schema_strict: [] });
+    expect(check({ summary: "s".repeat(2001) }).errors).toEqual([{ code: "schema", manifest_path: "app.summary", message: "must be at most 2,000 characters" }]);
+    expect(check({ tags: tags(51) }).errors).toEqual([{ code: "schema", manifest_path: "app.tags", message: "must contain at most 50 items" }]);
+    expect(check({ tags: ["t".repeat(65)] }).errors.map((error) => error.manifest_path)).toEqual(["app.tags[0]"]);
+    // Every webhook shape carries the path limit, whatever the sender and delivery target.
+    for (const webhook of [
+      { provider: "none", deliver_to: "server" },
+      { provider: "github", secret: "GH_SECRET", deliver_to: "server" },
+      { provider: "none", deliver_to: "job", job: "sync" },
+      { provider: "stripe", secret: "STRIPE_WEBHOOK_SECRET", deliver_to: "job", job: "sync" },
+      { provider: "none", deliver_to: "job:sync" },
+      { provider: "generic_hmac", secret: "HOOK_SECRET", deliver_to: "job:sync" }
+    ]) {
+      expect(check({}, { ...webhook, path: "p".repeat(512) }).errors, JSON.stringify(webhook)).toEqual([]);
+      expect(check({}, { ...webhook, path: "p".repeat(513) }).errors, JSON.stringify(webhook)).toEqual([
+        { code: "schema", manifest_path: "resources.webhooks.hook.path", message: "must be at most 512 characters" }
+      ]);
+    }
+  });
+
   test("enforces the cross-field rules the API checks", () => {
     const errors = validateManifestDocument({
       app: { name: "   " },

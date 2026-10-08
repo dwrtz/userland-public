@@ -72,7 +72,8 @@
           "maxLength": 120
         },
         "summary": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2000
         },
         "visibility": {
           "type": "string",
@@ -83,6 +84,7 @@
         },
         "tags": {
           "type": "array",
+          "maxItems": 50,
           "items": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9-]{0,63}$",
@@ -613,6 +615,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }
@@ -643,6 +646,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }
@@ -683,6 +687,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }
@@ -729,6 +734,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }
@@ -754,6 +760,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }
@@ -785,6 +792,7 @@
             },
             "path": {
               "type": "string",
+              "maxLength": 512,
               "description": "Reserved. Deliveries always arrive at /_userland/webhooks/<name>."
             }
           }

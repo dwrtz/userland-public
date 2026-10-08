@@ -316,6 +316,24 @@ With a `files` list, exactly those files are uploaded, including dotfiles you li
 
 The Userland API remains authoritative. Local validation mirrors the API's manifest and plan rules for fast feedback; the API can still reject a publish because of billing state, account flags, deployment limits, usage quotas, or newer rules, and returns structured `402` details when it does.
 
+### Large bundles
+
+A bundle over 16 MiB (the files' own sizes added up) is more than one request can carry, so CLI 0.13.0 and later publish it in an upload session instead of one `PUT /v0/apps`:
+
+1. **Declare.** The CLI sends the manifest with each file's path, content type, size and SHA-256, but none of its bytes (`POST /v0/apps/:app_id/uploads` with `--app`, or `POST /v0/uploads` for a new app, in the selected account). Userland checks the manifest and the plan's limits first, so a bundle the plan doesn't allow is refused before anything is uploaded, with the same errors as a publish. It answers with the files it needs: a file the app's live release, or a release Userland still keeps, already has with the same size and SHA-256 is copied by Userland instead of being sent again.
+2. **Upload.** The CLI sends each needed file's bytes, four at a time, and checks each one is still the file it declared. A file may be at most 20 MiB, as in any publish.
+3. **Publish.** The CLI commits the session, which publishes the release exactly as `PUT /v0/apps` does.
+
+The output is the same as for any publish, with three more lines at the end:
+
+```text
+upload_id=up_...
+upload_files_sent=2
+upload_files_copied=41
+```
+
+The CLI tries a file or the commit again after a rate limit, a server error or a lost connection, and the commit carries one `Idempotency-Key`, so trying it again never publishes twice. If the publish stops before the commit (a file was refused, the CLI gave up, or you pressed Ctrl-C), it deletes the session, and nothing is published: run the same command again. The CLI names the session when it starts (`Upload session upl_... started; it lasts 24 hours.`), so you can tell runs apart. A session lasts 24 hours. An API without upload sessions makes the CLI stop with `This Userland API can't take a bundle over 16 MiB: it doesn't have upload sessions yet.` A bundle of 16 MiB or less is still one request, as before.
+
 ### Publish output
 
 `apps publish` starts with `Published <address>` only when the new release is live. A release can also be stored without going live: `activation_status` is then `pending_secrets` (a required secret is not set), `requires_migration` (a change to saved data needs a migration first), or `failed` (the server code could not be started). The output then starts with `Stored, not live`, one `Why:` line for each reason, what the app's address shows now, and the commands to run next:
@@ -544,7 +562,7 @@ userland apps unpublish <app-id> --yes
 userland apps unpublish <app-id> --yes --json
 ```
 
-Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Its release history is kept, and `userland apps releases <app-id>` still lists it. Slugs and custom domains that a smaller plan or an unpaid invoice turned off are removed too, and the account keeps the removed slugs for 30 days, as described under Route management above. One that Userland support turned off stays with the unpublished app until support turns it back on or releases it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
+Unpublishing takes the app offline, removes its slugs and custom domains, and removes it from `apps list`. Userland keeps its data and versions for 30 days, and `userland apps releases <app-id>` still lists its versions in that time; then Userland deletes them. Slugs and custom domains that a smaller plan or an unpaid invoice turned off are removed too, and the account keeps the removed slugs for 30 days, as described under Route management above. One that Userland support turned off stays with the unpublished app until support turns it back on or releases it. Check the app id with `userland apps list` first: each line shows the app id, live release, last update, name, and address.
 
 In a terminal, the command first shows the app's name, address, id, account, and whether it is a production app, and asks you to type the app id or `y`. Any other answer, or closing the input, cancels: it prints `Cancelled. <app-id> was not unpublished.` and exits `1`. Without a terminal (scripts, CI, and coding agents), check with the app's owner first, then pass `--yes`. Without it the command stops with a usage error before sending anything, and piping `y` on stdin does not count as confirming. The command it suggests running keeps the `--account` you passed.
 
@@ -557,7 +575,7 @@ Unpublished Old test app (https://<app_id>.userland.link/)
 app_id=<app_id>
 status=unpublished
 deleted_at=2026-09-28T00:00:00.000Z
-The app is offline and its slugs and custom domains are removed. Its release history is kept.
+The app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.
 ```
 
 With `--yes` there is no prompt. When the command has not read the app first (`--yes` with no account selected), the first line is `Unpublished <app_id>`. `--json` prints the API response unchanged (`app_id`, `status`, and `deleted_at`); a prompt, when there is one, goes to stderr so stdout stays JSON. Errors print like other app commands and exit `1`: `API 404` for an app id that does not exist or is already unpublished, `API 403` when your account role cannot remove apps (only owners and admins can) or the app or account is suspended, and `API 451` for an app that is unavailable for legal reasons.
