@@ -31,6 +31,10 @@ export interface InventoryOperation {
   mcp: { via: string; tool?: string; status?: string };
 }
 
+export interface InventoryMcpTool {
+  tool: string;
+}
+
 /** The same words in every skill, so an agent picks one way into Userland and keeps to it. */
 export const CONNECTOR_OR_CLI = `## Connector or CLI
 
@@ -62,6 +66,12 @@ export async function loadInventory(): Promise<InventoryOperation[]> {
   const document = JSON.parse(await readFile(inventoryPath, "utf8")) as { operations?: InventoryOperation[] };
   if (!Array.isArray(document.operations)) throw new Error("schemas/operations-v0.json must have an operations array.");
   return document.operations;
+}
+
+export async function loadMcpTools(): Promise<InventoryMcpTool[]> {
+  const document = JSON.parse(await readFile(inventoryPath, "utf8")) as { mcp_tools?: InventoryMcpTool[] };
+  if (!Array.isArray(document.mcp_tools)) throw new Error("schemas/operations-v0.json must have an mcp_tools array.");
+  return document.mcp_tools;
 }
 
 export async function loadSkills(): Promise<Array<{ name: string; body: string }>> {
@@ -244,9 +254,9 @@ export function rowProblems(operations: readonly InventoryOperation[], row: Comm
 }
 
 /** Tool names in a skill's text: backticked words that start like an inventory tool. Each must be one. */
-export function toolMentionProblems(operations: readonly InventoryOperation[], body: string): string[] {
-  const tools = new Set(operations.flatMap((operation) => (operation.mcp.tool ? [operation.mcp.tool] : [])));
-  const prefixes = [...new Set(operations.map((operation) => operation.id.split(".")[0]))];
+export function toolMentionProblems(operations: readonly InventoryOperation[], body: string, mcpTools: readonly InventoryMcpTool[] = []): string[] {
+  const tools = new Set([...operations.flatMap((operation) => (operation.mcp.tool ? [operation.mcp.tool] : [])), ...mcpTools.map((tool) => tool.tool)]);
+  const prefixes = [...new Set([...operations.map((operation) => operation.id.split(".")[0]), ...mcpTools.map((tool) => tool.tool.split("_")[0])])];
   const pattern = new RegExp(`^(?:${prefixes.join("|")})_[a-z_]+$`, "u");
   const problems: string[] = [];
   for (const span of body.matchAll(/`([a-z][a-z_]*)`/gu)) {
@@ -256,7 +266,7 @@ export function toolMentionProblems(operations: readonly InventoryOperation[], b
 }
 
 /** Every problem with one skill. */
-export function skillProblems(operations: readonly InventoryOperation[], name: string, body: string): { problems: string[]; operations: Set<string> } {
+export function skillProblems(operations: readonly InventoryOperation[], name: string, body: string, mcpTools: readonly InventoryMcpTool[] = []): { problems: string[]; operations: Set<string> } {
   const problems: string[] = [];
   const covered = new Set<string>();
   if (!body.includes(CONNECTOR_OR_CLI)) problems.push("is missing the shared \"## Connector or CLI\" section (CONNECTOR_OR_CLI in scripts/skill-operations.ts), word for word.");
@@ -271,21 +281,24 @@ export function skillProblems(operations: readonly InventoryOperation[], name: s
   for (const { line, command } of userlandCommands(body)) {
     for (const problem of commandProblems(operations, command)) problems.push(`line ${line}: ${problem}`);
   }
-  problems.push(...toolMentionProblems(operations, body));
+  problems.push(...toolMentionProblems(operations, body, mcpTools));
   return { problems: [...new Set(problems)].map((problem) => `${name}: ${problem}`), operations: covered };
 }
 
 /** Every problem across the skills, including inventory operations no skill's table covers. */
-export function allSkillProblems(operations: readonly InventoryOperation[], skills: ReadonlyArray<{ name: string; body: string }>): string[] {
+export function allSkillProblems(operations: readonly InventoryOperation[], skills: ReadonlyArray<{ name: string; body: string }>, mcpTools: readonly InventoryMcpTool[] = []): string[] {
   const problems: string[] = [];
   const covered = new Set<string>();
   for (const skill of skills) {
-    const result = skillProblems(operations, skill.name, skill.body);
+    const result = skillProblems(operations, skill.name, skill.body, mcpTools);
     problems.push(...result.problems);
     for (const id of result.operations) covered.add(id);
   }
   for (const operation of operations) {
     if (!covered.has(operation.id)) problems.push(`No skill's Commands table has "${operation.cli.command}" (${operation.id}).`);
+  }
+  for (const tool of mcpTools) {
+    if (!skills.some((skill) => skill.body.includes(`\`${tool.tool}\``))) problems.push(`No skill describes the connector-only tool \`${tool.tool}\`.`);
   }
   return problems;
 }

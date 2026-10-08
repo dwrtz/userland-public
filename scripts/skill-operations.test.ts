@@ -5,6 +5,7 @@ import {
   allSkillProblems,
   findOperation,
   loadInventory,
+  loadMcpTools,
   loadSkills,
   parseUserlandCommand,
   skillProblems,
@@ -12,11 +13,12 @@ import {
 } from "./skill-operations.js";
 
 const operations = await loadInventory();
+const mcpTools = await loadMcpTools();
 const skills = await loadSkills();
 
 describe("skills and the operation inventory", () => {
   it("every skill's commands, options and connector tools match schemas/operations-v0.json, and the skills cover every operation", () => {
-    expect(allSkillProblems(operations, skills)).toEqual([]);
+    expect(allSkillProblems(operations, skills, mcpTools)).toEqual([]);
   });
 
   it("lists only commands in NOT_IN_INVENTORY that the inventory still doesn't have", () => {
@@ -39,7 +41,7 @@ describe("skills and the operation inventory", () => {
 describe("the check itself", () => {
   const skill = (rows: string[], extra = "") =>
     ["---", "name: t", "description: Use when testing.", "---", "", CONNECTOR_OR_CLI, "", "## Commands", "", COMMANDS_HEADER, "| --- | --- | --- |", ...rows, "", extra].join("\n");
-  const problems = (rows: string[], extra = "") => skillProblems(operations, "t", skill(rows, extra)).problems;
+  const problems = (rows: string[], extra = "") => skillProblems(operations, "t", skill(rows, extra), mcpTools).problems;
 
   it("passes a row whose tool and inputs match the inventory", () => {
     expect(problems(["| Publish | `apps_publish` with `draft_id`, `app_id` | `userland apps publish <dir> --app <app-id>` |"])).toEqual([]);
@@ -72,6 +74,16 @@ describe("the check itself", () => {
 
   it("finds a tool name in the text that the inventory doesn't have", () => {
     expect(problems(["| Status | `apps_status` | `userland apps status <app-id>` |"], "Then call `apps_restart`.").join("\n")).toContain("`apps_restart` is not a tool");
+  });
+
+  it("checks connector-only draft tool names against the inventory", () => {
+    const row = "| Status | `apps_status` | `userland apps status <app-id>` |";
+    expect(problems([row], "Call `drafts_create`, then `drafts_write_file`.")).toEqual([]);
+    expect(problems([row], "Call `drafts_replace`.").join("\n")).toContain("`drafts_replace` is not a tool");
+  });
+
+  it("finds a connector-only tool no skill describes", () => {
+    expect(allSkillProblems(operations, skills, [...mcpTools, { tool: "drafts_archive" }])).toContain("No skill describes the connector-only tool `drafts_archive`.");
   });
 
   it("needs the shared Connector or CLI section", () => {

@@ -38,7 +38,7 @@ When a tool or a command fails, tell the owner what its error says and follow it
 4. Choose the smallest example that matches from https://github.com/dwrtz/userland-public/blob/main/catalog.json, by what it does rather than how it looks. Check the plan's limits (`accounts_limits`, or `userland accounts limits`) before choosing features that need a paid plan: each example lists its `required_plan` and `paid_features`.
 5. Write the manifest first, with only the resources the app uses (see the `userland-manifest-resources` skill). If the owner's own website will show the app in an `<iframe>`, add that site to `runtime.embed_origins`.
 6. Add the pages under `public/`, and `server/index.js` only when the app needs routes, saved data, sign-in, secrets, scheduled tasks, files or webhooks (see the `userland-runtime-code` skill).
-7. Check the files. With the CLI, they're a folder on disk: run `userland validate <dir>`. With the connector, put them in a Userland draft with the connector's draft tools (its tool list names them), then pass the draft's `draft_id` to `apps_validate`. Fix every error it reports.
+7. Check the files. With the CLI, they're a folder on disk: run `userland validate <dir>`. With the connector, call `drafts_create`, write `manifest.userland.json` and each app file with `drafts_write_file`, then pass the returned `draft_id` to `apps_validate`. When updating an app, give `drafts_create` its `app_id` to start from the live version and preserve files you aren't changing. Fix every error validation reports.
 8. For each secret key the app needs, have the owner add the value themselves (see the `userland-publish-operate` skill). Never ask for it in the chat.
 9. Publish (`apps_publish`, or `userland apps publish <dir>`). To update an app, always pass its app id (`app_id`, or `--app <app-id>`); without it, Userland makes a second app.
 10. Report to the owner, as in Outputs. Tell them the app is live only when `activation_status` is `live`.
@@ -53,6 +53,21 @@ When a tool or a command fails, tell the owner what its error says and follow it
 | Check the files against one plan | `apps_validate` with `draft_id`, `plan` | `userland validate <dir> --plan <plan>` |
 | Publish a new app | `apps_publish` with `draft_id` | `userland apps publish <dir>` |
 | Publish a new version of an app | `apps_publish` with `draft_id`, `app_id` | `userland apps publish <dir> --app <app-id>` |
+
+## Connector drafts
+
+A draft is the connector's app folder. Its changes take effect only when `apps_publish` publishes it. Keep its `draft_id` for later calls.
+
+| Tool | When to use it |
+| --- | --- |
+| `drafts_create` | Start empty for a new app, or pass `app_id` to copy its live version. Set `from` to a release id to start from an earlier version. |
+| `drafts_list` | Find an unfinished draft when its id was lost; pass `account_id` for the intended business. |
+| `drafts_get` | List the files, sizes and upload state in a draft. |
+| `drafts_read_file` | Read one file by `draft_id` and `path` before changing it. |
+| `drafts_write_file` | Write one file using `content` for text or `content_base64` for bytes. Include `manifest.userland.json`; each call accepts about 190 KiB. |
+| `drafts_delete_file` | Remove a file from the draft; the live version is unchanged until publishing. |
+| `drafts_upload_url` | For a larger file, supply its `path`, `size` and `sha256`, then PUT its bytes to the returned link within 15 minutes. If the assistant cannot send HTTP uploads, explain the limitation; don't claim the file is uploaded. |
+| `drafts_delete` | Discard a draft the owner no longer needs. Confirm the intended draft before passing `confirm: true`; this deletes its uploaded files. |
 
 ## Validation checklist
 

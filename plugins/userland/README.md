@@ -34,7 +34,7 @@ codex plugin marketplace add dwrtz/userland-public
 codex plugin add userland@userland
 ```
 
-Codex asks you to sign in to Userland when you install it, in your browser.
+Restart Codex or start a new session after installing. Complete Userland's browser sign-in when prompted; if the connection still needs authentication, use Codex's MCP controls to sign in.
 
 **ChatGPT or Claude in your browser:** add Userland as a connector instead. See [Use Userland from ChatGPT or Claude](https://docs.userland.fun/guides/chat-assistants/).
 
@@ -49,8 +49,9 @@ When the app needs a secret key, such as a payment or AI provider key, the agent
 - The skills are instructions for your agent. They send nothing, and the plugin has no scripts, hooks or programs of its own.
 - When you connect, you sign in to Userland in your browser and approve the connection there. Your agent never sees your password.
 - After that, your agent sends Userland the requests it makes through the connector: the files of the apps it publishes, and the details each tool needs, such as an app's id, a short address or an email address to invite. Userland handles them as its [Privacy Policy](https://userland.fun/legal/privacy/) describes.
-- What the tools return, such as an app's status, events and visits, goes to your agent and to the company that runs it (Anthropic or OpenAI), under that company's terms.
+- What the tools return, such as an app's status, events, visits, published source files or requested collection records, goes to your agent and to the company that runs it (Anthropic or OpenAI), under that company's terms. Only ask it to read data you want to share with that assistant.
 - Secret values and new API keys are never sent through the chat: you type a secret on a Userland page, and a new key is shown on a Userland page once.
+- A complete saved-data export is downloaded by you from the Userland console with your own session. The connector provides counts and the settings-page link; it does not send that ZIP through the chat.
 - To disconnect, sign out with your agent, or use the Chat assistants and Coding agents pages in the [Userland console](https://console.userland.fun/).
 
 ## Support and license

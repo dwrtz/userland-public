@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { allSkillProblems, loadInventory, loadSkills } from "./skill-operations.js";
+import { allSkillProblems, loadInventory, loadMcpTools, loadSkills } from "./skill-operations.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const skillsRoot = path.join(root, ".agents", "skills");
@@ -35,7 +35,7 @@ for (const skill of catalog.skills) {
 }
 
 // Their commands, options and connector tools, against the shared operation inventory (scripts/skill-operations.ts).
-const operationProblems = allSkillProblems(await loadInventory(), await loadSkills());
+const operationProblems = allSkillProblems(await loadInventory(), await loadSkills(), await loadMcpTools());
 if (operationProblems.length > 0) throw new Error(`Skills don't match schemas/operations-v0.json:\n${operationProblems.join("\n")}`);
 
 console.log(`Validated ${catalog.skills.length} skills.`);
@@ -57,4 +57,3 @@ async function assertFile(filePath: string, message: string): Promise<void> {
   const fileStat = await stat(filePath).catch(() => null);
   if (!fileStat?.isFile()) throw new Error(message);
 }
-
