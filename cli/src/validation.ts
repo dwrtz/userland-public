@@ -1457,6 +1457,11 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
 
 const patternCache = new Map<string, RegExp>();
 
+/** A length limit as the Userland API words it: 2,000 characters, not 2000. */
+function characterCount(count: number): string {
+  return count.toLocaleString("en-US");
+}
+
 export function validateAgainstSchema(value: unknown, schema: JsonSchema): ValidationIssue[] {
   return schemaErrors(value, schema).map(toIssue);
 }
@@ -1491,10 +1496,10 @@ function validateNode(value: unknown, schema: unknown, root: JsonSchema, at: Arr
 
   if (typeof value === "string") {
     if (typeof node.minLength === "number" && value.length < node.minLength) {
-      errors.push({ path: at, keyword: "minLength", message: node.minLength === 1 ? "must not be empty" : `must be at least ${node.minLength} characters` });
+      errors.push({ path: at, keyword: "minLength", message: node.minLength === 1 ? "must not be empty" : `must be at least ${characterCount(node.minLength)} characters` });
     }
     if (typeof node.maxLength === "number" && value.length > node.maxLength) {
-      errors.push({ path: at, keyword: "maxLength", message: `must be at most ${node.maxLength} characters` });
+      errors.push({ path: at, keyword: "maxLength", message: `must be at most ${characterCount(node.maxLength)} characters` });
     }
     if (typeof node.pattern === "string" && !compilePattern(node.pattern).test(value)) {
       errors.push({ path: at, keyword: "pattern", message: `${JSON.stringify(value)} ${PATTERN_DESCRIPTIONS[node.pattern] ?? `must match ${node.pattern}`}` });

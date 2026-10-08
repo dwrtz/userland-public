@@ -82,7 +82,7 @@ When a tool or a command fails, tell the owner what its error says and follow it
 | Get a copy of one collection's records, without uploaded files | `apps_export` with `collection`, `no_files` | `userland apps export <app-id> [dir] --collection <name> --no-files` |
 | Take an app offline | `apps_unpublish` with `confirm` | `userland apps unpublish <app-id> --yes` |
 
-If a CLI command such as `apps download`, `apps export` or `secrets list` isn't found, update the CLI first: `npm install -g @userland.fun/cli`.
+If `secrets list`, `secrets delete`, `invites create`, `apps download`, `apps export`, or `--cursor` is not found, update the CLI first: `npm install -g @userland.fun/cli`. A bundle over 16 MiB needs CLI 0.13.0 or later, which publishes it in an upload session by itself (more lines at the end of the output: `upload_id=`, `upload_files_sent=`, `upload_files_copied=`); an older CLI sends it in one request, which the API can refuse, so update first.
 
 Events come newest first. When there are more, the result gives a cursor (with the CLI, a last line `cursor=<cursor>`); pass it to read the next, older page.
 

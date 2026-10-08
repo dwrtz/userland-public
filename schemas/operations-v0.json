@@ -2,8 +2,8 @@
   "$schema": "https://docs.userland.fun/schemas/operations-v0.schema.json",
   "version": "v0",
   "cli_source": {
-    "cli_version": "0.12.0",
-    "public_commit": "3bdb05a2d7eab2410e58bb32337f4826840d4966"
+    "cli_version": "0.13.0",
+    "public_commit": "99626a90da6a54f2b9e0678a6ee2895aeb843a6d"
   },
   "environment": [
     {
@@ -881,14 +881,44 @@
         {
           "method": "PUT",
           "path": "/v0/apps",
-          "when": "without --app",
+          "when": "without --app, for a bundle of 16 MiB or less",
           "account_header": true
         },
         {
           "method": "PUT",
           "path": "/v0/apps/:app_id",
-          "when": "with --app",
+          "when": "with --app, for a bundle of 16 MiB or less",
           "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v0/uploads",
+          "when": "without --app, for a bundle over 16 MiB: declares the files",
+          "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v0/apps/:app_id/uploads",
+          "when": "with --app, for a bundle over 16 MiB: declares the files",
+          "account_header": true
+        },
+        {
+          "method": "PUT",
+          "path": "/v0/uploads/:upload_id/files/:file_path",
+          "when": "for each file the session needs; file_path is the rest of the URL, one or more segments",
+          "account_header": false
+        },
+        {
+          "method": "POST",
+          "path": "/v0/uploads/:upload_id/commit",
+          "when": "once every needed file is in, with an Idempotency-Key",
+          "account_header": false
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/uploads/:upload_id",
+          "when": "when the publish stops before the commit (a refused file, or Ctrl-C)",
+          "account_header": false
         }
       ],
       "permission": "apps.publish",
@@ -1114,7 +1144,7 @@
       "area": "apps",
       "kind": "api",
       "effect": "destructive",
-      "summary": "Take an app offline and remove its addresses; its versions are kept.",
+      "summary": "Take an app offline and remove its addresses; its data and versions are kept for 30 days, then deleted.",
       "cli": {
         "command": "apps unpublish",
         "aliases": [],
@@ -2174,7 +2204,7 @@
           "required": false,
           "takes_value": true,
           "role": "interface",
-          "description": "The folder to save into; without it, a folder named after the app. MCP reads the files or makes a draft from the version instead."
+          "description": "The folder to save into; without it, a folder named after the app. MCP lists the files with a link to their zip, or starts a draft from the version, instead."
         },
         {
           "cli": "--version",
@@ -2237,7 +2267,7 @@
         "via": "tool",
         "tool": "apps_download",
         "status": "planned",
-        "note": "Lists the version's files and reads each one's original bytes (256a), or starts a draft from the version (250m)."
+        "note": "Lists the version's files and hands back a 15-minute link to download them all as a zip (POST /v0/apps/:app_id/releases/:release_id/download-link, 250p); drafts_create starts a draft from the version to read or change them (250o)."
       }
     },
     {
@@ -2268,7 +2298,7 @@
           "required": false,
           "takes_value": true,
           "role": "interface",
-          "description": "The folder to save into; without it, <app-id>-data. MCP reads the same pages, or an export archive (255b), instead."
+          "description": "The folder to save into; without it, <app-id>-data. MCP reads the same pages, or points the person to the console to download all the saved data, instead."
         },
         {
           "cli": "--collection",
@@ -2358,8 +2388,272 @@
         "via": "tool",
         "tool": "apps_export",
         "status": "planned",
-        "note": "Reads the same pages (255a), or makes an export archive (255b) and hands back its link."
+        "note": "With collection, reads the same pages, one per call. Without, reports each collection's record count and how many people sign in, and gives the address of the app's Settings in the Userland console, where the person downloads all the saved data with their own session (the zip never passes through the chat, and the API refuses a connection there: download-export-paste-1).",
+        "extra_inputs": [
+          {
+            "name": "cursor",
+            "type": "string",
+            "required": false,
+            "description": "Continue a collection from an earlier page's next_cursor."
+          }
+        ]
       }
+    }
+  ],
+  "mcp_tools": [
+    {
+      "tool": "drafts_create",
+      "title": "Start a draft",
+      "summary": "Starts a draft: an app folder kept at Userland, to build file by file and publish with apps_publish. With app_id it starts from the app's live version (or the version named in from), with its manifest.userland.json; without, it starts empty, for a new app.",
+      "effect": "write",
+      "inputs": [
+        {
+          "name": "app_id",
+          "type": "string",
+          "required": false,
+          "description": "Start from this app's live version, to publish a new version of it."
+        },
+        {
+          "name": "from",
+          "type": "string",
+          "required": false,
+          "description": "Which version to start from: \"live\" (the default with app_id), a release ID from apps_releases, or \"empty\"."
+        },
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": false,
+          "description": "The business a new app goes in. Without it, the business chosen for this connection, else your default business."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/drafts",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_get",
+      "title": "List a draft's files",
+      "summary": "Lists a draft's files with their sizes, SHA-256 and whether each is stored, still copied from the version it started from, or waiting for its upload.",
+      "effect": "read",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/drafts/:draft_id",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_read_file",
+      "title": "Read a draft file",
+      "summary": "Reads one of a draft's files: its text, or its bytes as base64 for a binary file.",
+      "effect": "read",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "The file's path in the app folder, such as public/index.html."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/drafts/:draft_id/files/:path",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_write_file",
+      "title": "Write a draft file",
+      "summary": "Writes one file in a draft, replacing any there: content as text, or content_base64 for bytes, up to about 190 KiB a call. For a bigger or binary file the person has, use drafts_upload_url. manifest.userland.json is the app's manifest, as in a CLI folder.",
+      "effect": "write",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "The file's path in the app folder, such as public/index.html."
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": false,
+          "description": "The file's content as UTF-8 text."
+        },
+        {
+          "name": "content_base64",
+          "type": "string",
+          "required": false,
+          "description": "The file's bytes, base64-encoded, instead of content."
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "required": false,
+          "description": "Its content type; without it, the one `userland publish` gives the file's extension."
+        }
+      ],
+      "api": [
+        {
+          "method": "PUT",
+          "path": "/v0/drafts/:draft_id/files/:path",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_delete_file",
+      "title": "Remove a draft file",
+      "summary": "Removes one file from a draft. The live version doesn't change until the draft is published.",
+      "effect": "write",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "The file's path in the app folder, such as public/index.html."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/drafts/:draft_id/files/:path",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_upload_url",
+      "title": "Get an upload link",
+      "summary": "A link that takes one file's bytes for 15 minutes, bound to its path, size and SHA-256, for a file too big for drafts_write_file. An assistant with HTTP access PUTs the bytes to it (no sign-in); the file shows as waiting until they arrive.",
+      "effect": "write",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "The file's path in the app folder, such as public/index.html."
+        },
+        {
+          "name": "size",
+          "type": "integer",
+          "required": true,
+          "description": "The file's size in bytes."
+        },
+        {
+          "name": "sha256",
+          "type": "string",
+          "required": true,
+          "description": "The file's SHA-256, as 64 hexadecimal characters."
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "required": false,
+          "description": "Its content type; without it, the one `userland publish` gives the file's extension."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/drafts/:draft_id/upload-urls",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_delete",
+      "title": "Delete a draft",
+      "summary": "Deletes a draft that won't be published, with every file it was sent. The app and its versions don't change.",
+      "effect": "destructive",
+      "inputs": [
+        {
+          "name": "draft_id",
+          "type": "string",
+          "required": true,
+          "description": "The draft, from drafts_create."
+        },
+        {
+          "name": "confirm",
+          "type": "boolean",
+          "required": false,
+          "description": "true to delete it; without it, the tool says what would be lost."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v0/drafts/:draft_id",
+          "when": "always",
+          "account_header": true
+        }
+      ]
+    },
+    {
+      "tool": "drafts_list",
+      "title": "List your drafts",
+      "summary": "Lists your drafts that haven't been published, in a business, newest change first: each with its app, its file count and size, and what it holds against the business's file storage. Use it to find a draft whose ID was lost, then publish it with apps_publish or delete it with drafts_delete.",
+      "effect": "read",
+      "inputs": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": false,
+          "description": "The business to list drafts in. Without it, the business chosen for this connection, else your default business."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/drafts",
+          "when": "always",
+          "account_header": true
+        }
+      ]
     }
   ]
 }
