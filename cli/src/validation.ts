@@ -623,6 +623,11 @@ function semanticManifestErrors(document: Record<string, unknown>): ValidationIs
   errors.push(...embedOriginErrors(runtime.embed_origins));
 
   const resources = (document.resources as Record<string, unknown> | undefined) ?? {};
+  const auth = (resources.auth as Record<string, unknown> | undefined) ?? {};
+  if (Array.isArray(auth.admin_roles) && auth.admin_roles.length > 0 &&
+      (auth.mode !== "app_users" || auth.admin_roles.some((role) => !Array.isArray(auth.roles) || !auth.roles.includes(role)))) {
+    errors.push({ code: "invalid_resource_manifest", manifest_path: "resources.auth.admin_roles", message: "must be declared roles with mode app_users" });
+  }
   const collections = objectEntries((resources.data as Record<string, unknown> | undefined)?.collections);
   for (const [collectionName, collectionValue] of collections) {
     const collection = collectionValue as Record<string, unknown>;
