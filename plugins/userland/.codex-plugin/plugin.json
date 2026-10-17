@@ -1,0 +1,28 @@
+{
+  "name": "userland",
+  "version": "0.1.0",
+  "description": "Build, publish and run apps for your business on Userland: skills for each step, and the Userland connector to do it.",
+  "author": {
+    "name": "Userland",
+    "email": "support@userland.fun",
+    "url": "https://userland.fun/"
+  },
+  "homepage": "https://docs.userland.fun/",
+  "repository": "https://github.com/dwrtz/userland-public",
+  "license": "MIT",
+  "keywords": ["userland", "apps", "publish", "hosting", "small business"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Userland",
+    "shortDescription": "Build and publish apps for your business",
+    "longDescription": "Describe the app your business needs, and Codex builds it and publishes it on Userland: booking pages, forms, client portals, invoices and more. Skills cover building an app, its saved data and sign-in, publishing, secret keys, fixing errors, undoing a change, custom domains, and your Userland account. Secret keys are never typed into the chat.",
+    "developerName": "Userland",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Build and publish an app for my business on Userland"],
+    "websiteURL": "https://userland.fun/",
+    "privacyPolicyURL": "https://userland.fun/legal/privacy/",
+    "termsOfServiceURL": "https://userland.fun/legal/terms/"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "userland",
+  "interface": {
+    "displayName": "Userland"
+  },
+  "plugins": [
+    {
+      "name": "userland",
+      "source": {
+        "source": "local",
+        "path": "./plugins/userland"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

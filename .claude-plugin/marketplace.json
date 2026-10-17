@@ -1,0 +1,18 @@
+{
+  "name": "userland",
+  "owner": {
+    "name": "Userland",
+    "email": "support@userland.fun"
+  },
+  "metadata": {
+    "description": "The Userland plugin: build, publish and run apps for your business on Userland."
+  },
+  "plugins": [
+    {
+      "name": "userland",
+      "source": "./plugins/userland",
+      "description": "Build, publish and run apps for your business on Userland: skills for each step, and the Userland connector to do it.",
+      "category": "productivity"
+    }
+  ]
+}

@@ -6,33 +6,37 @@
     {
       "name": "userland-build-app",
       "path": ".agents/skills/userland-build-app",
-      "description": "Userland app build workflow from idea to valid bundle."
+      "description": "Use when someone wants a new app, tool, form or website for their business built and published on Userland. Covers planning it from their description, writing the manifest, pages and server code, checking it, and publishing it with the Userland connector or the CLI."
     },
     {
       "name": "userland-manifest-resources",
       "path": ".agents/skills/userland-manifest-resources",
-      "description": "Userland manifest resources for auth, data, files, secrets, jobs, and webhooks."
+      "description": "Use when a Userland app needs sign-in and roles, saved data, file uploads, secret keys, scheduled tasks or webhooks, or must show inside the owner's own website. Covers declaring them in manifest.userland.json and checking the manifest against the owner's plan."
     },
     {
       "name": "userland-runtime-code",
       "path": ".agents/skills/userland-runtime-code",
-      "description": "Userland runtime ctx server code for routes, data, auth, secrets, files, jobs, and logs."
+      "description": "Use when writing or fixing a Userland app's server code (server/index.js), such as routes, saved data, sign-in, secret keys, file uploads, scheduled tasks, webhooks and logs through the runtime ctx."
     },
     {
       "name": "userland-publish-operate",
       "path": ".agents/skills/userland-publish-operate",
-      "description": "Userland app publish, secrets, events, releases, rollback, invites, and unpublish (remove app) operations."
+      "description": "Use when publishing or updating a Userland app, adding or deleting its secret keys, reading its errors or visits, undoing a bad version, inviting people to sign in, managing its short addresses and custom domains, getting its files or data back, or taking it offline."
     },
     {
       "name": "userland-debug-migrate",
       "path": ".agents/skills/userland-debug-migrate",
-      "description": "Userland activation, runtime, resource migration, job, webhook, and rollback debugging."
+      "description": "Use when a Userland app isn't live after publishing, shows errors, looks blank inside another site, or breaks after a manifest change. Covers reading its status and events, finding the cause, and fixing forward or undoing to a version that worked."
     },
     {
       "name": "userland-adapt-examples",
       "path": ".agents/skills/userland-adapt-examples",
-      "description": "Userland examples adaptation workflow for cloning patterns into a new app."
+      "description": "Use when starting a Userland app from one of the public examples, such as the booking app, invoice generator, job board, link in bio, mini CRM or waitlist. Covers choosing the closest one, copying only what the app needs, renaming and trimming it, checking it, and publishing it."
+    },
+    {
+      "name": "userland-account",
+      "path": ".agents/skills/userland-account",
+      "description": "Use when the owner asks to sign in or out of Userland, choose which business to work in, check their plan, limits or what a smaller plan would turn off, make, rename or revoke API keys, or contact Userland support."
     }
   ]
 }
-

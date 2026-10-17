@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "userland": {
+      "type": "http",
+      "url": "https://mcp.userland.fun/mcp"
+    }
+  }
+}
