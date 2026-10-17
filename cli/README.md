@@ -2,6 +2,8 @@
 
 This directory is the source for the public `@userland.fun/cli` npm package.
 
+For the native Worker authoring interface in the current source checkout, see [Native Workers](./NATIVE_WORKERS.md). That profile is restricted to operator-enabled internal fixtures; use `userland context` to discover actual capabilities. Legacy commands below remain during the migration.
+
 Docs:
 
 - https://docs.userland.fun/llms.txt

@@ -2,6 +2,8 @@
 
 This repo is the public agent toolkit for building and publishing Userland apps.
 
+The native Worker redesign is being implemented alongside the legacy examples. The source CLI supports the bounded internal fixture profile described in [Native Worker authoring](./cli/NATIVE_WORKERS.md). Start with `userland context` to discover current capabilities; existing examples below use the legacy runtime until migrated.
+
 Use it with the docs at https://docs.userland.fun, especially:
 
 - https://docs.userland.fun/llms.txt

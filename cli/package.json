@@ -9,7 +9,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "NATIVE_WORKERS.md"
   ],
   "scripts": {
     "build": "cd .. && npm run cli:build",
