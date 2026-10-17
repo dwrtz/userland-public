@@ -43,6 +43,13 @@ describe("public CLI", () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  test("recognizes native secret intent flags before checking required environment",async()=>{
+    const result=await runCli(["apps","secrets","set","app_example","TOKEN","--expected-revision","1"],"http://127.0.0.1:1");
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Choose --account and --environment");
+    expect(result.stderr).not.toContain("Unknown option");
+  });
+
   test.each([
     [["members", "list", "--account", "acct_team"], "GET /v0/accounts/acct_team/members", "acct_team", undefined],
     [["members", "invite", "member@example.com", "--role", "member", "--account", "acct_team"], "POST /v0/accounts/acct_team/invitations", "acct_team", { email: "member@example.com", role: "member" }],
@@ -79,6 +86,9 @@ describe("public CLI", () => {
   test.each([
     [["context", "--cursor", "app_cursor"], "GET /v1/context?cursor=app_cursor"],
     [["apps", "get", "app_native", "--environment", "preview", "--view", "source", "--source-revision", "src_exact", "--path", "worker.js", "--cursor", "8"], "GET /v1/apps/app_native?environment=preview&view=source&source_revision=src_exact&path=worker.js&cursor=8"],
+    [["apps", "stop", "app_native", "--environment", "preview", "--expected-epoch", "1", "--scope", "suspend", "--idempotency-key", "stop-native"], "POST /v1/apps/app_native/stop"],
+    [["apps", "resume", "app_native", "--environment", "preview", "--expected-epoch", "2", "--idempotency-key", "resume-native"], "POST /v1/apps/app_native/resume"],
+    [["apps", "delete", "app_native", "--expected-revision", "1", "--retention", "retain_source_and_data", "--idempotency-key", "delete-native"], "DELETE /v1/apps/app_native"],
     [["operations", "get", "nop_native"], "GET /v1/operations/nop_native"],
     [["operations", "resume", "nop_native"], "POST /v1/operations/nop_native/resume"],
     [["operations", "cancel", "nop_native"], "POST /v1/operations/nop_native/cancel"]

@@ -7,6 +7,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { contentTypeForPath, csvRow, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
+import { nativeSecretsCommand } from "./nativeSecrets.js";
 import { nativeCommand } from "./native.js";
 import { accountMembershipCommand } from "./accountMembership.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
@@ -530,7 +531,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "context" || command === "operations" || (command === "apps" && (args[0] === "get" || args[0] === "apply"))) {
+  if(command==="apps"&&args[0]==="secrets"&&args.some(arg=>["--environment","--expected-revision","--expected-epoch","--expected-secret-revision","--idempotency-key","--source-json","--operation"].includes(arg))){
+    await nativeSecretsCommand(args.slice(1),{apiFetch,pathSegment,print:(line)=>console.log(line)});return;
+  }
+  if (command === "context" || command === "operations" || (command === "apps" && ["get", "apply", "run", "stop", "resume", "delete"].includes(args[0]))) {
     await nativeCommand(command, args, { apiFetch, pathSegment, print: (line) => console.log(line) });
     return;
   }
@@ -3831,7 +3835,11 @@ function usage(exitCode: number): never {
   userland auth api-keys revoke <api-key-id> [--yes]
   userland context [--account <account-id>] [--cursor <cursor>] [--json]
   userland apps get <app-id> [--account <account-id>] [--environment <production|preview>] [--view <summary|deployments|source>] [--source-revision <revision>] [--path <path>] [--cursor <cursor>] [--json]
-  userland apps apply <dir> --account <account-id> [--name <name>] [--app <app-id>] [--expected-revision <revision>] --environment <production|preview> --mode <publish|preview> [--audience <public|private>] --idempotency-key <key> [--json]
+  userland apps apply [<dir>] [--patch-json <patch> | --build-artifact <id> | --candidate-deployment <id>] [--source-revision <revision>] [--configuration-digest <digest>] --account <account-id> [--name <name>] [--app <app-id>] [--expected-revision <revision>] --environment <production|preview> --mode <publish|preview> [--audience <public|private>] [--format <source|prebuilt>] [--secret-requirements-json '<JSON array>'] --idempotency-key <key> [--json]
+  userland apps run <app-id> --account <account-id> --expected-revision <revision> --source-revision <source-revision> --argv-json '<JSON string array>' --idempotency-key <key> [--environment <production|preview>] [--duration-ms <1000..300000>] [--transfer-bytes <1..67108864>] [--json]
+  userland apps stop <app-id> --environment <production|preview> --expected-epoch <epoch> --scope <unpublish|suspend> --idempotency-key <key> [--account <account-id>] [--json]
+  userland apps resume <app-id> --environment <production|preview> --expected-epoch <epoch> --idempotency-key <key> [--account <account-id>] [--json]
+  userland apps delete <app-id> --expected-revision <revision> --retention retain_source_and_data --idempotency-key <key> [--account <account-id>] [--json]
   userland operations get <operation-id> [--account <account-id>] [--json]
   userland operations resume <operation-id> [--account <account-id>] [--json]
   userland operations cancel <operation-id> [--account <account-id>] [--json]
@@ -3859,6 +3867,9 @@ function usage(exitCode: number): never {
   userland apps export <app-id> [dir] [--collection <name>] [--no-files] [--force] [--account <account-id>] [--json]
   userland apps secrets list <app-id> [--account <account-id>] [--json]
   userland apps secrets set <app-id> <NAME> [--account <account-id>]   (reads the value from stdin)
+  userland apps secrets set <app-id> <NAME> --environment <preview|production> --expected-revision <n> --expected-epoch <n> --expected-secret-revision <n|none> --idempotency-key <key> --source-json <json> --account <id>
+  userland apps secrets set <app-id> <NAME> --operation <id> --environment <preview|production> --account <id>
+  userland apps secrets delete <app-id> <NAME> --environment <preview|production> --expected-revision <n> --expected-epoch <n> --expected-secret-revision <n> --idempotency-key <key> --account <id>
   userland apps secrets delete <app-id> <NAME> [--yes] [--account <account-id>]
   userland apps invites create <app-id> --email <email> [--role <role>]... [--expires-in-days <1-30>] [--account <account-id>] [--json]
   userland apps events <app-id> [--type <event-type>] [--severity <level>] [--release <release-id>] [--limit <n>] [--cursor <cursor>] [--account <account-id>]

@@ -38,7 +38,7 @@
       "area": "context",
       "kind": "api",
       "effect": "read",
-      "summary": "Start here: discover identity, Accounts, actual native capabilities, permissions, usage and apps. The current prebuilt profile is restricted to internal fixtures.",
+      "summary": "Start here: discover identity, Accounts, actual native capabilities, permissions, usage and apps. Native hosting is currently restricted to internal fixtures.",
       "cli": {
         "command": "context",
         "aliases": [],
@@ -142,7 +142,7 @@
           "role": "input",
           "mcp_input": "view",
           "api_field": "query:view",
-          "description": "summary, deployments or source."
+          "description": "summary, deployments, source, resources, secrets or usage."
         },
         {
           "cli": "--source-revision",
@@ -206,7 +206,7 @@
       "area": "apps",
       "kind": "api",
       "effect": "write",
-      "summary": "Apply a complete prebuilt native Worker package under existing Account authority. No additional Publish click is required. Reuse the exact idempotency key for retries; poll operations_get until a terminal result. This profile has no hosted build or runner.",
+      "summary": "Apply native source, an atomic file patch, or exact compiled output under existing Account authority. No additional Publish click is required. Read context_get capabilities first; hosted source builds require the configured private runner. Reuse the exact idempotency key for retries and poll operations_get until a terminal result.",
       "cli": {
         "command": "apps apply",
         "aliases": [],
@@ -226,31 +226,480 @@
         {
           "cli": "<dir>",
           "source": "argument",
-          "required": true,
+          "required": false,
           "takes_value": true,
           "role": "files",
           "mcp_input": "source",
           "api_field": "source",
-          "description": "Complete prebuilt package folder. MCP takes the same files as an object.",
+          "description": "Complete package folder, or typed atomic patch. Omit source only for exact artifact promotion.",
           "mcp_schema": {
             "type": "object",
-            "properties": {
-              "files": {
+            "oneOf": [
+              {
                 "type": "object",
-                "description": "Complete bounded prebuilt UTF-8 package including wrangler.jsonc and its JavaScript module. No credentials, secret files or SDK manifest.",
-                "minProperties": 2,
-                "maxProperties": 128,
-                "additionalProperties": {
-                  "type": "string",
-                  "minLength": 0,
-                  "maxLength": 524288
-                }
+                "properties": {
+                  "files": {
+                    "type": "object",
+                    "description": "Complete bounded UTF-8 package including wrangler.jsonc. No credentials, secret files or SDK manifest.",
+                    "minProperties": 1,
+                    "maxProperties": 128,
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 524288
+                    }
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "base_source_revision": {
+                    "type": "string",
+                    "description": "Exact source revision returned by apps.get",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "base_source_id": {
+                    "type": "string",
+                    "description": "Returned source_id, needed for ambiguous same-file metadata",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  },
+                  "changes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 128,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Canonical relative file path",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "expected_hash": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 80
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 524288
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "expected_hash",
+                        "content"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "base_source_revision",
+                  "changes"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "files"
-            ],
-            "additionalProperties": false
+            ]
+          }
+        },
+        {
+          "cli": "--format",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source",
+          "api_field": "source",
+          "description": "Optional source or prebuilt override; omit for automatic build detection.",
+          "mcp_schema": {
+            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "files": {
+                    "type": "object",
+                    "description": "Complete bounded UTF-8 package including wrangler.jsonc. No credentials, secret files or SDK manifest.",
+                    "minProperties": 1,
+                    "maxProperties": 128,
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 524288
+                    }
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "base_source_revision": {
+                    "type": "string",
+                    "description": "Exact source revision returned by apps.get",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "base_source_id": {
+                    "type": "string",
+                    "description": "Returned source_id, needed for ambiguous same-file metadata",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  },
+                  "changes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 128,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Canonical relative file path",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "expected_hash": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 80
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 524288
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "expected_hash",
+                        "content"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "base_source_revision",
+                  "changes"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--patch-json",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source",
+          "api_field": "source",
+          "description": "Atomic patch with exact base source revision and per-file hash preconditions.",
+          "mcp_schema": {
+            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "files": {
+                    "type": "object",
+                    "description": "Complete bounded UTF-8 package including wrangler.jsonc. No credentials, secret files or SDK manifest.",
+                    "minProperties": 1,
+                    "maxProperties": 128,
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 524288
+                    }
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "base_source_revision": {
+                    "type": "string",
+                    "description": "Exact source revision returned by apps.get",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "base_source_id": {
+                    "type": "string",
+                    "description": "Returned source_id, needed for ambiguous same-file metadata",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "prebuilt"
+                    ],
+                    "description": "Optional override. TypeScript, package build scripts and dependencies select hosted builds automatically; prebuilt bypasses execution."
+                  },
+                  "changes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 128,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "Canonical relative file path",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "expected_hash": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 80
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "minLength": 0,
+                              "maxLength": 524288
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "expected_hash",
+                        "content"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "base_source_revision",
+                  "changes"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--build-artifact",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "build_artifact_id",
+          "api_field": "build_artifact_id",
+          "description": "Promote this exact owned executable instead of supplying source."
+        },
+        {
+          "cli": "--candidate-deployment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "candidate_deployment_id",
+          "api_field": "candidate_deployment_id",
+          "description": "Promote this exact retained verified candidate instead of supplying source."
+        },
+        {
+          "cli": "--source-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source_revision",
+          "api_field": "source_revision",
+          "description": "Exact original source assertion required for promotion."
+        },
+        {
+          "cli": "--configuration-digest",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "configuration_digest",
+          "api_field": "configuration_digest",
+          "description": "Exact executable configuration assertion required for promotion."
+        },
+        {
+          "cli": "--secret-requirements-json",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "secret_requirements",
+          "api_field": "secret_requirements",
+          "description": "JSON array of generated or protected external app-secret requirements. Plaintext secret values are never accepted.",
+          "mcp_schema": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "App secret binding name",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "ensure": {
+                      "type": "string",
+                      "enum": [
+                        "generated"
+                      ]
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 16,
+                      "maximum": 64
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "ensure",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "App secret binding name",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "ensure": {
+                      "type": "string",
+                      "enum": [
+                        "external"
+                      ]
+                    },
+                    "provider": {
+                      "type": "string",
+                      "description": "External provider shown during protected entry",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "purpose": {
+                      "type": "string",
+                      "description": "Why this app needs the credential",
+                      "minLength": 1,
+                      "maxLength": 240
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "ensure",
+                    "provider",
+                    "purpose"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         {
@@ -302,7 +751,7 @@
                   },
                   "expected_revision": {
                     "type": "integer",
-                    "minimum": 0,
+                    "minimum": 1,
                     "description": "Revision read through apps_get."
                   }
                 },
@@ -363,7 +812,7 @@
                   },
                   "expected_revision": {
                     "type": "integer",
-                    "minimum": 0,
+                    "minimum": 1,
                     "description": "Revision read through apps_get."
                   }
                 },
@@ -424,7 +873,7 @@
                   },
                   "expected_revision": {
                     "type": "integer",
-                    "minimum": 0,
+                    "minimum": 1,
                     "description": "Revision read through apps_get."
                   }
                 },
@@ -598,6 +1047,437 @@
       }
     },
     {
+      "id": "apps.run",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Run literal command arguments against an exact saved source revision in a disposable isolated environment. When context.get offers browser tasks, select an exact private preview deployment to run a browser command. Browser checks cover only the flows your script declares; hosted WebSockets are unavailable. Poll the returned operation; output is untrusted. The five-minute limit includes boot and teardown. Reuse the exact idempotency key for retries.",
+      "cli": {
+        "command": "apps run",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_revision",
+          "api_field": "expected_revision",
+          "description": "Current app revision read through apps.get.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--source-revision",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source",
+          "api_field": "source",
+          "description": "Exact saved source revision; moving selectors are unsupported.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "source_revision": {
+                "type": "string",
+                "description": "Exact src_ source revision",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "source_revision"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--argv-json",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "task",
+          "api_field": "task",
+          "description": "A JSON array of literal command arguments. A shell runs only if explicitly named.",
+          "mcp_schema": {
+            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "command"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "browser"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  },
+                  "deployment_id": {
+                    "type": "string",
+                    "description": "Exact active private preview deployment",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "evidence_paths": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "description": "Relative PNG or ZIP evidence path",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv",
+                  "deployment_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--deployment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "task",
+          "api_field": "task",
+          "description": "Run a browser task against this exact active private preview deployment; requires browser in context.get.",
+          "mcp_schema": {
+            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "command"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "browser"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  },
+                  "deployment_id": {
+                    "type": "string",
+                    "description": "Exact active private preview deployment",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "evidence_paths": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "description": "Relative PNG or ZIP evidence path",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv",
+                  "deployment_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--evidence-paths-json",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "task",
+          "api_field": "task",
+          "description": "JSON array of at most eight relative PNG/ZIP evidence paths for a browser task, totaling 2 MiB.",
+          "mcp_schema": {
+            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "command"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "browser"
+                    ]
+                  },
+                  "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 4096
+                    }
+                  },
+                  "deployment_id": {
+                    "type": "string",
+                    "description": "Exact active private preview deployment",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "evidence_paths": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "description": "Relative PNG or ZIP evidence path",
+                      "minLength": 1,
+                      "maxLength": 200
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "argv",
+                  "deployment_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Source execution context; defaults to preview. Browser tasks require preview.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--duration-ms",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "limits",
+          "api_field": "limits",
+          "description": "Lower the allocated lifetime and transfer limits. Boot and teardown count.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 300000
+              },
+              "transfer_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 67108864
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--transfer-bytes",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "limits",
+          "api_field": "limits",
+          "description": "Lower combined registry and preview transfer below the 64 MiB execution ceiling.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 300000
+              },
+              "transfer_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 67108864
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact lifecycle intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/apps/:app_id/runs",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_run",
+        "status": "planned"
+      }
+    },
+    {
       "id": "operations.get",
       "area": "operations",
       "kind": "api",
@@ -630,6 +1510,26 @@
           "description": "Account selection from context.get, else the connection or CLI's selected Account."
         },
         {
+          "cli": "--view",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "view",
+          "api_field": "query:view",
+          "description": "summary or evidence; evidence reads one declared file."
+        },
+        {
+          "cli": "--path",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "path",
+          "api_field": "query:path",
+          "description": "Exact declared PNG/ZIP evidence path for view=evidence."
+        },
+        {
           "cli": "--json",
           "source": "flag",
           "required": false,
@@ -657,11 +1557,327 @@
       }
     },
     {
+      "id": "apps.stop",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Close fresh app and preview admission by exact epoch. Choose unpublish or suspend explicitly. Existing streams, sockets and waitUntil may continue; source, data and retained Worker/storage charges remain.",
+      "cli": {
+        "command": "apps stop",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Exact native environment.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--expected-epoch",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_epoch",
+          "api_field": "expected_epoch",
+          "description": "Current admission epoch from apps.get; stale intent cannot stop or resume a newer generation.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--scope",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "scope",
+          "api_field": "scope",
+          "description": "unpublish closes request admission; suspend also requests platform task/trigger shutdown. Current profile provisions no background triggers or direct resource credentials.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "unpublish",
+              "suspend"
+            ]
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact lifecycle intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/apps/:app_id/stop",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_stop",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.resume",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Resume one stopped native environment by exact epoch using its retained executable. Operator holds must be cleared separately. Old operations and preview grants stay revoked; a new preview viewing operation is returned.",
+      "cli": {
+        "command": "apps resume",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Exact native environment.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--expected-epoch",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_epoch",
+          "api_field": "expected_epoch",
+          "description": "Current admission epoch from apps.get; stale intent cannot stop or resume a newer generation.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact lifecycle intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/apps/:app_id/resume",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_resume",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.delete",
+      "area": "apps",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Delete native app execution by exact revision. Retain source and durable data explicitly; exact Worker cleanup can remain pending. This does not purge data or promise retained storage is free.",
+      "cli": {
+        "command": "apps delete",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_revision",
+          "api_field": "expected_revision",
+          "description": "Current app revision from apps.get.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--retention",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "retention",
+          "api_field": "retention",
+          "description": "Current execution deletion retains source and data. Purge is not supported.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "retain_source_and_data"
+            ]
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact lifecycle intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "DELETE",
+          "path": "/v1/apps/:app_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.delete",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_delete",
+        "status": "planned"
+      }
+    },
+    {
       "id": "operations.resume",
       "area": "operations",
       "kind": "api",
       "effect": "write",
-      "summary": "Resume a waiting operation through its original credential after its blocker is resolved.",
+      "summary": "Reconcile a waiting operation or existing hosted task through its original credential.",
       "cli": {
         "command": "operations resume",
         "aliases": [],
@@ -2522,6 +3738,198 @@
           "mcp_input": "account_id",
           "api_field": "header:x-userland-account-id",
           "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Native environment; required for native credential administration.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_revision",
+          "api_field": "expected_revision",
+          "description": "Exact current native revision.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--expected-epoch",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_epoch",
+          "api_field": "expected_epoch",
+          "description": "Exact current native revision.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--expected-secret-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_secret_revision",
+          "api_field": "expected_secret_revision",
+          "description": "Current secret revision, or none/null only for an absent value.",
+          "mcp_schema": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact credential intent."
+        },
+        {
+          "cli": "--source-json",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source",
+          "api_field": "source",
+          "description": "Native generated, protected_entry or explicit scoped-copy intent. Never a plaintext value.",
+          "mcp_schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "generated"
+                    ]
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 16,
+                    "maximum": 64
+                  }
+                },
+                "required": [
+                  "kind",
+                  "bytes"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "protected_entry"
+                    ]
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "External provider",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "description": "Why this app needs the credential",
+                    "minLength": 1,
+                    "maxLength": 240
+                  }
+                },
+                "required": [
+                  "kind",
+                  "provider",
+                  "purpose"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "copy"
+                    ]
+                  },
+                  "app_id": {
+                    "type": "string",
+                    "description": "Exact owned source app",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "environment": {
+                    "type": "string",
+                    "enum": [
+                      "production",
+                      "preview"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Source secret name",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "app_id",
+                  "environment",
+                  "name",
+                  "revision"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--operation",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "operation_id",
+          "api_field": ":operation_id",
+          "description": "Complete a declared external credential for this exact waiting native operation."
         }
       ],
       "api": [
@@ -2529,6 +3937,18 @@
           "method": "PUT",
           "path": "/v0/apps/:app_id/secrets/:name",
           "when": "always",
+          "account_header": true
+        },
+        {
+          "method": "PUT",
+          "path": "/v1/apps/:app_id/secrets/:name",
+          "when": "native profile",
+          "account_header": true
+        },
+        {
+          "method": "POST",
+          "path": "/v1/operations/:operation_id/secret-entries",
+          "when": "native external credential requirement",
           "account_header": true
         }
       ],
@@ -2597,6 +4017,82 @@
           "mcp_input": "account_id",
           "api_field": "header:x-userland-account-id",
           "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Native environment; required for native credential administration.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_revision",
+          "api_field": "expected_revision",
+          "description": "Exact current native revision.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--expected-epoch",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_epoch",
+          "api_field": "expected_epoch",
+          "description": "Exact current native revision.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--expected-secret-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_secret_revision",
+          "api_field": "expected_secret_revision",
+          "description": "Current secret revision, or none/null only for an absent value.",
+          "mcp_schema": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact credential intent."
         }
       ],
       "api": [
@@ -2616,6 +4112,12 @@
           "method": "DELETE",
           "path": "/v0/apps/:app_id/secrets/:name",
           "when": "always",
+          "account_header": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/v1/apps/:app_id/secrets/:name",
+          "when": "native profile",
           "account_header": true
         }
       ],
