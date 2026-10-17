@@ -1,6 +1,6 @@
 # Userland native app sources
 
-This repository contains the public client source and selected native Worker reference. Native hosting currently runs only for explicitly enabled internal Accounts; this repository does not enable paid hosting or grant provider credentials.
+This repository contains the public client source and selected native Worker reference. The shipping configuration keeps native hosting off. Bounded internal fixtures and separately approved, funded managed hosting have distinct admission gates; this repository does not enable either or grant provider credentials.
 
 Start with https://docs.userland.fun/native-guide.md. The five core operations are context.get, apps.get, apps.apply, apps.run and operations.get. Use current Account capabilities instead of assuming that builds, browsers, bindings or a source transport are configured.
 

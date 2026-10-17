@@ -1,6 +1,6 @@
 # Userland CLI
 
-Build and manage native Cloudflare Worker apps with the same operation contracts as the Userland MCP connection. The verified runtime is Node 22. Native hosting is currently enabled only for selected internal Accounts; the CLI or a payment does not grant hosting.
+Build and manage native Cloudflare Worker apps with the same operation contracts as the Userland MCP connection. The verified runtime is Node 22. The shipping configuration keeps native hosting off; selected internal Accounts can use a bounded test profile. Managed paid hosting requires explicit operator-approved policies and verified payment. Installing the CLI, connecting an assistant or returning from Checkout does not itself grant hosting.
 
 ## Install or build
 
