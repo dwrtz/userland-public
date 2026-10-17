@@ -122,6 +122,20 @@ describe("public CLI", () => {
     expect((requests[0].body as { source: { files: Record<string, string> } }).source.files).not.toHaveProperty("manifest.userland.json");
   });
 
+  test("transfers a full256KiB part through a small file-path argument",async()=>{
+    const directory=await fs.mkdtemp(path.join(os.tmpdir(),"userland-transfer-file-"));tempDirs.push(directory);
+    const bytes=Buffer.alloc(256*1024,213),transfer={action:"put",path:"assets/large.bin",part:0,sha256:"sha256:v1:"+createHash("sha256").update(bytes).digest("hex"),base64:bytes.toString("base64")};
+    const file=path.join(directory,"part.json");await fs.writeFile(file,JSON.stringify(transfer));
+    const requests:RequestRecord[]=[];
+    const api=await startMockApi(requests,{"POST /v1/apps/apply":{operation_id:"nop_transfer",status:"waiting"}});
+    const args=["apps","apply","--account","acct_team","--operation","nop_transfer","--transfer-file",file,"--json"];
+    expect(args.every(arg=>Buffer.byteLength(arg)<128*1024)).toBe(true);
+    const result=await runCli(args,api.baseUrl);
+    expect(result.code,result.stderr).toBe(0);expect(requests).toHaveLength(1);
+    expect(requests[0].body).toEqual({account_id:"acct_team",operation_id:"nop_transfer",transfer});
+    expect(requests[0].rawBody.length).toBeGreaterThan(128*1024);
+  });
+
   test("prints top-level help successfully", async () => {
     const result = await runCli(["--help"], "http://127.0.0.1:1", { apiKey: null });
 
@@ -129,6 +143,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("userland --version");
     for(const command of ["userland context","userland apps apply","userland apps get","userland apps run","userland operations get"])expect(result.stdout).toContain(command);
+    expect(result.stdout).toContain("--transfer-file <JSON file>");
     for(const command of ["userland validate","userland apps publish","userland support","userland apps export"])expect(result.stdout).not.toContain(command);
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
