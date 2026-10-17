@@ -1089,6 +1089,75 @@
           }
         },
         {
+          "cli": "--transfer-file",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "transfer",
+          "api_field": "transfer",
+          "description": "CLI transport alias: read the same typed transfer object from a bounded JSON file instead of an OS argument. The local path is never an API or MCP field.",
+          "mcp_schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "put"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Exact declared path",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "part": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 15
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "description": "Exact versioned SHA256 of this raw part",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "base64": {
+                    "type": "string",
+                    "maxLength": 349528
+                  }
+                },
+                "required": [
+                  "action",
+                  "path",
+                  "part",
+                  "sha256",
+                  "base64"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "commit"
+                    ]
+                  }
+                },
+                "required": [
+                  "action"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
           "cli": "--build-artifact",
           "source": "flag",
           "required": false,

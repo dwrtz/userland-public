@@ -51,7 +51,16 @@ The source packager preserves configuration and asset bytes. Inline input suppor
 
 An agent without a folder can start `apps_apply` with `source.manifest` entries containing `path`, `bytes`, `sha256` and `encoding`, then continue the same operation with `account_id`, `operation_id` and `transfer:{action:"put",path,part,sha256,base64}`. Commit with `transfer:{action:"commit"}`. Unverified bytes never receive a source revision or deploy. A lost write must reconcile its original receipt; don't create another intent to hide uncertainty.
 
-The CLI equivalents are `apps apply --manifest-json ...` and `apps apply --account ... --operation ... --transfer-json ...`. Follow actual context and operation limits; these internal fixture ceilings are not paid plan promises. The MCP envelope is capped at 1 MiB and does not increase the underlying API limits.
+The CLI equivalents are `apps apply --manifest-json ...` and `apps apply --account ... --operation ... --transfer-file ./part.json`. The file contains the same single part or commit object, encoded as UTF-8 JSON, with a maximum size of 384 KiB. It must be a regular file; symlinks are refused. File input avoids Linux's per-argument size limit for a full 256 KiB part encoded as base64. Small objects may instead use `--transfer-json '<JSON object>'`; the two flags are mutually exclusive. Both continue the same operation and preserve the same API request semantics. For example:
+
+```sh
+userland apps apply --account acct_example --operation nop_example \
+  --transfer-file ./part.json --json
+userland apps apply --account acct_example --operation nop_example \
+  --transfer-json '{"action":"commit"}' --json
+```
+
+The CLI stages larger local folders automatically, so this manual continuation is only needed when supplying parts directly. Follow actual context and operation limits; these internal fixture ceilings are not paid plan promises. The MCP envelope is capped at 1 MiB and does not increase the underlying API limits.
 
 ## Apply and inspect one intent
 

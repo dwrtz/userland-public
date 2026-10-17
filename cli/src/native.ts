@@ -1,5 +1,5 @@
 import { readNativePackage } from "./nativePackage.js";
-import {needsNativeTransfer,transferNativePackage} from "./nativeTransfer.js";
+import {needsNativeTransfer,transferNativePackage,readNativeTransferFile,NATIVE_TRANSFER_JSON_MAX_BYTES} from "./nativeTransfer.js";
 
 export interface NativeClient {
   apiFetch<T>(apiPath: string, init: RequestInit, options?: { accountId?: string; accountScoped?: boolean; raw?: boolean }): Promise<T>;
@@ -17,16 +17,17 @@ export async function nativeCommand(command: string, args: string[], client: Nat
   const lifecycle = command === "apps" && ["stop", "resume", "delete"].includes(action);
   const operation = command === "operations" && ["get", "resume", "cancel"].includes(action);
   if (action !== "context" && !getApp && !apply && !run && !operation && !lifecycle) throw new Error("Use context, apps get|apply|run|stop|resume|delete, or operations get|resume|cancel.");
-  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key", "operation", "transfer-json", "manifest-json"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "verification-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "deployment-id", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
+  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key", "operation", "transfer-json", "transfer-file", "manifest-json"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "verification-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "deployment-id", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
   const options = parseOptions(rest, allowed), values = options.values;
   if (options.positional.length !== (action === "context" || apply && (values["patch-json"] || values["build-artifact"] || values["candidate-deployment"] || values.operation || values["manifest-json"]) ? 0 : 1)) throw new Error(action === "context" ? "context takes flags, not a positional argument." : "Pass exactly one prebuilt directory, app ID or operation ID.");
   if(apply&&values.operation){
-    if(!values.account||!values["transfer-json"]||Object.keys(values).some(key=>!["account","operation","transfer-json"].includes(key)))throw new Error("Continue a staged operation with only --account, --operation and --transfer-json.");
-    let transfer:unknown;try{transfer=JSON.parse(values["transfer-json"]);}catch{throw new Error("--transfer-json must contain one source part or commit action.");}
-    if(values["transfer-json"].length>384*1024)throw new Error("A source transfer part exceeds the encoded request limit.");
+    if(!values.account||Boolean(values["transfer-json"])===Boolean(values["transfer-file"])||Object.keys(values).some(key=>!["account","operation","transfer-json","transfer-file"].includes(key)))throw new Error("Continue a staged operation with only --account, --operation and exactly one of --transfer-json or --transfer-file.");
+    const encoded=values["transfer-file"]?await readNativeTransferFile(values["transfer-file"]):values["transfer-json"];
+    if(Buffer.byteLength(encoded,"utf8")>NATIVE_TRANSFER_JSON_MAX_BYTES)throw new Error("A source transfer part exceeds the encoded request limit.");
+    let transfer:unknown;try{transfer=JSON.parse(encoded);}catch{throw new Error("The transfer input must contain one JSON source part or commit action.");}
     const result=await client.apiFetch("/v1/apps/apply",{method:"POST",body:JSON.stringify({account_id:values.account,operation_id:values.operation,transfer})},{accountId:values.account,accountScoped:true,raw:options.json});client.print(JSON.stringify(result,null,2));return;
   }
-  if(apply&&values["transfer-json"])throw new Error("--transfer-json requires --operation.");
+  if(apply&&(values["transfer-json"]||values["transfer-file"]))throw new Error("--transfer-json and --transfer-file require --operation.");
   let apiPath: string, method: "GET" | "POST" | "DELETE" = "GET", body: string | undefined;
   const params = new URLSearchParams();
   if (action === "context") { apiPath = "/v1/context"; if (values.cursor) params.set("cursor", values.cursor); }

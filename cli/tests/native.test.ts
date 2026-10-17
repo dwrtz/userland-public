@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { nativeCommand, type NativeClient } from "../src/native";
 import { readNativePackage, NATIVE_PACKAGE_MAX_BYTES } from "../src/nativePackage";
+import {readNativeTransferFile,NATIVE_TRANSFER_JSON_MAX_BYTES} from "../src/nativeTransfer";
 
 const temporary: string[] = [];
 async function packageDir() {
@@ -216,6 +217,37 @@ describe("native CLI contract", () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual({account_id:"acct_team",operation_id:"nop_transfer",transfer});
     await expect(nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-json",JSON.stringify({action:"commit"}),"--name","Other"],context)).rejects.toThrow();
     expect(calls).toHaveLength(1);
+  });
+  it("reads a full256KiB transfer part from a JSON file with identical API semantics",async()=>{
+    const directory=await packageDir(),file=path.join(directory,"part.json"),{context,calls}=client();
+    const bytes=Buffer.alloc(256*1024,173),transfer={action:"put",path:"assets/image.png",part:0,sha256:"sha256:v1:"+"a".repeat(64),base64:bytes.toString("base64")};
+    const json=JSON.stringify(transfer);expect(Buffer.byteLength(json)).toBeGreaterThan(128*1024);expect(Buffer.byteLength(json)).toBeLessThan(NATIVE_TRANSFER_JSON_MAX_BYTES);
+    await fs.writeFile(file,json);
+    await nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-file",file],context);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({account_id:"acct_team",operation_id:"nop_transfer",transfer});
+    expect(Buffer.from(JSON.parse(String(calls[0].init.body)).transfer.base64,"base64")).toEqual(bytes);
+  });
+  it("rejects ambiguous transfer flags and a file without an operation before reading or sending",async()=>{
+    const {context,calls}=client();
+    await expect(nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-file","missing","--transfer-json",'{"action":"commit"}'],context)).rejects.toThrow("exactly one");
+    await expect(nativeCommand("apps",["apply","unused-dir","--account","acct_team","--transfer-file","missing"],context)).rejects.toThrow("require --operation");
+    expect(calls).toHaveLength(0);
+  });
+  it("rejects oversized byte input, malformed JSON and non-UTF8 files without sending",async()=>{
+    const directory=await packageDir(),file=path.join(directory,"part.json"),{context,calls}=client();
+    const args=["apply","--account","acct_team","--operation","nop_transfer","--transfer-file",file];
+    for(const data of [Buffer.alloc(NATIVE_TRANSFER_JSON_MAX_BYTES+1),Buffer.from([255]),Buffer.from("{broken")]){
+      await fs.writeFile(file,data);await expect(nativeCommand("apps",args,context)).rejects.toThrow();
+    }
+    await expect(nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-json",JSON.stringify({action:"commit",text:"é".repeat(200000)})],context)).rejects.toThrow("encoded request limit");
+    expect(calls).toHaveLength(0);
+  });
+  it("rejects symlinks, directories and nonregular files for transfer input",async()=>{
+    const directory=await packageDir(),file=path.join(directory,"part.json"),link=path.join(directory,"linked.json");
+    await fs.writeFile(file,'{"action":"commit"}');await fs.symlink(file,link);
+    await expect(readNativeTransferFile(link)).rejects.toThrow("regular file");
+    await expect(readNativeTransferFile(directory)).rejects.toThrow("regular file");
+    if(process.platform!=="win32")await expect(readNativeTransferFile("/dev/null")).rejects.toThrow("regular file");
   });
 
 });
