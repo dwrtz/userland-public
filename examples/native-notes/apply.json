@@ -1,0 +1,5 @@
+{
+  "secret_requirements": [
+    { "name": "SESSION_SECRET", "ensure": "generated", "bytes": 32 }
+  ]
+}

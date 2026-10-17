@@ -125,7 +125,12 @@ export function staticDrift(operations: InventoryOperation[], usage: UsageLine[]
     }
     const shape = /\.\.\.$/u.test(line.text) && line.args.length === 0;
     const inventoryArgs = operation.inputs.filter((input) => input.source === "argument");
-    if (!shape && line.args.length !== inventoryArgs.length) {
+    // A source-less continuation can have its own help line. It may omit optional
+    // positionals only if another line still documents the complete argument shape.
+    const optionalVariant = line.args.length >= inventoryArgs.filter(input => input.required).length
+      && line.args.length <= inventoryArgs.length
+      && usage.some(candidate => candidate.command === line.command && candidate.args.length === inventoryArgs.length);
+    if (!shape && !optionalVariant) {
       problems.push(
         `\`userland ${line.command}\` takes ${line.args.length} positional argument(s) in the CLI's help (${line.args.join(" ") || "none"}), but ${operation.id} lists ${inventoryArgs.length} (${inventoryArgs.map((input) => input.cli).join(" ") || "none"}).`
       );

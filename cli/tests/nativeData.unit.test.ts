@@ -1,0 +1,11 @@
+import {describe,expect,it,vi} from "vitest";
+import type {NativeClient} from "../src/native.js";
+import {nativeDataCommand} from "../src/nativeData.js";
+const client=()=>({apiFetch:vi.fn(async(_path:string,_init:RequestInit,_options?:unknown)=>({operation_id:"op"})),pathSegment:(value:string)=>encodeURIComponent(value),print:vi.fn()});
+const common=["app_one","--account","acct_one","--expected-revision","2","--expected-epoch","1","--idempotency-key","key"];
+describe("native data administration",()=>{
+ it("sends literal parameterized SQL and exact scope without local execution",async()=>{const c=client();await nativeDataCommand("resources",["query",...common,"--resource","nres_one","--environment","preview","--statements-json",JSON.stringify([{sql:"SELECT body FROM notes WHERE id=?",params:["one"]}])],c as unknown as NativeClient);expect(c.apiFetch).toHaveBeenCalledWith("/v1/apps/app_one/resources/query",expect.objectContaining({method:"POST"}),expect.objectContaining({accountId:"acct_one"}));expect(JSON.parse(c.apiFetch.mock.calls[0][1].body as string)).toMatchObject({statements:[{params:["one"]}],expected_revision:2,environment:"preview"});});
+ it("restores only the named snapshot into the exact target app",async()=>{const c=client();await nativeDataCommand("apps",["restore",...common,"--recovery","recovery_one"],c as unknown as NativeClient);expect(c.apiFetch.mock.calls[0][0]).toBe("/v1/apps/app_one/restore");expect(JSON.parse(c.apiFetch.mock.calls[0][1].body as string)).toMatchObject({recovery_id:"recovery_one",expected_epoch:1});});
+ it("selects production explicitly without replacing live bindings",async()=>{const c=client();await nativeDataCommand("apps",["restore",...common,"--recovery","recovery_one","--environment","production"],c as unknown as NativeClient);expect(JSON.parse(c.apiFetch.mock.calls[0][1].body as string)).toMatchObject({environment:"production",recovery_id:"recovery_one"});});
+ it("rejects missing scope, invalid payload and archive-output flags before API work",async()=>{const c=client();for(const args of [["query",...common,"--resource","nres","--environment","preview","--statements-json","[]"],["query",...common,"--output","dump.zip"]])await expect(nativeDataCommand("resources",args,c as unknown as NativeClient)).rejects.toThrow();expect(c.apiFetch).not.toHaveBeenCalled();});
+});

@@ -1,3 +1,4 @@
+// Historical fixture/test helper only. Not reachable from the supported CLI and excluded from its package build.
 import { createHash } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";

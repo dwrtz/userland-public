@@ -1,4 +1,5 @@
 import { readNativePackage } from "./nativePackage.js";
+import {needsNativeTransfer,transferNativePackage} from "./nativeTransfer.js";
 
 export interface NativeClient {
   apiFetch<T>(apiPath: string, init: RequestInit, options?: { accountId?: string; accountScoped?: boolean; raw?: boolean }): Promise<T>;
@@ -16,15 +17,22 @@ export async function nativeCommand(command: string, args: string[], client: Nat
   const lifecycle = command === "apps" && ["stop", "resume", "delete"].includes(action);
   const operation = command === "operations" && ["get", "resume", "cancel"].includes(action);
   if (action !== "context" && !getApp && !apply && !run && !operation && !lifecycle) throw new Error("Use context, apps get|apply|run|stop|resume|delete, or operations get|resume|cancel.");
-  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
+  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key", "operation", "transfer-json", "manifest-json"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "verification-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "deployment-id", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
   const options = parseOptions(rest, allowed), values = options.values;
-  if (options.positional.length !== (action === "context" || apply && (values["patch-json"] || values["build-artifact"] || values["candidate-deployment"]) ? 0 : 1)) throw new Error(action === "context" ? "context takes flags, not a positional argument." : "Pass exactly one prebuilt directory, app ID or operation ID.");
+  if (options.positional.length !== (action === "context" || apply && (values["patch-json"] || values["build-artifact"] || values["candidate-deployment"] || values.operation || values["manifest-json"]) ? 0 : 1)) throw new Error(action === "context" ? "context takes flags, not a positional argument." : "Pass exactly one prebuilt directory, app ID or operation ID.");
+  if(apply&&values.operation){
+    if(!values.account||!values["transfer-json"]||Object.keys(values).some(key=>!["account","operation","transfer-json"].includes(key)))throw new Error("Continue a staged operation with only --account, --operation and --transfer-json.");
+    let transfer:unknown;try{transfer=JSON.parse(values["transfer-json"]);}catch{throw new Error("--transfer-json must contain one source part or commit action.");}
+    if(values["transfer-json"].length>384*1024)throw new Error("A source transfer part exceeds the encoded request limit.");
+    const result=await client.apiFetch("/v1/apps/apply",{method:"POST",body:JSON.stringify({account_id:values.account,operation_id:values.operation,transfer})},{accountId:values.account,accountScoped:true,raw:options.json});client.print(JSON.stringify(result,null,2));return;
+  }
+  if(apply&&values["transfer-json"])throw new Error("--transfer-json requires --operation.");
   let apiPath: string, method: "GET" | "POST" | "DELETE" = "GET", body: string | undefined;
   const params = new URLSearchParams();
   if (action === "context") { apiPath = "/v1/context"; if (values.cursor) params.set("cursor", values.cursor); }
   else if (getApp) {
     apiPath = `/v1/apps/${client.pathSegment(options.positional[0], "app ID")}`;
-    for (const name of ["environment", "view", "source-revision", "path", "cursor"]) if (values[name]) params.set(name.replaceAll("-", "_"), values[name]);
+    for (const name of ["environment", "view", "deployment-id", "source-revision", "path", "cursor"]) if (values[name]) params.set(name.replaceAll("-", "_"), values[name]);
   } else if (apply) {
     if (!values.account) throw new Error("--account is required. Start with userland context to choose the Account explicitly.");
     if (Boolean(values.name) === Boolean(values.app)) throw new Error("Choose exactly one of --name (create) or --app (update).");
@@ -42,14 +50,20 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     }
     const promoted = Boolean(values["build-artifact"] || values["candidate-deployment"]);
     if ((promoted || values["patch-json"]) && !values.app) throw new Error("Patching and promotion require --app and its current revision.");
-    if (promoted && (values["patch-json"] || values.format || values["secret-requirements-json"] || Boolean(values["build-artifact"]) === Boolean(values["candidate-deployment"]))) throw new Error("Choose exactly one artifact or candidate; promotion cannot replace source, format or secret requirements.");
+    if (promoted && (values["patch-json"] || values["manifest-json"] || values.format || values["secret-requirements-json"] || Boolean(values["build-artifact"]) === Boolean(values["candidate-deployment"]))) throw new Error("Choose exactly one artifact or candidate; promotion cannot replace source, format or secret requirements.");
     let source: unknown;
-    if (values["patch-json"]) {
+    if (values["manifest-json"] && values["patch-json"]) throw new Error("Choose a manifest or a source patch.");
+    if (values["manifest-json"]) {
+      if(values["manifest-json"].length>128*1024)throw new Error("The source manifest is too large.");
+      let manifest:unknown;try{manifest=JSON.parse(values["manifest-json"]);}catch{throw new Error("--manifest-json must contain a staged file manifest array.");}
+      if(!Array.isArray(manifest)||manifest.length<2||manifest.length>128)throw new Error("Declare two to128 source files.");
+      source={manifest,...(values.format?{format:values.format}:{})};
+    } else if (values["patch-json"]) {
       try { source = JSON.parse(values["patch-json"]); } catch { throw new Error("--patch-json must contain an atomic source patch object."); }
       const patch = source as { base_source_revision?: unknown; changes?: unknown[]; format?: unknown };
       if (!patch || typeof patch !== "object" || !/^src_(?:sha256:v1:)?[a-f0-9]{64}$/u.test(String(patch.base_source_revision)) || !Array.isArray(patch.changes) || !patch.changes.length || patch.changes.length > 128) throw new Error("--patch-json requires an exact base_source_revision and one to 128 changes.");
       if (values.format) source = { ...patch, format: values.format };
-    } else if (!promoted) source = { ...await readNativePackage(options.positional[0]), ...(values.format ? { format: values.format } : {}) };
+    } else if (!promoted) source = { ...await readNativePackage(options.positional[0],{maximumBytes:4*1024*1024,binary:true}), ...(values.format ? { format: values.format } : {}) };
     if (promoted && (!/^src_(?:sha256:v1:)?[a-f0-9]{64}$/u.test(values["source-revision"] ?? "") || !/^(?:sha256:v1:)?[a-f0-9]{64}$/u.test(values["configuration-digest"] ?? ""))) throw new Error("Promotion requires exact --source-revision and --configuration-digest assertions.");
     if (!promoted && (values["source-revision"] || values["configuration-digest"])) throw new Error("Source and configuration assertions apply only to artifact promotion.");
     if (values.format && !["source", "prebuilt"].includes(values.format)) throw new Error("--format must be source or prebuilt.");
@@ -59,7 +73,8 @@ export async function nativeCommand(command: string, args: string[], client: Nat
       if (!Array.isArray(secrets) || secrets.length > 16 || secrets.some(item => !item || typeof item !== "object" || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(item.name) || (item.ensure === "external" ? Object.keys(item).some(key=>!["name","ensure","provider","purpose"].includes(key)) || typeof item.provider!=="string" || !item.provider.trim() || typeof item.purpose!=="string" || !item.purpose.trim() : Object.keys(item).some(key => !["name", "ensure", "bytes"].includes(key)) || item.ensure !== "generated" || !Number.isInteger(item.bytes) || item.bytes < 16 || item.bytes > 64))) throw new Error("Use at most sixteen generated secret requirements (name, ensure, bytes) or external requirements (name, ensure, provider, purpose).");
     }
     body = JSON.stringify({ account_id: values.account, app, ...(promoted ? { ...(values["build-artifact"] ? { build_artifact_id: values["build-artifact"] } : { candidate_deployment_id: values["candidate-deployment"] }), source_revision: values["source-revision"], configuration_digest: values["configuration-digest"] } : { source }), ...(secrets !== undefined ? { secret_requirements: secrets } : {}), target: { environment: values.environment, mode: values.mode, ...(values.audience ? { audience: values.audience } : {}) }, idempotency_key: values["idempotency-key"] });
-    if (Buffer.byteLength(body, "utf8") > 768 * 1024) throw new Error("The encoded native request exceeds 768 KiB; reduce the prebuilt package. Decoded source is capped separately at 512 KiB.");
+    if(source&&typeof source==="object"&&"files" in source&&needsNativeTransfer((source as Awaited<ReturnType<typeof readNativePackage>>).files,Buffer.byteLength(body,"utf8"))){const result=await transferNativePackage(client,JSON.parse(body),(source as Awaited<ReturnType<typeof readNativePackage>>).files,values.account,options.json===true);client.print(JSON.stringify(result,null,2));return;}
+    if (Buffer.byteLength(body, "utf8") > 768 * 1024) throw new Error("The encoded native request exceeds its bounded request limit.");
     apiPath = "/v1/apps/apply"; method = "POST";
   } else if (run) {
     if (!values.account) throw new Error("--account is required. Start with userland context to choose the Account explicitly.");
@@ -67,11 +82,17 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     if (!revision || !/^[1-9]\d*$/u.test(revision) || !Number.isSafeInteger(Number(revision))) throw new Error("--expected-revision must be the current positive app revision from apps get.");
     if (!/^src_(?:sha256:v1:)?[a-f0-9]{64}$/u.test(values["source-revision"] ?? "")) throw new Error("--source-revision must identify exact saved source; moving selectors are not supported.");
     if (!values["idempotency-key"] || values["idempotency-key"].length > 128) throw new Error("--idempotency-key is required, at most 128 characters. Reuse the exact key for retries.");
-    let argv: unknown;
+    let argv: unknown, verification: unknown;
+    if(values["verification-json"]) {
+      if(values["argv-json"]||!values.deployment)throw new Error("--verification-json requires --deployment and cannot be combined with --argv-json.");
+      try{verification=JSON.parse(values["verification-json"]);}catch{throw new Error("--verification-json must be an object with exact files and named checks.");}
+      if(!verification||typeof verification!=="object"||Array.isArray(verification)||Object.keys(verification).some(key=>!["files","checks"].includes(key)))throw new Error("--verification-json must contain only files and checks.");
+    } else {
     try { argv = JSON.parse(values["argv-json"] ?? ""); } catch { throw new Error("--argv-json must be a JSON array of literal command arguments."); }
     if (!Array.isArray(argv) || !argv.length || argv.length > 64 || !argv[0] || argv.some(value => typeof value !== "string" || value.length > 4096 || value.includes("\0")) || Buffer.byteLength(JSON.stringify(argv)) > 32 * 1024) throw new Error("--argv-json must contain one to 64 bounded literal string arguments.");
+    }
     if (values.environment && !["production", "preview"].includes(values.environment)) throw new Error("--environment must be production or preview.");
-    let task: { kind: string; argv: string[]; deployment_id?: string; evidence_paths?: string[] } = { kind: "command", argv: argv as string[] };
+    let task: { kind: string; argv?: string[]; verification?: unknown; deployment_id?: string; evidence_paths?: string[] } = { kind: "command", argv: argv as string[] };
     if (values["evidence-paths-json"] && !values.deployment) throw new Error("--evidence-paths-json requires --deployment for an exact private preview browser task.");
     if (values.deployment) {
       if (!/^dep_[A-Za-z0-9_-]+$/u.test(values.deployment)) throw new Error("--deployment must be an exact preview deployment ID.");
@@ -79,7 +100,7 @@ export async function nativeCommand(command: string, args: string[], client: Nat
       let paths: unknown = [];
       if (values["evidence-paths-json"]) { try { paths = JSON.parse(values["evidence-paths-json"]); } catch { throw new Error("--evidence-paths-json must be a JSON array."); } }
       if (!Array.isArray(paths) || paths.length > 8 || new Set(paths).size !== paths.length || paths.some(path => typeof path !== "string" || !path || path.length > 200 || path.startsWith("/") || /[\\\u0000-\u001f%?#]/u.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || !/\.(?:png|zip)$/u.test(path))) throw new Error("Declare at most eight unique relative PNG or ZIP evidence paths.");
-      task = { kind: "browser", argv: argv as string[], deployment_id: values.deployment, ...(paths.length ? { evidence_paths: paths } : {}) };
+      task = { kind: "browser", ...(verification?{verification}:{argv:argv as string[]}), deployment_id: values.deployment, ...(paths.length ? { evidence_paths: paths } : {}) };
     }
     const limits: Record<string, number> = {};
     for (const [flag, field, minimum, maximum] of [["duration-ms", "duration_ms", 1000, 300000], ["transfer-bytes", "transfer_bytes", 1, 67108864]] as const) {
@@ -113,7 +134,7 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     apiPath = `/v1/operations/${client.pathSegment(options.positional[0], "operation ID")}${action === "get" ? "" : `/${action}`}`;
     if (action !== "get") method = "POST";
     else {
-      if (values.view && !["summary", "evidence"].includes(values.view)) throw new Error("--view must be summary or evidence.");
+      if (values.view && !["summary", "data", "evidence"].includes(values.view)) throw new Error("--view must be summary, data or evidence.");
       if ((values.view === "evidence") !== Boolean(values.path)) throw new Error("Use --view evidence with one exact --path.");
       for (const name of ["view", "path"]) if (values[name]) params.set(name, values[name]);
     }

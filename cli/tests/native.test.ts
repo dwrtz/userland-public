@@ -124,6 +124,14 @@ describe("native CLI contract", () => {
     await expect(nativeCommand("apps", [...base, "--transfer-bytes", "67108865"], context)).rejects.toThrow("transfer-bytes");
     expect(calls).toHaveLength(0);
   });
+  it("sends declared Playwright checks without an alternate command and selects exact generation logs",async()=>{
+    const {context,calls}=client(),verification={files:["tests/essential.spec.cjs"],checks:[{file:"tests/essential.spec.cjs",title:"saves a booking"}]};
+    const args=["run","app_1","--account","acct_team","--expected-revision","2","--source-revision",`src_${"a".repeat(64)}`,"--deployment","dep_exact","--verification-json",JSON.stringify(verification),"--idempotency-key","verify-once"];
+    await nativeCommand("apps",args,context);expect(JSON.parse(String(calls[0].init.body)).task).toEqual({kind:"browser",deployment_id:"dep_exact",verification});
+    await expect(nativeCommand("apps",[...args,"--argv-json",'["node"]'],context)).rejects.toThrow("cannot be combined");
+    await nativeCommand("apps",["get","app_1","--environment","preview","--view","logs","--deployment-id","dep_exact"],context);
+    expect(calls[1].apiPath).toBe("/v1/apps/app_1?environment=preview&view=logs&deployment_id=dep_exact");
+  });
   it("sends exact stop, resume and retention-only delete intent without a second confirmation", async () => {
     const { context, calls } = client();
     await nativeCommand("apps", ["stop", "app_1", "--environment", "preview", "--expected-epoch", "2", "--scope", "suspend", "--idempotency-key", "stop-1"], context);
@@ -177,10 +185,37 @@ describe("native CLI contract", () => {
     await expect(nativeCommand("apps", base.map((entry) => entry === "--name" ? "--app" : entry), context)).rejects.toThrow("expected-revision");
     expect(calls).toEqual([]);
   });
-  it("caps JSON-encoded payload size independently from decoded UTF-8 size", async () => {
+  it("stages JSON-heavy source before an encoded request would exceed the inline limit", async () => {
     const directory = await packageDir(), { context, calls } = client();
     await fs.writeFile(path.join(directory, "worker.js"), '"'.repeat(500 * 1024));
-    await expect(nativeCommand("apps", ["apply", directory, "--account", "acct_team", "--name", "Example", "--environment", "production", "--mode", "publish", "--idempotency-key", "intent-1"], context)).rejects.toThrow("768 KiB");
-    expect(calls).toEqual([]);
+    await nativeCommand("apps", ["apply", directory, "--account", "acct_team", "--name", "Example", "--environment", "production", "--mode", "publish", "--idempotency-key", "intent-1"], context);
+    expect(JSON.parse(String(calls[0].init.body)).source).toHaveProperty("manifest");
+    expect(Buffer.byteLength(String(calls[0].init.body))).toBeLessThan(768*1024);
+    expect(calls.filter(call=>call.init.method==="PUT")).toHaveLength(3);
+    expect(calls.at(-1)?.apiPath).toBe("/v1/operations/nop_1/source/commit");
   });
+  it("transfers large binary assets as bounded raw bytes while preserving hashes and intent",async()=>{
+    const directory=await packageDir(),{context,calls}=client();
+    await fs.mkdir(path.join(directory,"assets"));const binary=Buffer.from(Array.from({length:700000},(_,index)=>index%256));
+    await fs.writeFile(path.join(directory,"assets","image.png"),binary);
+    await nativeCommand("apps",["apply",directory,"--account","acct_team","--name","Example","--environment","preview","--mode","preview","--idempotency-key","binary-once"],context);
+    const start=JSON.parse(String(calls[0].init.body));expect(start.source.manifest.find((file:any)=>file.path==="assets/image.png")).toMatchObject({encoding:"binary",bytes:binary.length});expect(start.idempotency_key).toBe("binary-once");
+    const parts=calls.filter(call=>call.init.method==="PUT"&&call.apiPath.includes("path=assets%2Fimage.png"));expect(parts).toHaveLength(3);
+    expect(Buffer.concat(parts.map(call=>Buffer.from(call.init.body as Uint8Array)))).toEqual(binary);
+    expect(parts.every(call=>Buffer.byteLength(call.init.body as Uint8Array)<=256*1024)).toBe(true);
+    expect(parts.every(call=>String((call.init.headers as Record<string,string>)["x-userland-sha256"]).startsWith("sha256:v1:"))).toBe(true);
+  });
+  it("starts a manifest transfer without a local directory",async()=>{
+    const {context,calls}=client(),manifest=[{path:"wrangler.jsonc",bytes:2,sha256:"sha256:v1:"+"a".repeat(64),encoding:"utf8"},{path:"worker.js",bytes:1,sha256:"sha256:v1:"+"b".repeat(64),encoding:"utf8"}];
+    await nativeCommand("apps",["apply","--manifest-json",JSON.stringify(manifest),"--account","acct_team","--name","Example","--environment","preview","--mode","preview","--idempotency-key","manifest-once"],context);
+    expect(JSON.parse(String(calls[0].init.body)).source).toEqual({manifest});
+  });
+  it("continues the original transfer without a local folder or a second app intent",async()=>{
+    const {context,calls}=client(),transfer={action:"put",path:"assets/image.png",part:0,sha256:"sha256:v1:"+"a".repeat(64),base64:"AA=="};
+    await nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-json",JSON.stringify(transfer)],context);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({account_id:"acct_team",operation_id:"nop_transfer",transfer});
+    await expect(nativeCommand("apps",["apply","--account","acct_team","--operation","nop_transfer","--transfer-json",JSON.stringify({action:"commit"}),"--name","Other"],context)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
+
 });
