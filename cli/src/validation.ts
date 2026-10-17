@@ -1,3 +1,4 @@
+// Historical fixture/test helper only. Not reachable from the supported CLI and excluded from its package build.
 import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { terminalSafe } from "./terminal.js";

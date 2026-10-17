@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {assertNativeExample} from "./native-catalog.js";
 import { assertCatalogEntry, assertEntryMatchesManifest } from "./catalog-entry.js";
 
 const fixture = {
@@ -26,7 +27,7 @@ const launch = {
 
 it("accepts the current catalog", async () => {
   const catalog = JSON.parse(await readFile(path.resolve(import.meta.dirname, "..", "catalog.json"), "utf8")) as { examples: unknown[] };
-  for (const entry of catalog.examples) expect(() => assertCatalogEntry(entry)).not.toThrow();
+  for (const entry of catalog.examples) expect(() => assertNativeExample(entry)).not.toThrow();
 });
 
 it("accepts capability fixtures and launch examples", () => {

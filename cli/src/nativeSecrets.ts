@@ -1,6 +1,14 @@
 import type { NativeClient } from "./native.js";
 /** Native secret administration accepts only nonsecret intent, including from a terminal. */
 export async function nativeSecretsCommand(args:string[],client:NativeClient):Promise<void>{
+  if(args[0]==="list"){
+    const [,app,...flags]=args;if(!app)throw new Error("Use apps secrets list <app-id> with optional --account and --environment.");
+    const values:Record<string,string>={};let json=false;
+    for(let i=0;i<flags.length;i++){if(flags[i]==="--json"){json=true;continue;}if(!["--account","--environment"].includes(flags[i])||!flags[i+1]||flags[i+1].startsWith("--"))throw new Error("Unknown or incomplete secret list option.");values[flags[i].slice(2)]=flags[++i];}
+    if(values.environment&&!["preview","production"].includes(values.environment))throw new Error("Choose preview or production.");
+    const query=new URLSearchParams({view:"secrets",environment:values.environment??"production"});
+    const result=await client.apiFetch(`/v1/apps/${client.pathSegment(app,"app ID")}?${query}`,{method:"GET"},{accountId:values.account,accountScoped:true,raw:json});client.print(JSON.stringify(result,null,2));return;
+  }
   const [action,app,name,...rest]=args;
   if(!["set","delete"].includes(action)||!app||!name)throw new Error("Use apps secrets set|delete <app-id> <NAME> with explicit native environment.");
   const allowed=["account","environment","expected-revision","expected-epoch","expected-secret-revision","idempotency-key","source-json","operation"],values:Record<string,string>={};let json=false;

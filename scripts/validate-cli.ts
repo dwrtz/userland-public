@@ -10,102 +10,11 @@ const cliPackage = JSON.parse(await fs.readFile("cli/package.json", "utf8")) as 
   private?: boolean;
   publishConfig?: { access?: string };
   scripts?: Record<string, string>;
+  engines?: {node?:string};
 };
 
-const requiredSourcePatterns = [
-  'subcommand === "publish"',
-  'subcommand === "list"',
-  'subcommand === "releases"',
-  'subcommand === "rollback"',
-  'subcommand === "unpublish"',
-  'subcommand === "secrets" && rest[0] === "set"',
-  'subcommand === "secrets" && rest[0] === "list"',
-  'subcommand === "secrets" && rest[0] === "delete"',
-  'subcommand === "invites" && rest[0] === "create"',
-  'subcommand === "events"',
-  'arg === "--cursor"',
-  'command === "accounts"',
-  'command === "support"',
-  'subcommand === "open"',
-  'subcommand === "use"',
-  'subcommand === "signup"',
-  'subcommand === "login"',
-  'subcommand === "status"',
-  'subcommand === "save-key"',
-  'subcommand === "logout"',
-  'command === "signup"',
-  'command === "login"',
-  'command === "publish"',
-  'command === "--version"',
-  'command === "releases" || command === "versions"',
-  'command === "validate"',
-  'command === "analytics"',
-  'subcommand === "analytics"',
-  '"--skip-local-validation"'
-];
-
-const requiredReadmeSnippets = [
-  "userland --version",
-  "userland signup",
-  "userland login",
-  "userland auth status",
-  "userland auth save-key",
-  "userland auth logout",
-  "userland accounts list",
-  "userland accounts use",
-  "userland support open",
-  "userland apps publish",
-  "userland apps list",
-  "userland apps releases",
-  "userland apps rollback",
-  "userland apps unpublish",
-  "userland apps secrets set",
-  "userland apps secrets list",
-  "userland apps secrets delete",
-  "userland apps invites create",
-  "userland apps events",
-  "--cursor <cursor>",
-  "userland validate",
-  "userland validate <dir> --plan",
-  "userland validate <dir> --json",
-  "--skip-local-validation",
-  "userland apps analytics",
-  "userland analytics",
-  "USERLAND_ACCOUNT_ID",
-  "--account",
-  "npm run userland -- --version",
-  "npm run userland -- signup",
-  "npm run userland -- login",
-  "npm run userland -- auth status",
-  "npm run userland -- auth save-key",
-  "npm run userland -- auth logout",
-  "npm run userland -- accounts list",
-  "npm run userland -- accounts use",
-  "npm run userland -- support open",
-  "npm run userland -- apps publish",
-  "npm run userland -- apps list",
-  "npm run userland -- apps releases",
-  "npm run userland -- apps rollback",
-  "npm run userland -- apps unpublish",
-  "npm run userland -- apps secrets set",
-  "npm run userland -- apps secrets list",
-  "npm run userland -- apps secrets delete",
-  "npm run userland -- apps invites create",
-  "npm run userland -- apps events",
-  "npm run userland -- validate",
-  "npm run userland -- apps analytics",
-  "short_address_holds",
-  "usage_source=",
-  "dns_record=",
-  "domain_pending_verification",
-  "billing_url",
-  "domain_url",
-  "user_exists",
-  "browser device-authorization flow",
-  "does not store platform passwords",
-  "npm install -g @userland.fun/cli",
-  "https://docs.userland.fun/reference/cli"
-];
+const requiredSourcePatterns = ["nativeCommand(","nativeDataCommand(","nativeDomainsCommand(","nativeSecretsCommand(","accountMembershipCommand(",'command === "auth"','command === "--version"'];
+const requiredReadmeSnippets = ["Node 22","userland --version","userland login","userland auth status","userland auth save-key","userland auth logout","userland auth logout --revoke","userland context","userland apps apply","userland apps get","userland operations get","userland apps run","USERLAND_ACCOUNT_ID","USERLAND_API_KEY","--account","browser device-authorization flow","does not store platform passwords","https://docs.userland.fun/native-guide.md"];
 
 const operatorCommand = "ops";
 const operatorApiPrefix = `/v0/${operatorCommand}`;
@@ -121,12 +30,12 @@ const forbiddenReadmeSnippets = [
   operatorApiPrefix,
   operatorCliPrefix,
   "Internal/platform-admin only operations",
-  // File-safety checks still run with --skip-local-validation, so the README must not say it skips every check.
   "sends the directory to the API without local checks"
 ];
 
 // Agency was retired from sale on 2026-09-27 and `internal` is operator-assigned: neither may be
-// offered as a plan in the public CLI, its docs, or the public plan artifact.
+// offered by retained historical-fixture validation, the current CLI, or its docs.
+// validation.ts remains test-only; the entrypoint build excludes it.
 const retiredPlanPattern = /\bagency\b/iu;
 const cliValidationSource = await fs.readFile("cli/src/validation.ts", "utf8");
 const rootReadme = await fs.readFile("README.md", "utf8");
@@ -181,8 +90,9 @@ function validatePackage(): string[] {
   if (!cliPackage.scripts?.prepack?.includes("build")) {
     errors.push("cli/package.json must build before packing");
   }
-  if (!rootPackage.scripts?.["cli:build"]?.includes("schemas/resource-manifest-v0.schema.json") || !rootPackage.scripts["cli:build"].includes("schemas/plans-v0.json")) {
-    errors.push("package.json cli:build must copy the manifest schema and plan artifact into cli/dist/schemas");
+  if (rootPackage.scripts?.["cli:build"]?.includes("schemas/")) {
+    errors.push("The native CLI must not package retired runtime schemas or plan artifacts.");
   }
+  if(cliPackage.engines?.node !== ">=22 <23") errors.push("Advertise only the verified Node22 runtime.");
   return errors;
 }

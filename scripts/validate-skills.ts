@@ -27,7 +27,7 @@ for (const skill of catalog.skills) {
   const frontmatter = parseFrontmatter(body, skill.name);
   if (frontmatter.name !== skill.name) throw new Error(`${skill.name}: frontmatter name must match directory.`);
   if (frontmatter.description !== skill.description) throw new Error(`${skill.name}: frontmatter description must match catalog.`);
-  for (const required of ["Userland API version: v0", "Inputs", "Outputs", "Steps", "Commands", "Validation checklist", "Safety rules"]) {
+  for (const required of ["Userland API version: native-v1", "Build and continue a native app", "Source, builds and revisions", "App authentication and secrets", "Preview and meaningful verification", "Connection, transport and protected input"]) {
     if (!body.includes(required)) throw new Error(`${skill.name}: missing section ${required}.`);
   }
   if (body.includes("TODO") || body.includes("example.com")) throw new Error(`${skill.name}: contains placeholder text.`);

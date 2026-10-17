@@ -3,15 +3,19 @@ import path from "node:path";
 
 export const NATIVE_PACKAGE_MAX_BYTES = 512 * 1024;
 export const NATIVE_PACKAGE_MAX_FILES = 128;
+export type NativeLocalFile=string|{base64:string};
 const EXCLUDED = new Set([".git", "node_modules", ".wrangler"]);
 const PRIVATE_NAME = /^(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|\.npmrc|\.netrc|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?)$|\.(?:pem|key|p12|pfx)$/iu;
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/u;
 
 /** Package a clean prebuilt folder without following links or leaking local credential files. */
-export async function readNativePackage(directory: string): Promise<{ files: Record<string, string> }> {
+export function readNativePackage(directory:string):Promise<{files:Record<string,string>}>;
+export function readNativePackage(directory:string,options:{maximumBytes:number;binary:boolean}):Promise<{files:Record<string,NativeLocalFile>}>;
+export async function readNativePackage(directory: string,options={maximumBytes:NATIVE_PACKAGE_MAX_BYTES,binary:false}): Promise<{ files: Record<string, NativeLocalFile> }> {
+  const maximum=options.maximumBytes;if(!Number.isSafeInteger(maximum)||maximum<1||maximum>4*1024*1024)throw new Error("Invalid bounded source size.");
   const chosen = path.resolve(directory), rootInfo = await fs.lstat(chosen);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("Use a real prebuilt package directory, not a symlink.");
-  const root = await fs.realpath(chosen), files: Record<string, string> = Object.create(null);
+  const root = await fs.realpath(chosen), files: Record<string, NativeLocalFile> = Object.create(null);
   const resolvedRoot = await fs.lstat(root), chosenAgain = await fs.lstat(chosen);
   if (chosenAgain.isSymbolicLink() || resolvedRoot.dev !== rootInfo.dev || resolvedRoot.ino !== rootInfo.ino || chosenAgain.dev !== rootInfo.dev || chosenAgain.ino !== rootInfo.ino) throw new Error("The package directory changed while being selected. Retry from a stable prebuilt folder.");
   let bytes = 0;
@@ -26,7 +30,7 @@ export async function readNativePackage(directory: string): Promise<{ files: Rec
       if (info.isDirectory()) { await walk(full); continue; }
       if (!info.isFile()) throw new Error(`Native packages contain only regular text files: ${relative}`);
       if (Object.keys(files).length >= NATIVE_PACKAGE_MAX_FILES) throw new Error(`Native packages are limited to ${NATIVE_PACKAGE_MAX_FILES} files.`);
-      if (info.size > NATIVE_PACKAGE_MAX_BYTES - bytes) throw new Error("Native prebuilt source is limited to 512 KiB. Use a clean prebuilt folder; hosted builds are not available yet.");
+      if (info.size > maximum - bytes) throw new Error(`Native source is limited to ${maximum/1024} KiB.`);
       const before = await fs.realpath(full);
       if (!before.startsWith(root + path.sep)) throw new Error(`Package path escaped the selected folder: ${relative}`);
       const handle = await fs.open(full, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -34,29 +38,29 @@ export async function readNativePackage(directory: string): Promise<{ files: Rec
       try {
         const opened = await handle.stat();
         if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) throw new Error(`Package changed while reading: ${relative}. Retry from a stable prebuilt folder.`);
-        const buffer = Buffer.alloc(Math.min(opened.size + 1, NATIVE_PACKAGE_MAX_BYTES - bytes + 1));
+        const buffer = Buffer.alloc(Math.min(opened.size + 1, maximum - bytes + 1));
         let offset = 0;
         for (;;) {
           const read = await handle.read(buffer, offset, buffer.length - offset, offset);
           offset += read.bytesRead;
           if (!read.bytesRead || offset === buffer.length) break;
         }
-        if (offset > NATIVE_PACKAGE_MAX_BYTES - bytes) throw new Error("Native prebuilt source is limited to 512 KiB.");
+        if (offset > maximum - bytes) throw new Error(`Native source is limited to ${maximum/1024} KiB.`);
         if (offset > opened.size) throw new Error(`Package changed while reading: ${relative}. Retry from a stable prebuilt folder.`);
         const after = await fs.lstat(full), resolved = await fs.realpath(full);
         if (after.isSymbolicLink() || after.dev !== opened.dev || after.ino !== opened.ino || resolved !== before) throw new Error(`Package changed while reading: ${relative}. Retry from a stable prebuilt folder.`);
         content = buffer.subarray(0, offset);
       } finally { await handle.close(); }
-      let text: string;
+      let text: string|null=null;
       try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content); }
-      catch { throw new Error(`The current native prebuilt profile only supports UTF-8 files: ${relative}`); }
-      if (text.includes("\0")) throw new Error(`The current native prebuilt profile only supports text files: ${relative}`);
-      if (PRIVATE_KEY.test(text)) throw new Error(`Private key material cannot be included in an app package: ${relative}`);
-      files[relative] = text; bytes += content.length;
+      catch { if(!options.binary)throw new Error(`The current native prebuilt profile only supports UTF-8 files: ${relative}`); }
+      if (PRIVATE_KEY.test(content.toString("utf8"))) throw new Error(`Private key material cannot be included in an app package: ${relative}`);
+      if (text?.includes("\0")){if(!options.binary)throw new Error(`The current native prebuilt profile only supports text files: ${relative}`);text=null;}
+      files[relative] = text??{base64:content.toString("base64")}; bytes += content.length;
     }
   }
   await walk(root);
   if (!Object.hasOwn(files, "wrangler.jsonc")) throw new Error("Include wrangler.jsonc in the prebuilt package. Native Workers use Cloudflare configuration directly.");
-  if (Object.keys(files).length < 2) throw new Error("Include wrangler.jsonc and its prebuilt JavaScript module. Hosted builds are not available yet.");
+  if (Object.keys(files).length < 2) throw new Error("Include wrangler.jsonc and the Worker source files.");
   return { files };
 }

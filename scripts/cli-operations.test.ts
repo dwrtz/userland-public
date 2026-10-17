@@ -73,6 +73,14 @@ describe("drift between the help and the inventory", () => {
     expect(staticDrift(operations, usage)).toEqual([]);
   });
 
+  it("allows a source-less continuation help line without hiding the optional folder shape", () => {
+    const native=[op("apps.apply","apps apply",[arg("<dir>",false),flag("--operation",true)])];
+    expect(staticDrift(native,parseUsage("Usage:\n  userland apps apply [<dir>]\n  userland apps apply --operation <id>\n"))).toEqual([]);
+    expect(staticDrift(native,parseUsage("Usage:\n  userland apps apply --operation <id>\n"))).not.toEqual([]);
+    const required=[op("apps.apply","apps apply",[arg("<dir>"),flag("--operation",true)])];
+    expect(staticDrift(required,parseUsage("Usage:\n  userland apps apply <dir>\n  userland apps apply --operation <id>\n"))).not.toEqual([]);
+  });
+
   it("names a command, a flag or an argument the inventory doesn't have, and an operation the help lacks", () => {
     const usage = parseUsage(HELP);
     const drift = staticDrift(
@@ -107,23 +115,20 @@ describe("the probes", () => {
     const login = inventory.operations.find((operation) => operation.id === "auth.login")!;
     const probes = probesFor(login, { app: "/app", empty: "/empty" }, "http://127.0.0.1:9");
     expect(probes.every((probe) => probe.argv.includes("--no-browser"))).toBe(true);
-    const slugs = inventory.operations.find((operation) => operation.id === "slugs.add")!;
-    expect(probesFor(slugs, { app: "/app", empty: "/empty" }, "http://127.0.0.1:9").map((probe) => probe.argv.join(" "))).toEqual([
-      "apps slugs add app_probe probe-address",
-      "apps slugs add app_probe probe-address --account acct_probe"
-    ]);
+    const keys = inventory.operations.find((operation) => operation.id === "api_keys.list")!;
+    expect(probesFor(keys, { app: "/app", empty: "/empty" }, "http://127.0.0.1:9").map((probe) => probe.argv.join(" "))).toContain("auth api-keys list");
   });
 
   it("catch a flag the CLI refuses and a call the inventory doesn't list", { timeout: 60_000 }, async () => {
     const cli = path.join(root, "cli", "dist", "index.js");
     if (!existsSync(cli)) return;
-    const slugs = inventory.operations.find((operation) => operation.id === "slugs.add")!;
-    const renamed = { ...slugs, inputs: slugs.inputs.map((input) => (input.cli === "--account" ? { ...input, cli: "--business" } : input)), api: [] };
+    const app = inventory.operations.find((operation) => operation.id === "apps.get")!;
+    const renamed = { ...app, inputs: [...app.inputs, {cli:"--business",source:"flag" as const,required:false,takes_value:true,role:"input"}], api: [] };
     const drift = await behaviourDrift([renamed], cli);
     expect(drift).toEqual(
       expect.arrayContaining([
-        expect.stringMatching(/^`userland apps slugs add --business`: the CLI refuses an input the inventory lists for slugs\.add/u),
-        expect.stringMatching(/^`userland apps slugs add \(required inputs only\)` calls POST \/v0\/apps\/app_probe\/slugs/u)
+        expect.stringMatching(/^`userland apps get --business`: the CLI refuses an input the inventory lists for apps\.get/u),
+        expect.stringMatching(/^`userland apps get \(required inputs only\)` calls GET \/v1\/apps\/app_probe/u)
       ])
     );
   });

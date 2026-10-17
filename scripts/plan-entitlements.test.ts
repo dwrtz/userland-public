@@ -65,7 +65,7 @@ it("matches `userland validate` and the catalog metadata for every example", asy
   expect(examples.length).toBeGreaterThan(0);
   for (const example of examples) {
     const dir = path.join(root, "examples", example.name);
-    if (!existsSync(path.join(dir, "example.json"))) continue;
+    if (!existsSync(path.join(dir, "example.json")) || !existsSync(path.join(dir, "manifest.userland.json"))) continue;
     const meta = JSON.parse(readFileSync(path.join(dir, "example.json"), "utf8")) as { required_plan: string; paid_features: string[] };
     const report = await validateAppDirectory(dir, { strict: true });
     expect({ slug: example.name, errors: report.errors }).toEqual({ slug: example.name, errors: [] });

@@ -1,0 +1,17 @@
+{
+  "slug": "native-notes",
+  "title": "Native notes and private files",
+  "summary": "App-owned sign-in, notes and private attachments on a plain Worker with native D1 and R2 bindings.",
+  "path": "examples/native-notes",
+  "capabilities": [
+    "worker",
+    "static",
+    "app_auth",
+    "d1",
+    "r2",
+    "secrets"
+  ],
+  "difficulty": "intermediate",
+  "userland_api_version": "native-v1",
+  "launch_role": "native-reference"
+}

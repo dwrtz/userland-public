@@ -47,9 +47,11 @@ export default {
 };
 ```
 
-The source packager preserves configuration bytes. It accepts at most 128 regular UTF-8 text files totalling 512 KiB. It rejects symlinks, unsafe paths, credential files, private keys, binary data and legacy manifests. `.git`, `node_modules` and `.wrangler` are excluded. Put only deployable files in this folder. The API remains authoritative about allowed configuration and bindings.
+The source packager preserves configuration and asset bytes. Inline input supports up to 512 KiB decoded content; the current internal staged transport supports up to 4 MiB across 128 files with 256 KiB parts and a 30-minute uncommitted expiry. The CLI automatically stages a larger package or one whose encoded request exceeds 768 KiB. Binary content is allowed only beneath the declared asset directory; code, configuration, dependency metadata and migrations remain UTF8 text. Symlinks, unsafe paths, credential files and private keys are rejected. `.git`, `node_modules` and `.wrangler` are excluded.
 
-The encoded API JSON body has a separate 768 KiB limit. JSON escaping can make a request exceed that limit even if decoded source fits. The MCP envelope is bounded at 1 MiB; it does not increase either API allowance.
+An agent without a folder can start `apps_apply` with `source.manifest` entries containing `path`, `bytes`, `sha256` and `encoding`, then continue the same operation with `account_id`, `operation_id` and `transfer:{action:"put",path,part,sha256,base64}`. Commit with `transfer:{action:"commit"}`. Unverified bytes never receive a source revision or deploy. A lost write must reconcile its original receipt; don't create another intent to hide uncertainty.
+
+The CLI equivalents are `apps apply --manifest-json ...` and `apps apply --account ... --operation ... --transfer-json ...`. Follow actual context and operation limits; these internal fixture ceilings are not paid plan promises. The MCP envelope is capped at 1 MiB and does not increase the underlying API limits.
 
 ## Apply and inspect one intent
 
@@ -154,3 +156,41 @@ The recipient signs in with the invited email address and explicitly accepts. An
 
 
 Native credential administration uses `apps secrets set|delete` with explicit `--environment`, `--expected-revision`, `--expected-epoch`, `--expected-secret-revision` and `--idempotency-key`. Supply nonsecret `--source-json` for generation, protected entry or an exact owned source reference. Plaintext values are refused on this path. For a pending external requirement use `apps secrets set <app-id> <NAME> --account <account-id> --environment preview --operation <operation-id>`; open the returned protected Userland page. The same original operation resumes after entry. Preview and production credentials are separate. Secret rotation can remain `draining` until old bound Worker scripts are confirmed removed; it cannot recall values copied by already-running app code. Deletion requires source that no longer declares the secret.
+
+## Custom domains
+
+```sh
+userland routes set app_example --account acct_example --hostname app.customer.com \
+  --environment production --expected-epoch 1 --idempotency-key domain-one --json
+userland apps get app_example --account acct_example --view routes --json
+userland operations get domop_example --account acct_example --json
+userland routes remove app_example --account acct_example --hostname app.customer.com \
+  --environment production --expected-epoch 1 --idempotency-key remove-domain-one --json
+```
+
+Add the returned DNS records once. Verification continues automatically without blocking app builds or deployments. The default `host` policy supports isolated `__Host-` cookies. `--cookie-policy owned_site` additionally requires proof of the whole browser site and permits ordinary cookies within it; sibling hosts on that customer-owned site can affect parent-domain cookies, so it does not promise isolation between them. Userland credentials never become app credentials. Custom domains currently attach to production; private previews retain their generated protected address.
+
+## Query app data and restore an isolated copy
+
+`resources query` requires full deployment access, including for a `SELECT`. It accepts one to sixteen parameterized statements against an exact resource ID returned by `apps get --view resources`:
+
+```sh
+userland resources query app_example --account acct_example \
+  --environment preview --resource nres_example --expected-revision 4 --expected-epoch 2 \
+  --statements-json '[{"sql":"SELECT body FROM notes WHERE id=?","params":["one"]}]' \
+  --idempotency-key inspect-note-1 --json
+userland operations get op_example --view data --account acct_example --json
+```
+
+The default operation result contains only status and result availability. Explicit data results may contain app secrets or visitor text, and MCP fences them as untrusted data. An ambiguous write is never blindly retried: keep its original idempotency key and let the exact receipt reconcile. If response rows were lost, issue a new explicit read instead of repeating the mutation.
+
+The signed-in Account owner or administrator starts and downloads complete data snapshots on the console's `/native-recovery/<app-id>` page. This action temporarily blocks D1 access while each database exports. No CLI or MCP operation starts or downloads a complete archive, and no provider download URL is returned to an agent. Source retrieval is separate.
+
+A publisher can restore a ready snapshot ID into new resources in an existing owned environment. The default is preview; production must be selected explicitly:
+
+```sh
+userland apps restore app_example --account acct_example --recovery recovery_example \
+  --environment production --expected-revision 4 --expected-epoch 2 --idempotency-key restore-preview-1 --json
+```
+
+Restore does not replace live bindings or undo code. Restored app authentication/session rows can make old sessions usable again; current secrets do not prove session invalidation. Invalidate sessions explicitly when needed, without automatically rotating data encryption keys. Inspect the returned isolated resource IDs, then explicitly apply code with those bindings after compatibility checks. Old code always resolves current allowed resources and secret revisions. Unsupported or uncertain restore outcomes keep their resource reservation; they never count as successful rollback.

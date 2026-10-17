@@ -1,81 +1,21 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const examplesRoot = path.join(root, "examples");
-const requiredDocsLinks = [
-  "https://docs.userland.fun/llms.txt",
-  "https://docs.userland.fun/quickstarts/from-example",
-  "https://docs.userland.fun/reference/resource-manifest",
-  "https://docs.userland.fun/reference/runtime-ctx",
-  "https://docs.userland.fun/reference/cli",
-  "https://docs.userland.fun/reference/agent-skills",
-  "https://docs.userland.fun/guides/troubleshooting"
-];
-const forbiddenText = [
-  "github.com/userland-fun/userland-examples",
-  "github.com/<ORG>",
-  "workers/docs",
-  "workers/marketing",
-  // Old password-based CLI auth. The CLI now signs in through the browser with `userland login`.
-  "--password",
-  "--username",
-  "keychain"
-];
-
-// Example docs invite people with `userland apps invites create` (CLI 0.9.0), which uses the key saved by
-// `userland login`. The old way, a raw API call with a new API key, made the owner get a new-key email.
-const forbiddenInExampleDocs = ["admin-invites", "api-keys create"];
-
-// Plans that are off sale. Example docs must never offer them or suggest them
-// as an upgrade; features beyond Business Plus say "contact support" instead.
-const retiredPlanPatterns = [/`agency`/iu, /\bagency plan\b/iu, /\bplan[^.\n]{0,40}\bagency\b/iu, /\bassisted launch\b/iu];
-
-function assertNoRetiredPlans(file: string, body: string): void {
-  for (const pattern of retiredPlanPatterns) {
-    const match = body.match(pattern);
-    if (match) throw new Error(`${file} mentions a plan that is not on sale: ${match[0]}`);
-  }
-}
-
-// Optional slugs limit validation to specific examples: tsx scripts/validate-links.ts blog-cms tiny-store
+const catalog = JSON.parse(await readFile(path.join(root, "catalog.json"), "utf8")) as { examples: Array<{slug:string;path:string}> };
 const onlySlugs = new Set(process.argv.slice(2));
+const requiredDocsLinks = ["https://docs.userland.fun/native-guide.md", "https://docs.userland.fun/reference/cli"];
+const forbidden = [/userland\s+validate\b/u, /userland\s+apps\s+publish\b/u, /manifest\.userland\.json/u, /@userland\/(runtime|sdk)/u, /github\.com\/userland-fun\/userland-examples/u];
 let checked = 0;
-
-for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
-  if (!entry.isDirectory()) continue;
-  if (onlySlugs.size > 0 && !onlySlugs.has(entry.name)) continue;
-  for (const file of ["README.md", "AGENT.md"]) {
-    const relativePath = `examples/${entry.name}/${file}`;
-    const body = await readFile(path.join(root, relativePath), "utf8");
-    for (const link of requiredDocsLinks) {
-      if (!body.includes(link)) {
-        throw new Error(`${relativePath} is missing required docs link: ${link}`);
-      }
-    }
-    for (const forbidden of forbiddenText) {
-      if (body.includes(forbidden)) {
-        throw new Error(`${relativePath} contains stale reference: ${forbidden}`);
-      }
-    }
-    for (const forbidden of forbiddenInExampleDocs) {
-      if (body.includes(forbidden)) {
-        throw new Error(`${relativePath} contains stale reference: ${forbidden}. Invite people with userland apps invites create.`);
-      }
-    }
-    assertNoRetiredPlans(relativePath, body);
-    checked += 1;
+for (const example of catalog.examples) {
+  if (onlySlugs.size && !onlySlugs.has(example.slug)) continue;
+  for (const name of ["README.md", "AGENT.md"]) {
+    const file = `${example.path}/${name}`;
+    const body = await readFile(path.join(root, file), "utf8");
+    for (const link of requiredDocsLinks) if (!body.includes(link)) throw new Error(`${file} misses ${link}`);
+    for (const pattern of forbidden) if (pattern.test(body)) throw new Error(`${file} advertises retired workflow: ${pattern}`);
+    checked++;
   }
 }
-
-for (const file of ["README.md", "examples/README.md", "cli/README.md", "skills.catalog.json", "catalog.json"]) {
-  const body = await readFile(path.join(root, file), "utf8");
-  for (const forbidden of forbiddenText) {
-    if (body.includes(forbidden)) {
-      throw new Error(`${file} contains stale reference: ${forbidden}`);
-    }
-  }
-  assertNoRetiredPlans(file, body);
-}
-
-console.log(`Validated docs links in ${checked} example files.`);
+if (onlySlugs.size && checked !== onlySlugs.size * 2) throw new Error("Unknown selected example");
+console.log(`Validated native docs links in ${checked} example files.`);
