@@ -160,6 +160,18 @@ export interface Probe {
 
 /** Example values the probes pass: the CLI checks some of them before it calls the API. */
 const SAMPLES: Record<string, string> = {
+  "<operation-id>": "nop_probe",
+  "--expected-revision": "0",
+  "--idempotency-key": "native-probe-intent",
+  "--environment": "production",
+  "--mode": "publish",
+  "--audience": "public",
+  "--view": "summary",
+  "--source-revision": "src_probe",
+  "--path": "worker.js",
+  "<email>": "probe@example.com",
+  "<user-id>": "usr_probe",
+  "<invitation-id>": "acinv_probe",
   "<app-id>": "app_probe",
   "<release-id>": "rel_probe",
   "<NAME>": "PROBE_SECRET",
@@ -190,10 +202,10 @@ const SAMPLES: Record<string, string> = {
 };
 
 /** The runs that exercise an operation: its required inputs alone, then each optional flag and flag alias once. */
-export function probesFor(operation: InventoryOperation, folders: { app: string; empty: string }, base: string): Probe[] {
+export function probesFor(operation: InventoryOperation, folders: { app: string; empty: string; native?: string }, base: string): Probe[] {
   const value = (name: string): string => {
     if (name === "--api-base-url" || name === "--console-url") return base;
-    if (name === "<dir>") return folders.app;
+    if (name === "<dir>") return operation.id === "apps.apply" ? folders.native ?? folders.app : folders.app;
     if (/^\[.*\]$/u.test(name)) return folders.empty;
     return SAMPLES[name] ?? "probe";
   };
@@ -212,6 +224,14 @@ export function probesFor(operation: InventoryOperation, folders: { app: string;
   for (const alias of operation.cli.aliases) {
     probes.push({ label: `${alias} (alias of ${operation.cli.command})`, argv: [...alias.split(" "), ...positional, ...requiredFlags] });
   }
+  if (operation.id === "apps.apply") {
+    for (const probe of probes) {
+      if (probe.argv.includes("--app") || probe.argv.includes("--expected-revision")) {
+        if (!probe.argv.includes("--app")) probe.argv.push("--app", "app_probe");
+        if (!probe.argv.includes("--expected-revision")) probe.argv.push("--expected-revision", "0");
+      } else if (!probe.argv.includes("--name")) probe.argv.push("--name", "Native probe");
+    }
+  }
   return probes;
 }
 
@@ -220,7 +240,7 @@ interface Recorded {
   path: string;
 }
 
-/** A stand-in API on 127.0.0.1 that records each request and answers an empty JSON object. */
+/** A stand-in API on 127.0.0.1 that records each request, resolves the default Account, and otherwise answers an empty JSON object. */
 async function standInApi(): Promise<{ base: string; take(): Recorded[]; close(): Promise<void> }> {
   let recorded: Recorded[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -228,7 +248,7 @@ async function standInApi(): Promise<{ base: string; take(): Recorded[]; close()
     request.on("end", () => {
       recorded.push({ method: request.method ?? "GET", path: new URL(request.url ?? "/", "http://127.0.0.1").pathname });
       response.writeHead(200, { "content-type": "application/json" });
-      response.end("{}");
+      response.end(request.method === "GET" && request.url === "/v0/accounts" ? JSON.stringify({ default_account_id: "acct_probe", accounts: [{ account_id: "acct_probe", role: "owner", name: "Probe" }] }) : "{}");
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -269,12 +289,16 @@ export async function behaviourDrift(operations: InventoryOperation[], cliEntry:
   const api = await standInApi();
   const scratch = await mkdtemp(path.join(tmpdir(), "userland-operations-"));
   try {
+    const native = path.join(scratch, "native");
+    await mkdir(native);
+    await writeFile(path.join(native, "wrangler.jsonc"), JSON.stringify({ name: "native-probe", main: "worker.js", compatibility_date: "2026-10-17" }));
+    await writeFile(path.join(native, "worker.js"), "export default { fetch() { return new Response('Probe') } };\n");
     const app = path.join(scratch, "app");
     await mkdir(path.join(app, "public"), { recursive: true });
     await writeFile(path.join(app, "manifest.userland.json"), JSON.stringify({ app: { name: "Probe" }, runtime: { static_root: "public" }, resources: {} }));
     await writeFile(path.join(app, "public", "index.html"), "<!doctype html><title>Probe</title>");
     for (const operation of operations) {
-      const probes = probesFor(operation, { app, empty: path.join(scratch, "empty") }, api.base);
+      const probes = probesFor(operation, { app, native, empty: path.join(scratch, "empty") }, api.base);
       for (const probe of probes) {
         const home = await mkdtemp(path.join(scratch, "home-"));
         await rm(path.join(scratch, "empty"), { recursive: true, force: true });

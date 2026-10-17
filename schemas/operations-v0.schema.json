@@ -1,6 +1,85 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.userland.fun/schemas/operations-v0.schema.json",
+  "$defs": {
+    "toolValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "boolean",
+            "object"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum": {
+          "type": "integer"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/toolValue"
+          }
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/toolValue"
+            }
+          ]
+        },
+        "minProperties": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxProperties": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "oneOf": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolValue"
+          }
+        }
+      }
+    }
+  },
   "title": "Userland CLI operation inventory",
   "description": "Every public CLI operation, its inputs, the API routes it calls and its MCP counterpart, and the MCP server's tools with no CLI operation.",
   "type": "object",
@@ -93,6 +172,8 @@
           },
           "area": {
             "enum": [
+              "context",
+              "operations",
               "auth",
               "api_keys",
               "accounts",
@@ -215,6 +296,12 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "mcp_schema": {
+                  "$ref": "#/$defs/toolValue"
+                },
+                "mcp_required": {
+                  "type": "boolean"
+                },
                 "description": {
                   "type": "string",
                   "minLength": 1
@@ -245,7 +332,7 @@
                 },
                 "path": {
                   "type": "string",
-                  "pattern": "^/v0(/(:[a-z_]+|[a-z-]+))+$"
+                  "pattern": "^/v[01](/(:[a-z_]+|[a-z-]+))+$"
                 },
                 "when": {
                   "type": "string",
@@ -262,6 +349,7 @@
               "none",
               "user",
               "account.read",
+              "account.members.manage",
               "apps.read",
               "apps.create",
               "apps.publish",
@@ -489,7 +577,7 @@
                 },
                 "path": {
                   "type": "string",
-                  "pattern": "^/v0(/(:[a-z_]+|[a-z-]+))+$"
+                  "pattern": "^/v[01](/(:[a-z_]+|[a-z-]+))+$"
                 },
                 "when": {
                   "type": "string",

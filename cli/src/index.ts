@@ -7,6 +7,8 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { contentTypeForPath, csvRow, ensureParentFolders, folderIsEmpty, rebuiltManifest, requiredSecretNames, targetPath, writeCheckedFile } from "./appFiles.js";
+import { nativeCommand } from "./native.js";
+import { accountMembershipCommand } from "./accountMembership.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
 import {
   OLD_API_MESSAGE,
@@ -528,6 +530,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "context" || command === "operations" || (command === "apps" && (args[0] === "get" || args[0] === "apply"))) {
+    await nativeCommand(command, args, { apiFetch, pathSegment, print: (line) => console.log(line) });
+    return;
+  }
+
   if (command === "apps") {
     await appsCommand(args);
     return;
@@ -710,6 +717,10 @@ async function apiKeysCommand(args: string[]): Promise<void> {
 }
 
 async function accountsCommand(args: string[]): Promise<void> {
+  if (args[0] === "members" || args[0] === "invitations") {
+    await accountMembershipCommand(args, { apiFetch, resolveAccountId, pathSegment, prompt: promptLine, interactive: Boolean(process.stdin.isTTY), print: (line) => console.log(line) });
+    return;
+  }
   const [subcommand, ...rest] = args;
   if (subcommand === "list") {
     await listAccountsCommand();
@@ -3818,6 +3829,19 @@ function usage(exitCode: number): never {
   userland auth api-keys create --name <name>
   userland auth api-keys rename <api-key-id> --name <name>
   userland auth api-keys revoke <api-key-id> [--yes]
+  userland context [--account <account-id>] [--cursor <cursor>] [--json]
+  userland apps get <app-id> [--account <account-id>] [--environment <production|preview>] [--view <summary|deployments|source>] [--source-revision <revision>] [--path <path>] [--cursor <cursor>] [--json]
+  userland apps apply <dir> --account <account-id> [--name <name>] [--app <app-id>] [--expected-revision <revision>] --environment <production|preview> --mode <publish|preview> [--audience <public|private>] --idempotency-key <key> [--json]
+  userland operations get <operation-id> [--account <account-id>] [--json]
+  userland operations resume <operation-id> [--account <account-id>] [--json]
+  userland operations cancel <operation-id> [--account <account-id>] [--json]
+  userland accounts members list [--account <account-id>] [--json]
+  userland accounts members invite <email> --role <admin|member|viewer> [--account <account-id>] [--json]
+  userland accounts members role <user-id> --role <admin|member|viewer> [--account <account-id>] [--json]
+  userland accounts members remove <user-id> [--yes] [--account <account-id>] [--json]
+  userland accounts invitations list [--json]
+  userland accounts invitations accept <invitation-id> [--json]
+  userland accounts invitations revoke <invitation-id> [--yes] [--account <account-id>] [--json]
   userland accounts list
   userland accounts use <account-id>
   userland accounts status [--account <account-id>]

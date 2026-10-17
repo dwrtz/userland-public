@@ -34,6 +34,747 @@
   ],
   "operations": [
     {
+      "id": "context.get",
+      "area": "context",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Start here: discover identity, Accounts, actual native capabilities, permissions, usage and apps. The current prebuilt profile is restricted to internal fixtures.",
+      "cli": {
+        "command": "context",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--cursor",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "cursor",
+          "api_field": "query:cursor",
+          "description": "Continue the returned app cursor."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v1/context",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "user",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "context_get",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.get",
+      "area": "apps",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Inspect native app state or one bounded source page. Choose an exact environment; latest saved source and active source are distinct.",
+      "cli": {
+        "command": "apps get",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "query:environment",
+          "description": "production or preview."
+        },
+        {
+          "cli": "--view",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "view",
+          "api_field": "query:view",
+          "description": "summary, deployments or source."
+        },
+        {
+          "cli": "--source-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "source_revision",
+          "api_field": "query:source_revision",
+          "description": "Exact saved source revision; omitted source view reads active source."
+        },
+        {
+          "cli": "--path",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "path",
+          "api_field": "query:path",
+          "description": "Read only this exact package path."
+        },
+        {
+          "cli": "--cursor",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "cursor",
+          "api_field": "query:cursor",
+          "description": "Continue the returned source cursor."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v1/apps/:app_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_get",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "apps.apply",
+      "area": "apps",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Apply a complete prebuilt native Worker package under existing Account authority. No additional Publish click is required. Reuse the exact idempotency key for retries; poll operations_get until a terminal result. This profile has no hosted build or runner.",
+      "cli": {
+        "command": "apps apply",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Exact Account ID from context.get."
+        },
+        {
+          "cli": "<dir>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "files",
+          "mcp_input": "source",
+          "api_field": "source",
+          "description": "Complete prebuilt package folder. MCP takes the same files as an object.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "files": {
+                "type": "object",
+                "description": "Complete bounded prebuilt UTF-8 package including wrangler.jsonc and its JavaScript module. No credentials, secret files or SDK manifest.",
+                "minProperties": 2,
+                "maxProperties": 128,
+                "additionalProperties": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 524288
+                }
+              }
+            },
+            "required": [
+              "files"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--name",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app",
+          "api_field": "app",
+          "description": "Create with this name, instead of --app.",
+          "mcp_required": true,
+          "mcp_schema": {
+            "type": "object",
+            "description": "Create an app, or update one exact revision. Ownership and permissions stay authoritative at the API.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "create": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "App name",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "create"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Exact app ID",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Revision read through apps_get."
+                  }
+                },
+                "required": [
+                  "id",
+                  "expected_revision"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--app",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app",
+          "api_field": "app",
+          "description": "Update this app, instead of --name.",
+          "mcp_schema": {
+            "type": "object",
+            "description": "Create an app, or update one exact revision. Ownership and permissions stay authoritative at the API.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "create": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "App name",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "create"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Exact app ID",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Revision read through apps_get."
+                  }
+                },
+                "required": [
+                  "id",
+                  "expected_revision"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app",
+          "api_field": "app",
+          "description": "Required with --app; read the revision through apps.get.",
+          "mcp_schema": {
+            "type": "object",
+            "description": "Create an app, or update one exact revision. Ownership and permissions stay authoritative at the API.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "create": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "App name",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "create"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Exact app ID",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Revision read through apps_get."
+                  }
+                },
+                "required": [
+                  "id",
+                  "expected_revision"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "target",
+          "api_field": "target",
+          "description": "Explicit production or preview environment.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "enum": [
+                  "production",
+                  "preview"
+                ]
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "publish",
+                  "preview"
+                ]
+              },
+              "audience": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            },
+            "required": [
+              "environment",
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--mode",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "target",
+          "api_field": "target",
+          "description": "Explicit publish or preview mode.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "enum": [
+                  "production",
+                  "preview"
+                ]
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "publish",
+                  "preview"
+                ]
+              },
+              "audience": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            },
+            "required": [
+              "environment",
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--audience",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "target",
+          "api_field": "target",
+          "description": "public or private, as supported by the target.",
+          "mcp_schema": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "string",
+                "enum": [
+                  "production",
+                  "preview"
+                ]
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "publish",
+                  "preview"
+                ]
+              },
+              "audience": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            },
+            "required": [
+              "environment",
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/apps/apply",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "file_safety"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_apply",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "operations.get",
+      "area": "operations",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Read durable progress, precise revisions, readiness and actionable blockers. Poll this operation instead of repeating deployment.",
+      "cli": {
+        "command": "operations get",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<operation-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "operation_id",
+          "api_field": ":operation_id",
+          "description": "Exact operation ID returned by apps_apply."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v1/operations/:operation_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "operations_get",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "operations.resume",
+      "area": "operations",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Resume a waiting operation through its original credential after its blocker is resolved.",
+      "cli": {
+        "command": "operations resume",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<operation-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "operation_id",
+          "api_field": ":operation_id",
+          "description": "Exact operation ID returned by apps_apply."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/operations/:operation_id/resume",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "operations_resume",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "operations.cancel",
+      "area": "operations",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Cancel this operation through its original credential and revoke its preview grants.",
+      "cli": {
+        "command": "operations cancel",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<operation-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "operation_id",
+          "api_field": ":operation_id",
+          "description": "Exact operation ID returned by apps_apply."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/operations/:operation_id/cancel",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.publish",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "operations_cancel",
+        "status": "planned"
+      }
+    },
+    {
       "id": "auth.login",
       "area": "auth",
       "kind": "api",
@@ -638,6 +1379,453 @@
       "mcp": {
         "via": "tool",
         "tool": "accounts_downgrade_preview",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_members.list",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List Account members and, for owners, pending invitations.",
+      "cli": {
+        "command": "accounts members list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no Account is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "GET",
+          "path": "/v0/accounts/:account_id/members",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.read",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_members_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_members.invite",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Invite a verified-email recipient to an Account as admin, member or viewer. Only Account owners can invite.",
+      "cli": {
+        "command": "accounts members invite",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        },
+        {
+          "cli": "<email>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "email",
+          "api_field": "email",
+          "description": "The person's platform sign-in email address."
+        },
+        {
+          "cli": "--role",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "role",
+          "api_field": "role",
+          "description": "admin, member or viewer. Admin includes billing and secrets; only owners manage membership."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no Account is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "POST",
+          "path": "/v0/accounts/:account_id/invitations",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.members.manage",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_members_invite",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_members.role",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Change an ordinary Account member's role. Only Account owners can change access; the primary owner cannot be changed.",
+      "cli": {
+        "command": "accounts members role",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        },
+        {
+          "cli": "<user-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "user_id",
+          "api_field": ":user_id",
+          "description": "The platform User whose role changes."
+        },
+        {
+          "cli": "--role",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "role",
+          "api_field": "role",
+          "description": "admin, member or viewer."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no Account is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "PATCH",
+          "path": "/v0/accounts/:account_id/members/:user_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.members.manage",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_members_role",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_members.remove",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Remove a person's access to this Account. Their sign-in and other Accounts remain theirs.",
+      "cli": {
+        "command": "accounts members remove",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        },
+        {
+          "cli": "<user-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "user_id",
+          "api_field": ":user_id",
+          "description": "The platform User to remove."
+        },
+        {
+          "cli": "--yes",
+          "source": "flag",
+          "aliases": [
+            "-y"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "confirmation",
+          "mcp_input": "confirm",
+          "description": "Skip the terminal prompt; required when there is no terminal."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no Account is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/accounts/:account_id/members/:user_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.members.manage",
+      "safeguards": [
+        "path_segment_check",
+        "confirm_without_terminal"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_members_remove",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_invitations.list",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List invitations addressed to your verified platform email address. Invitation IDs are not bearer credentials.",
+      "cli": {
+        "command": "accounts invitations list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/account-invitations",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_invitations_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_invitations.accept",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Accept one invitation addressed to your verified platform email address.",
+      "cli": {
+        "command": "accounts invitations accept",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        },
+        {
+          "cli": "<invitation-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "invitation_id",
+          "api_field": ":invitation_id",
+          "description": "The invitation from your personal inbox."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v0/account-invitations/:invitation_id/accept",
+          "when": "always",
+          "account_header": false
+        }
+      ],
+      "permission": "user",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_invitations_accept",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "account_invitations.revoke",
+      "area": "accounts",
+      "kind": "api",
+      "effect": "destructive",
+      "summary": "Revoke an unaccepted Account invitation and release its reserved member place. Only Account owners can revoke.",
+      "cli": {
+        "command": "accounts invitations revoke",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "The business to act in; else USERLAND_ACCOUNT_ID, then the saved business, then the API's default."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print the API's JSON instead of lines."
+        },
+        {
+          "cli": "<invitation-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "invitation_id",
+          "api_field": ":invitation_id",
+          "description": "The Account invitation to revoke."
+        },
+        {
+          "cli": "--yes",
+          "source": "flag",
+          "aliases": [
+            "-y"
+          ],
+          "required": false,
+          "takes_value": false,
+          "role": "confirmation",
+          "mcp_input": "confirm",
+          "description": "Skip the terminal prompt; required when there is no terminal."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v0/accounts",
+          "when": "when no Account is selected, to find the default",
+          "account_header": false
+        },
+        {
+          "method": "DELETE",
+          "path": "/v0/accounts/:account_id/invitations/:invitation_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "account.members.manage",
+      "safeguards": [
+        "path_segment_check",
+        "confirm_without_terminal"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "accounts_invitations_revoke",
         "status": "planned"
       }
     },

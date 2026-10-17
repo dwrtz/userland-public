@@ -43,6 +43,75 @@ describe("public CLI", () => {
     await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  test.each([
+    [["members", "list", "--account", "acct_team"], "GET /v0/accounts/acct_team/members", "acct_team", undefined],
+    [["members", "invite", "member@example.com", "--role", "member", "--account", "acct_team"], "POST /v0/accounts/acct_team/invitations", "acct_team", { email: "member@example.com", role: "member" }],
+    [["members", "role", "usr_member", "--role", "viewer", "--account", "acct_team"], "PATCH /v0/accounts/acct_team/members/usr_member", "acct_team", { role: "viewer" }],
+    [["members", "remove", "usr_member", "--yes", "--account", "acct_team"], "DELETE /v0/accounts/acct_team/members/usr_member", "acct_team", undefined],
+    [["invitations", "list"], "GET /v0/account-invitations", undefined, undefined],
+    [["invitations", "accept", "acinv_1"], "POST /v0/account-invitations/acinv_1/accept", undefined, undefined],
+    [["invitations", "revoke", "acinv_1", "--yes", "--account", "acct_team"], "DELETE /v0/accounts/acct_team/invitations/acinv_1", "acct_team", undefined]
+  ] as const)("Account membership command %j calls the supported administration API", async (args, route, accountId, body) => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { [route]: { account_id: "acct_team", members: [], invitations: [], member_capacity: 3, invitation: { id: "acinv_1", expires_at: "2026-10-24T12:00:00.000Z" }, notification_status: "sent" } });
+    const result = await runCli(["accounts", ...args, "--json"], api.baseUrl, { accountId: "acct_previous" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ account_id: "acct_team" });
+    expect(requests).toHaveLength(1);
+    expect(`${requests[0].method} ${requests[0].url}`).toBe(route);
+    expect(requests[0].accountId).toBe(accountId);
+    expect(requests[0].authorization).toBe("Bearer test_api_key");
+    expect(requests[0].body).toEqual(body);
+  });
+
+  test("Account membership command resolves the default Account before acting", async () => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, {
+      "GET /v0/accounts": accountsResponse(),
+      "GET /v0/accounts/acct_owner/members": { account_id: "acct_owner", members: [], invitations: [], member_capacity: 3 }
+    });
+    const result = await runCli(["accounts", "members", "list", "--json"], api.baseUrl);
+    expect(result.code, result.stderr).toBe(0);
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual(["GET /v0/accounts", "GET /v0/accounts/acct_owner/members"]);
+    expect(requests[1].accountId).toBe("acct_owner");
+  });
+
+  test.each([
+    [["context", "--cursor", "app_cursor"], "GET /v1/context?cursor=app_cursor"],
+    [["apps", "get", "app_native", "--environment", "preview", "--view", "source", "--source-revision", "src_exact", "--path", "worker.js", "--cursor", "8"], "GET /v1/apps/app_native?environment=preview&view=source&source_revision=src_exact&path=worker.js&cursor=8"],
+    [["operations", "get", "nop_native"], "GET /v1/operations/nop_native"],
+    [["operations", "resume", "nop_native"], "POST /v1/operations/nop_native/resume"],
+    [["operations", "cancel", "nop_native"], "POST /v1/operations/nop_native/cancel"]
+  ] as const)("Native Worker command %j calls the exact API contract", async (args, route) => {
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { [route]: { operation_id: "nop_native", status: "waiting" } });
+    const result = await runCli([...args, "--account", "acct_team", "--json"], api.baseUrl, { accountId: "acct_previous" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ operation_id: "nop_native" });
+    expect(requests).toHaveLength(1);
+    expect(`${requests[0].method} ${requests[0].url}`).toBe(route);
+    expect(requests[0].accountId).toBe("acct_team");
+    expect(requests[0].authorization).toBe("Bearer test_api_key");
+  });
+
+  test("Native Worker command applies a prebuilt create/update intent without another Publish prompt", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "userland-native-cli-")); tempDirs.push(directory);
+    const configuration = '// preserve native comments\n{"name":"native-example","main":"worker.js","compatibility_date":"2026-10-17",}\n';
+    await fs.writeFile(path.join(directory, "wrangler.jsonc"), configuration);
+    await fs.writeFile(path.join(directory, "worker.js"), "export default { fetch() { return new Response('native') } };\n");
+    const requests: RequestRecord[] = [];
+    const api = await startMockApi(requests, { "POST /v1/apps/apply": [{ operation_id: "nop_create", status: "running" }, { operation_id: "nop_update", status: "waiting" }] });
+    const common = ["apps", "apply", directory, "--account", "acct_team", "--environment", "production", "--mode", "publish", "--json"];
+    const create = await runCli([...common, "--name", "Native example", "--idempotency-key", "create-intent"], api.baseUrl);
+    const update = await runCli([...common, "--app", "app_native", "--expected-revision", "1", "--idempotency-key", "update-intent"], api.baseUrl);
+    expect(create.code, create.stderr).toBe(0); expect(update.code, update.stderr).toBe(0);
+    expect(JSON.parse(create.stdout)).toMatchObject({ operation_id: "nop_create" });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body).toMatchObject({ account_id: "acct_team", app: { create: { name: "Native example" } }, source: { files: { "wrangler.jsonc": configuration } }, target: { environment: "production", mode: "publish" }, idempotency_key: "create-intent" });
+    expect(requests[1].body).toMatchObject({ account_id: "acct_team", app: { id: "app_native", expected_revision: 1 }, idempotency_key: "update-intent" });
+    expect((requests[0].body as { source: { files: Record<string, string> } }).source.files).not.toHaveProperty("manifest.userland.json");
+  });
+
   test("prints top-level help successfully", async () => {
     const result = await runCli(["--help"], "http://127.0.0.1:1", { apiKey: null });
 
