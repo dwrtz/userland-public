@@ -5,8 +5,17 @@
     "toolValue": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type"
+      "anyOf": [
+        {
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "required": [
+            "oneOf"
+          ]
+        }
       ],
       "properties": {
         "type": {
@@ -14,7 +23,9 @@
             "string",
             "integer",
             "boolean",
-            "object"
+            "object",
+            "array",
+            "null"
           ]
         },
         "description": {
@@ -30,6 +41,20 @@
         },
         "minimum": {
           "type": "integer"
+        },
+        "maximum": {
+          "type": "integer"
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "$ref": "#/$defs/toolValue"
         },
         "enum": {
           "type": "array",
