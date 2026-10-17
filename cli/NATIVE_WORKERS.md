@@ -1,6 +1,6 @@
 # Native Worker authoring
 
-The source CLI and MCP server support native Workers for bounded internal fixture Accounts. Native hosting must be enabled by the operator. This does not enable paid hosting or change a subscription. Start by reading actual capabilities:
+The source CLI and MCP server support native Workers subject to the Account capabilities returned by the API. The shipping configuration keeps native hosting off; operators can enable bounded internal fixtures separately. Managed paid hosting requires explicit approved policies and verified payment. This guide does not enable it or authorize a subscription change. Start by reading actual capabilities:
 
 ```sh
 userland context --account acct_example --json

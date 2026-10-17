@@ -14,7 +14,7 @@ Use this skill when the user asks to build or change a Userland app. Use the exi
 
 Start with context_get. The five core operations are context_get, apps_get, apps_apply, apps_run and operations_get. They are the MCP spellings of context.get, apps.get, apps.apply, apps.run and operations.get. The CLI invokes the same operations.
 
-Use the selected Account and existing task authority. Check current capabilities, Account permissions, admission limits and existing apps. The current rollout accepts only enabled internal fixture Accounts; a connection or paid-looking page does not itself enable hosting.
+Use the selected Account and existing task authority. Check current capabilities, Account permissions, admission limits and existing apps. The shipping configuration keeps new native admission off. Operators can enable bounded internal fixtures separately. Managed paid hosting is implemented behind explicit approved-policy and verified-payment gates; a connection, CLI installation or Checkout return page does not enable it. Use the actual context response to distinguish internal_fixture, managed_funded, managed_restricted and needs_purchase.
 
 For an existing app, use apps_get to retrieve its current revision, selected environment, source and deployment metadata. Follow every source cursor and verify the returned full-file hashes. Fresh conversations use this saved state, not guessed app IDs, old chat memory or a remembered local folder.
 
