@@ -38,7 +38,7 @@
       "area": "context",
       "kind": "api",
       "effect": "read",
-      "summary": "Start here: discover identity, Accounts, actual native capabilities, permissions, usage and apps. Native hosting is currently restricted to internal fixtures.",
+      "summary": "Start here: discover identity, Accounts, actual native capabilities, permissions, usage and apps. Hosting follows the selected Account's current admission and payment policy.",
       "cli": {
         "command": "context",
         "aliases": [],

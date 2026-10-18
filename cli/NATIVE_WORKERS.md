@@ -1,6 +1,6 @@
 # Native Worker authoring
 
-The source CLI and MCP server support native Workers subject to the Account capabilities returned by the API. The shipping configuration keeps native hosting off; operators can enable bounded internal fixtures separately. Managed paid hosting requires explicit approved policies and verified payment. This guide does not enable it or authorize a subscription change. Start by reading actual capabilities:
+The source CLI and MCP server support native Workers subject to the Account capabilities returned by the API. Hosting follows the selected Account's current admission and usage policy; bounded internal fixtures remain separate from managed paid hosting, which requires explicit approved policies and verified payment. This guide does not enable it or authorize a subscription change. Start by reading actual capabilities:
 
 ```sh
 userland context --account acct_example --json

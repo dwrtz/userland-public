@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-10-18
+
+- Replace the retired app-runtime CLI with the native Worker workflow: `context`, `apps get`, `apps apply`, `apps run` and `operations get`, plus explicit lifecycle, domain, resource, protected-secret and Account administration.
+- Preserve source/configuration bytes, bounded staged binary transfer, source/deployment identities, exact revisions and idempotency keys. Larger transfer parts can use a bounded file input instead of oversized command arguments.
+- Read current Account capabilities and admission state. Hosted builds and browser tasks require the configured service; installing or connecting a client does not enable hosting or fund an Account. Secret values use generated requirements or protected browser entry, never CLI arguments or chat.
+- Package only the nine native/platform CLI modules and current native guide. Retired runtime commands fail without making API requests. Node 22 (`>=22 <23`) is the verified supported runtime.
+
+## Historical pre-native unreleased notes
+
+The following notes were prepared for the retired runtime. They are not features or retention promises of 0.14.0.
 
 - CLI: `userland apps unpublish` says the app's data and versions are kept for 30 days, then deleted: its last line is now `The app is offline and its slugs and custom domains are removed. Its data and versions are kept for 30 days, then deleted.`, and the prompt, the message without a terminal, `userland --help` ("Unpublishing") and the README say the same. `schemas/operations-v0.json` gives `apps.unpublish` the summary "Take an app offline and remove its addresses; its data and versions are kept for 30 days, then deleted." Before, they said its release history (its versions) is kept. The Userland API deletes an app's versions, saved data, files, people and secret keys 30 days after it is unpublished, for every CLI version (dwrtz/userland#466); only the words change here.
 - CLI and schema: `userland validate` and the `apps publish` check refuse an `app.summary` over 2,000 characters (`manifest_path=app.summary`, `must be at most 2,000 characters`, worded as the API words it), more than 50 `app.tags` (`must contain at most 50 items`), and a webhook `path` over 512 characters (`must be at most 512 characters`), before anything is uploaded. The Userland API now refuses these too (dwrtz/userland#426). `schemas/resource-manifest-v0.schema.json` has the same limits (`maxLength` and `maxItems`), so editors show them. Each tag was already at most 64 characters. Before, the CLI accepted any length and any number of tags, and the publish then failed with `400` (`invalid_app_manifest`, or `invalid_resource_manifest` for the webhook path).
