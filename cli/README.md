@@ -1,15 +1,17 @@
 # Userland CLI
 
-Build and manage native Cloudflare Worker apps with the same operation contracts as the Userland MCP connection. The verified runtime is Node 22. The shipping configuration keeps native hosting off; selected internal Accounts can use a bounded test profile. Managed paid hosting requires explicit operator-approved policies and verified payment. Installing the CLI, connecting an assistant or returning from Checkout does not itself grant hosting.
+Build and manage native Cloudflare Worker apps with the same operation contracts as the Userland MCP connection. The verified runtime is Node 22. Hosting follows the selected Account's current admission and usage policy. Managed paid hosting requires explicit operator-approved policies and verified payment. Installing the CLI, connecting an assistant or returning from Checkout does not itself grant hosting.
 
 ## Install or build
 
+Use version 0.14.0 for native operations. The older 0.13.x packages use the retired runtime contract.
+
 ```sh
-npm install -g @userland.fun/cli
+npm install -g @userland.fun/cli@0.14.0
 userland --version
 ```
 
-The released package may predate native operations. To use this source revision, run `npm ci` and `npm run cli:build` in the repository root, then `node cli/dist/index.js --help`. Read [NATIVE_WORKERS.md](./NATIVE_WORKERS.md) for the complete typed authoring, binary transfer and verification contract.
+The no-terminal route is the [remote MCP service](https://docs.userland.fun/guides/chat-assistants/); check that your client actually exposes the current native tools. To build this source checkout instead, run `npm ci` and `npm run cli:build` in the repository root, then `node cli/dist/index.js --help`. Read [NATIVE_WORKERS.md](./NATIVE_WORKERS.md) for the complete typed authoring, binary transfer and verification contract.
 
 ## Connect and discover
 
