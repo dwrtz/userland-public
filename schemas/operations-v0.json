@@ -2968,7 +2968,7 @@
       "area": "recovery",
       "kind": "api",
       "effect": "write",
-      "summary": "Restore a ready Account-owned snapshot into new isolated resources in an existing owned environment (preview by default, or production explicitly). This does not replace live bindings, rewind shared data, or roll back code. Inspect the result and explicitly apply bindings after verification.",
+      "summary": "Restore a ready Account-owned snapshot into new isolated resources in an existing owned environment (preview by default, or production explicitly). This does not replace live bindings, rewind shared data, or roll back code. Inspect the result and explicitly apply bindings after verification. A snapshot whose database is marked download only (automatic_restore) is refused with restore_download_only; a held restore waits with restore_held_*; read recovery.resources in operations_get.",
       "cli": {
         "command": "apps restore",
         "aliases": [],
@@ -3467,7 +3467,7 @@
       "area": "operations",
       "kind": "api",
       "effect": "write",
-      "summary": "Cancel this operation through its original credential and revoke its preview grants.",
+      "summary": "Cancel this operation through its original credential and revoke its preview grants. Cancelling a data restore that hasn't finished also deletes every database copy it made, including copies already verified; its bucket copies stay, and the snapshot stays downloadable.",
       "cli": {
         "command": "operations cancel",
         "aliases": [],
