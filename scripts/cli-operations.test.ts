@@ -132,4 +132,13 @@ describe("the probes", () => {
       ])
     );
   });
+
+  it("exercises snapshot creation at the API instead of stopping at input validation", async () => {
+    const cli = path.join(root, "cli", "dist", "index.js");
+    if (!existsSync(cli)) return;
+    const snapshot = op("apps.snapshot", "apps snapshot", [arg("<app-id>"), ...["--account", "--environment", "--resources-json", "--expected-revision", "--expected-epoch", "--idempotency-key"].map(cli => ({ ...flag(cli, true), required: true }))]);
+    expect(await behaviourDrift([snapshot], cli)).toEqual([
+      "`userland apps snapshot (required inputs only)` calls POST /v1/apps/app_probe/recoveries, which isn't one of apps.snapshot's API calls in the inventory."
+    ]);
+  });
 });

@@ -2964,6 +2964,377 @@
       }
     },
     {
+      "id": "apps.snapshot",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Create a bounded snapshot of one to four exact owned resources. Requires current Account owner/admin authority and a full-access connection. Read snapshot_resource_ids through apps_get view=resources, then provide the exact app revision and environment epoch. Poll recoveries_get for readiness. Snapshots stay in Userland; archive downloads require the signed-in console.",
+      "cli": {
+        "command": "apps snapshot",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "account_id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--environment",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "environment",
+          "api_field": "environment",
+          "description": "Exact native environment.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ]
+          }
+        },
+        {
+          "cli": "--expected-revision",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_revision",
+          "api_field": "expected_revision",
+          "description": "Exact current app revision.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--expected-epoch",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "expected_epoch",
+          "api_field": "expected_epoch",
+          "description": "Current admission epoch from apps.get; stale intent cannot stop or resume a newer generation.",
+          "mcp_schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "cli": "--resources-json",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "resource_ids",
+          "api_field": "resource_ids",
+          "description": "JSON array of one to four unique owned resource IDs from apps.get view=resources.",
+          "mcp_schema": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "description": "Exact owned resource ID",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "cli": "--idempotency-key",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "idempotency_key",
+          "api_field": "idempotency_key",
+          "description": "Stable key for this exact lifecycle intent; reuse it for retries."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/apps/:app_id/recoveries",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "apps_snapshot",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "recoveries.list",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "read",
+      "summary": "List the latest three snapshots for an owned app. Returns bounded metadata without archive contents or download links. Requires current Account owner/admin authority and a full-access connection.",
+      "cli": {
+        "command": "recoveries list",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<app-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "app_id",
+          "api_field": ":app_id",
+          "description": "Exact native app ID."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v1/apps/:app_id/recoveries",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "recoveries_list",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "recoveries.get",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "read",
+      "summary": "Read snapshot progress and resource verification metadata without archive contents or download links. Requires current Account owner/admin authority and a full-access connection.",
+      "cli": {
+        "command": "recoveries get",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<recovery-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "recovery_id",
+          "api_field": ":recovery_id",
+          "description": "Exact snapshot ID returned by apps.snapshot or recoveries.list."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "GET",
+          "path": "/v1/recoveries/:recovery_id",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "recoveries_get",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "recoveries.resume",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Reconcile snapshot progress. Background work keeps the original creator's credential and stops if it is revoked; this does not transfer authority to the caller. Requires current Account owner/admin authority and a full-access connection.",
+      "cli": {
+        "command": "recoveries resume",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<recovery-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "recovery_id",
+          "api_field": ":recovery_id",
+          "description": "Exact snapshot ID returned by apps.snapshot or recoveries.list."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/recoveries/:recovery_id/resume",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "recoveries_resume",
+        "status": "planned"
+      }
+    },
+    {
+      "id": "recoveries.cancel",
+      "area": "recovery",
+      "kind": "api",
+      "effect": "write",
+      "summary": "Cancel an unfinished snapshot. This leaves source data unchanged and does not delete a completed snapshot. Requires current Account owner/admin authority and a full-access connection.",
+      "cli": {
+        "command": "recoveries cancel",
+        "aliases": [],
+        "status": "released"
+      },
+      "inputs": [
+        {
+          "cli": "<recovery-id>",
+          "source": "argument",
+          "required": true,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "recovery_id",
+          "api_field": ":recovery_id",
+          "description": "Exact snapshot ID returned by apps.snapshot or recoveries.list."
+        },
+        {
+          "cli": "--account",
+          "source": "flag",
+          "required": true,
+          "takes_value": true,
+          "role": "account",
+          "mcp_input": "account_id",
+          "api_field": "header:x-userland-account-id",
+          "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--json",
+          "source": "flag",
+          "required": false,
+          "takes_value": false,
+          "role": "output",
+          "description": "Print exact API JSON for automation."
+        }
+      ],
+      "api": [
+        {
+          "method": "POST",
+          "path": "/v1/recoveries/:recovery_id/cancel",
+          "when": "always",
+          "account_header": true
+        }
+      ],
+      "permission": "apps.export",
+      "safeguards": [
+        "path_segment_check"
+      ],
+      "mcp": {
+        "via": "tool",
+        "tool": "recoveries_cancel",
+        "status": "planned"
+      }
+    },
+    {
       "id": "apps.restore",
       "area": "recovery",
       "kind": "api",
@@ -3048,7 +3419,7 @@
           "role": "input",
           "mcp_input": "recovery_id",
           "api_field": "recovery_id",
-          "description": "Exact ready snapshot ID created through the signed-in console."
+          "description": "Exact ready snapshot ID returned by apps.snapshot or recoveries.list."
         },
         {
           "cli": "--idempotency-key",

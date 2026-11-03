@@ -193,7 +193,19 @@ userland operations get op_example --view data --account acct_example --json
 
 The default operation result contains only status and result availability. Explicit data results may contain app secrets or visitor text, and MCP fences them as untrusted data. An ambiguous write is never blindly retried: keep its original idempotency key and let the exact receipt reconcile. If response rows were lost, issue a new explicit read instead of repeating the mutation.
 
-The signed-in Account owner or administrator starts and downloads complete data snapshots on the console's `/native-recovery/<app-id>` page. This action temporarily blocks D1 access while each database exports. No CLI or MCP operation starts or downloads a complete archive, and no provider download URL is returned to an agent. Source retrieval is separate.
+Create a snapshot by explicitly selecting one to four owned resource IDs from `snapshot_resource_ids` in `apps get --view resources`. Use the current app revision and environment epoch and retain the same idempotency key for retries. Snapshot creation and administration require the Account owner or administrator; connected assistants additionally need full access. Snapshot creation temporarily blocks D1 access while each selected database exports:
+
+```sh
+userland apps snapshot app_example --account acct_example --environment production \
+  --resources-json '["nres_database","nres_uploads"]' \
+  --expected-revision 4 --expected-epoch 2 --idempotency-key before-change-1 --json
+userland recoveries list app_example --account acct_example --json
+userland recoveries get recovery_example --account acct_example --json
+userland recoveries resume recovery_example --account acct_example --json
+userland recoveries cancel recovery_example --account acct_example --json
+```
+
+These commands return metadata, including the recovery ID and `status`, without downloading an archive. Read status until the snapshot is ready before using it for restore; resume keeps the original snapshot identity and cancellation stops pending snapshot work. Current access and the original credential's authority remain enforced. Only a signed-in Account owner or administrator downloads complete archives from the console's `/native-recovery/<app-id>` page. No provider download URL or archive content is returned to an agent. Source retrieval is separate.
 
 A publisher can restore a ready snapshot ID into new resources in an existing owned environment. The default is preview; production must be selected explicitly:
 

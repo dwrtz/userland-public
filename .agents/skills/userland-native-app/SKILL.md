@@ -6,7 +6,7 @@ description: Build, continue, verify and repair native Userland apps with the ex
 # Native Userland app workflow
 
 Userland API version: native-v1
-Guide version: 2026-10-17
+Guide version: 2026-11-03
 
 Use this skill when the user asks to build or change a Userland app. Use the existing Userland connection or CLI, and respect the current task authority. Read every section needed for the requested work.
 
@@ -68,7 +68,7 @@ Use apps_get view:logs with an explicit environment and owned deployment_id for 
 
 Stopping an app closes new admission; already admitted streams, sockets or waitUntil work can continue. Suspension also requests managed-task shutdown. Stop and execution deletion retain source and data, so retained storage charges can continue. Resume is a fresh authorized action; it does not revive a revoked operation or grant.
 
-resources_query requires full deployment access even for SELECT; rows can contain secrets. Use parameter binding and exact expected app revisions. apps_restore creates owned isolated resources from a supported snapshot and requires explicit later publication to switch bindings. A snapshot whose database is marked download only (automatic_restore) is refused with restore_download_only; a held restore waits with restore_held_*; read recovery.resources in operations_get. Cancelling a restore that hasn't finished deletes every database copy it made, including verified ones; bucket copies stay, and the snapshot stays downloadable. Full recovery archives are started and downloaded by a signed-in owner/admin, not streamed through a model transcript.
+resources_query requires full deployment access even for SELECT; rows can contain secrets. Use parameter binding and exact expected app revisions. apps_restore creates owned isolated resources from a supported snapshot and requires explicit later publication to switch bindings. A snapshot whose database is marked download only (automatic_restore) is refused with restore_download_only; a held restore waits with restore_held_*; read recovery.resources in operations_get. Cancelling a restore that hasn't finished deletes every database copy it made, including verified ones; bucket copies stay, and the snapshot stays downloadable. Account owners/admins can create saved snapshots with apps_snapshot using exact snapshot_resource_ids, app revision and environment epoch, then poll recoveries_get. recoveries_list shows the latest three snapshots; recoveries_resume/cancel manage unfinished work without transferring the original credential. Snapshot management requires full access. Archive downloads require the signed-in console and are not streamed through a model transcript.
 
 Report the app address, Account and app IDs, active deployment, verification performed, unresolved dependencies and recovery options. Do not report an app live while its operation is waiting, failed, stopped or unconfirmed.
 
