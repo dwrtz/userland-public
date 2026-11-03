@@ -9,6 +9,7 @@ import { Writable } from "node:stream";
 import { nativeSecretsCommand } from "./nativeSecrets.js";
 import { nativeCommand } from "./native.js";
 import { nativeDataCommand } from "./nativeData.js";
+import { nativeRecoveryCommand } from "./nativeRecovery.js";
 import { nativeDomainsCommand } from "./nativeDomains.js";
 import { accountMembershipCommand } from "./accountMembership.js";
 import { terminalSafe, terminalSafeLines, terminalSafeValue } from "./terminal.js";
@@ -168,6 +169,9 @@ async function main(): Promise<void> {
   if (command === "resources" || command === "apps" && args[0] === "restore") {
     await nativeDataCommand(command,args,{apiFetch,pathSegment,print:(line)=>console.log(line)});return;
   }
+  if (command === "recoveries" || command === "apps" && args[0] === "snapshot") {
+    await nativeRecoveryCommand(command,args,{apiFetch,pathSegment,print:(line)=>console.log(line)});return;
+  }
   if(command==="routes"&&["set","remove"].includes(args[0])){
     await nativeDomainsCommand(args,{apiFetch,pathSegment,print:(line)=>console.log(line)});return;
   }
@@ -176,7 +180,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "apps") throw new Error("Use native apps get|apply|run|stop|resume|delete|restore or secrets. Read userland context first.");
+  if (command === "apps") throw new Error("Use native apps get|apply|run|stop|resume|delete|snapshot|restore or secrets. Read userland context first.");
 
   if (command === "auth") {
     await authCommand(args);
@@ -1374,6 +1378,11 @@ function usage(exitCode: number): never {
   userland routes set <app-id> --account <account-id> --hostname <hostname> --environment production --expected-epoch <epoch> --idempotency-key <key> [--cookie-policy <host|owned_site>] [--json]
   userland routes remove <app-id> --account <account-id> --hostname <hostname> --environment production --expected-epoch <epoch> --idempotency-key <key> [--json]
   userland apps restore <app-id> --account <account-id> --recovery <snapshot-id> [--environment preview|production] --expected-revision <revision> --expected-epoch <epoch> --idempotency-key <key> [--json]
+  userland apps snapshot <app-id> --account <account-id> --environment <production|preview> --resources-json '<JSON resource ID array>' --expected-revision <revision> --expected-epoch <epoch> --idempotency-key <key> [--json]
+  userland recoveries list <app-id> --account <account-id> [--json]
+  userland recoveries get <recovery-id> --account <account-id> [--json]
+  userland recoveries resume <recovery-id> --account <account-id> [--json]
+  userland recoveries cancel <recovery-id> --account <account-id> [--json]
   userland operations get <operation-id> [--account <account-id>] [--view <summary|data|evidence>] [--path <evidence-path>] [--json]
   userland operations resume <operation-id> [--account <account-id>] [--json]
   userland operations cancel <operation-id> [--account <account-id>] [--json]

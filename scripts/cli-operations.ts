@@ -209,6 +209,11 @@ const SAMPLES: Record<string, string> = {
 /** The runs that exercise an operation: its required inputs alone, then each optional flag and flag alias once. */
 export function probesFor(operation: InventoryOperation, folders: { app: string; empty: string; native?: string }, base: string): Probe[] {
   const value = (name: string): string => {
+    if (operation.id === "apps.snapshot") {
+      if (["--expected-revision", "--expected-epoch"].includes(name)) return "1";
+      if (name === "--resources-json") return '["nres_probe"]';
+    }
+    if (name === "<recovery-id>") return "recovery_probe";
     if (name === "--api-base-url" || name === "--console-url") return base;
     if (name === "<dir>") return operation.id === "apps.apply" ? folders.native ?? folders.app : folders.app;
     if (/^\[.*\]$/u.test(name)) return folders.empty;

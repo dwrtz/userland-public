@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add `apps snapshot` and `recoveries list|get|resume|cancel` for Account owners/admins to create and administer native data snapshots through the CLI. Creation requires explicit resource IDs, environment, current revision/epoch and a stable idempotency key. D1 export temporarily blocks access to each selected database. Responses contain metadata; complete archives remain available only through the signed-in console.
+
 ## 0.14.0 - 2026-10-18
 
 - Replace the retired app-runtime CLI with the native Worker workflow: `context`, `apps get`, `apps apply`, `apps run` and `operations get`, plus explicit lifecycle, domain, resource, protected-secret and Account administration.

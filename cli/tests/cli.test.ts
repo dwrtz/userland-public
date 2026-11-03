@@ -143,10 +143,38 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("userland --version");
     for(const command of ["userland context","userland apps apply","userland apps get","userland apps run","userland operations get"])expect(result.stdout).toContain(command);
+    for(const command of ["userland apps snapshot","userland recoveries list","userland recoveries get","userland recoveries resume","userland recoveries cancel"])expect(result.stdout).toContain(command);
     expect(result.stdout).toContain("--transfer-file <JSON file>");
     for(const command of ["userland validate","userland apps publish","userland support","userland apps export"])expect(result.stdout).not.toContain(command);
     expect(result.stdout).not.toContain("userland " + "ops");
     expect(result.stderr).toBe("");
+  });
+
+  test("creates and administers native snapshots without downloading an archive", async () => {
+    const requests: RequestRecord[] = [];
+    const snapshot = { recovery_id: "recovery_one", status: "waiting", resources: [{ source_resource_id: "nres_one", state: "reserved" }] };
+    const api = await startMockApi(requests, {
+      "POST /v1/apps/app_one/recoveries": snapshot,
+      "GET /v1/apps/app_one/recoveries": { app_id: "app_one", account_id: "acct_team", recoveries: [snapshot] },
+      "GET /v1/recoveries/recovery_one": snapshot,
+      "POST /v1/recoveries/recovery_one/resume": snapshot,
+      "POST /v1/recoveries/recovery_one/cancel": { ...snapshot, status: "cancelled" }
+    });
+    const creation = await runCli(["apps", "snapshot", "app_one", "--account", "acct_team", "--environment", "production", "--resources-json", '["nres_one"]', "--expected-revision", "4", "--expected-epoch", "2", "--idempotency-key", "snapshot-once", "--json"], api.baseUrl);
+    expect(creation.code, creation.stderr).toBe(0);
+    expect(JSON.parse(creation.stdout)).toMatchObject(snapshot);
+    for (const action of ["list", "get", "resume", "cancel"]) {
+      const result = await runCli(["recoveries", action, action === "list" ? "app_one" : "recovery_one", "--account", "acct_team", "--json"], api.baseUrl);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject(action === "list" ? { recoveries: [snapshot] } : { ...snapshot, ...(action === "cancel" ? { status: "cancelled" } : {}) });
+    }
+    expect(requests).toHaveLength(5);
+    expect(requests[0].body).toEqual({ account_id: "acct_team", environment: "production", resource_ids: ["nres_one"], expected_revision: 4, expected_epoch: 2, idempotency_key: "snapshot-once" });
+    expect(requests.every(request => request.accountId === "acct_team" && request.authorization === "Bearer test_api_key")).toBe(true);
+    expect(requests.map(request => `${request.method} ${request.url}`)).toEqual([
+      "POST /v1/apps/app_one/recoveries", "GET /v1/apps/app_one/recoveries", "GET /v1/recoveries/recovery_one",
+      "POST /v1/recoveries/recovery_one/resume", "POST /v1/recoveries/recovery_one/cancel"
+    ]);
   });
 
   test("prints the CLI package version", async () => {
