@@ -36,6 +36,27 @@ describe("native snapshot administration", () => {
     expect(c.print).toHaveBeenCalledExactlyOnceWith(JSON.stringify(result, null, 2));
   });
 
+  it("requests import progress only when selected and preserves unavailable evidence", async () => {
+    const c = client(), progress = { ...result, import_progress: { state: "unavailable", progress: null } };
+    c.apiFetch.mockResolvedValueOnce(progress);
+    await nativeRecoveryCommand("recoveries", ["get", "recovery_one", "--account", "acct_one", "--view", "import-progress", "--json"], c as unknown as NativeClient);
+    expect(c.apiFetch).toHaveBeenCalledExactlyOnceWith("/v1/recoveries/recovery_one?view=import-progress", { method: "GET" }, { accountId: "acct_one", accountScoped: true, raw: true });
+    expect(c.print).toHaveBeenCalledExactlyOnceWith(JSON.stringify(progress, null, 2));
+  });
+
+  it.each([
+    ["get", "--view", "download"],
+    ["get", "--view", "import-progress", "--view", "import-progress"],
+    ["get", "--view"],
+    ["list", "--view", "import-progress"],
+    ["resume", "--view", "import-progress"],
+    ["cancel", "--view", "import-progress"]
+  ])("refuses an invalid progress selection on %s without making a request", async (action, ...flags) => {
+    const c = client();
+    await expect(nativeRecoveryCommand("recoveries", [action, "recovery_one", "--account", "acct_one", ...flags], c as unknown as NativeClient)).rejects.toThrow();
+    expect(c.apiFetch).not.toHaveBeenCalled();
+  });
+
   it.each(["account", "environment", "resources-json", "expected-revision", "expected-epoch", "idempotency-key"])("requires explicit --%s before creating a snapshot", async flag => {
     const c = client(), args = [...intent], index = args.indexOf(`--${flag}`);
     args.splice(index, 2);

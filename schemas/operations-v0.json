@@ -3177,7 +3177,7 @@
           "role": "input",
           "mcp_input": "recovery_id",
           "api_field": ":recovery_id",
-          "description": "Exact snapshot ID returned by apps.snapshot or recoveries.list."
+          "description": "Exact snapshot or restore recovery ID returned by snapshot or operation metadata."
         },
         {
           "cli": "--account",
@@ -3188,6 +3188,22 @@
           "mcp_input": "account_id",
           "api_field": "header:x-userland-account-id",
           "description": "Account selection from context.get, else the connection or CLI's selected Account."
+        },
+        {
+          "cli": "--view",
+          "source": "flag",
+          "required": false,
+          "takes_value": true,
+          "role": "input",
+          "mcp_input": "view",
+          "api_field": "query:view",
+          "description": "Optional bounded importer timing and poll history; unavailable telemetry is not evidence of no work.",
+          "mcp_schema": {
+            "type": "string",
+            "enum": [
+              "import-progress"
+            ]
+          }
         },
         {
           "cli": "--json",
