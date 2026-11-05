@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1 - 2026-11-05
+
+- Add `recoveries get --view import-progress` to request bounded restore-import timing and poll metadata when available. Missing evidence remains unavailable; this read does not start or resume a job, and the existing Account owner/admin permissions apply.
+
 ## 0.15.0 - 2026-11-05
 
 - Add `apps snapshot` and `recoveries list|get|resume|cancel` for Account owners/admins to create and administer native data snapshots through the CLI. Creation requires explicit resource IDs, environment, current revision/epoch and a stable idempotency key. D1 export temporarily blocks access to each selected database. Responses contain metadata; complete archives remain available only through the signed-in console.

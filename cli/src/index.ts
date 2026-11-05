@@ -1380,7 +1380,7 @@ function usage(exitCode: number): never {
   userland apps restore <app-id> --account <account-id> --recovery <snapshot-id> [--environment preview|production] --expected-revision <revision> --expected-epoch <epoch> --idempotency-key <key> [--json]
   userland apps snapshot <app-id> --account <account-id> --environment <production|preview> --resources-json '<JSON resource ID array>' --expected-revision <revision> --expected-epoch <epoch> --idempotency-key <key> [--json]
   userland recoveries list <app-id> --account <account-id> [--json]
-  userland recoveries get <recovery-id> --account <account-id> [--json]
+  userland recoveries get <recovery-id> --account <account-id> [--view import-progress] [--json]
   userland recoveries resume <recovery-id> --account <account-id> [--json]
   userland recoveries cancel <recovery-id> --account <account-id> [--json]
   userland operations get <operation-id> [--account <account-id>] [--view <summary|data|evidence>] [--path <evidence-path>] [--json]
