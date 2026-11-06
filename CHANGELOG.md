@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.2 - 2026-11-06
+
+- Add `recoveries get --view import-progress-summary` to read recovery identity, status and bounded importer progress without full recovery metadata. Preserve the default response and existing `import-progress` view; unavailable evidence remains unavailable, and the read starts no job.
+
 ## 0.15.1 - 2026-11-05
 
 - Add `recoveries get --view import-progress` to request bounded restore-import timing and poll metadata when available. Missing evidence remains unavailable; this read does not start or resume a job, and the existing Account owner/admin permissions apply.
