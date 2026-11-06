@@ -4,7 +4,7 @@ import { nativeRecoveryCommand } from "../src/nativeRecovery.js";
 
 const result = { recovery_id: "recovery_one", status: "waiting", resources: [{ source_resource_id: "nres_one", state: "reserved" }] };
 const client = () => ({
-  apiFetch: vi.fn(async (_path: string, _init: RequestInit, _options?: unknown) => result),
+  apiFetch: vi.fn(async (_path: string, _init: RequestInit, _options?: unknown): Promise<unknown> => result),
   pathSegment: (value: string) => encodeURIComponent(value),
   print: vi.fn()
 });
@@ -44,8 +44,25 @@ describe("native snapshot administration", () => {
     expect(c.print).toHaveBeenCalledExactlyOnceWith(JSON.stringify(progress, null, 2));
   });
 
+  it.each(["observed", "unavailable"])("requests the compact summary and preserves %s evidence without fetching full metadata", async state => {
+    const c = client(), summary = {
+      recovery_id: "recovery_one", account_id: "acct_one", app_id: "app_one", environment: "production",
+      kind: "restore", operation_id: "op_one", status: "running",
+      import_progress: { state, progress: state === "observed" ? { generation: 2, state: "active" } : null }
+    };
+    c.apiFetch.mockResolvedValueOnce(summary);
+    await nativeRecoveryCommand("recoveries", ["get", "recovery_one", "--account", "acct_one", "--view", "import-progress-summary", "--json"], c as unknown as NativeClient);
+    expect(c.apiFetch).toHaveBeenCalledExactlyOnceWith("/v1/recoveries/recovery_one?view=import-progress-summary", { method: "GET" }, { accountId: "acct_one", accountScoped: true, raw: true });
+    expect(c.print).toHaveBeenCalledExactlyOnceWith(JSON.stringify(summary, null, 2));
+  });
+
   it.each([
     ["get", "--view", "download"],
+    ["get", "--view", "import-progress-summary&download=true"],
+    ["get", "--view", "import-progress-summary", "--view", "import-progress"],
+    ["list", "--view", "import-progress-summary"],
+    ["resume", "--view", "import-progress-summary"],
+    ["cancel", "--view", "import-progress-summary"],
     ["get", "--view", "import-progress", "--view", "import-progress"],
     ["get", "--view"],
     ["list", "--view", "import-progress"],
@@ -87,6 +104,14 @@ describe("native snapshot administration", () => {
       ["recoveries", ["cancel", "recovery_one"]]
     ] as const) await expect(nativeRecoveryCommand(command, [...args], c as unknown as NativeClient)).rejects.toThrow();
     expect(c.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves a summary refusal without falling back to full metadata", async () => {
+    const c = client(), refusal = new Error("recovery_authority_revoked");
+    c.apiFetch.mockRejectedValueOnce(refusal);
+    await expect(nativeRecoveryCommand("recoveries", ["get", "recovery_one", "--account", "acct_one", "--view", "import-progress-summary"], c as unknown as NativeClient)).rejects.toBe(refusal);
+    expect(c.apiFetch).toHaveBeenCalledExactlyOnceWith("/v1/recoveries/recovery_one?view=import-progress-summary", { method: "GET" }, { accountId: "acct_one", accountScoped: true, raw: false });
+    expect(c.print).not.toHaveBeenCalled();
   });
 
   it("preserves an API refusal and never falls back to another operation", async () => {

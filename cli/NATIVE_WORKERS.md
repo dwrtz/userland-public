@@ -207,6 +207,8 @@ userland recoveries cancel recovery_example --account acct_example --json
 
 These commands return metadata, including the recovery ID and `status`, without downloading an archive. Read status until the snapshot is ready before using it for restore; resume keeps the original snapshot identity and cancellation stops pending snapshot work. Current access and the original credential's authority remain enforced. Only a signed-in Account owner or administrator downloads complete archives from the console's `/native-recovery/<app-id>` page. No provider download URL or archive content is returned to an agent. Source retrieval is separate.
 
+For a restore's current importer timing and poll history, use `userland recoveries get recovery_example --account acct_example --view import-progress-summary --json`. This compact view returns recovery identity, status and `import_progress`; `--view import-progress` also includes full recovery metadata. Both are read-only. Missing or older telemetry is unavailable, which does not prove that no work occurred.
+
 A publisher can restore a ready snapshot ID into new resources in an existing owned environment. The default is preview; production must be selected explicitly:
 
 ```sh
