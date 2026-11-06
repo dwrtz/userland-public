@@ -48,7 +48,7 @@ Read [the native guide](https://docs.userland.fun/native-guide.md) and [CLI refe
 - `userland resources query`: run bounded SQL under full deployment authority.
 - `userland apps snapshot`: create a snapshot of explicitly selected owned resources with the current app revision and environment epoch, as an Account owner or administrator. D1 export temporarily blocks access to each selected database.
 - `userland recoveries list|get|resume|cancel`: inspect metadata or continue/cancel a snapshot under current authority. Complete archives are downloaded only by a signed-in owner/admin in the console.
-- `userland recoveries get --view import-progress`: request bounded import timing and poll metadata for the current restore attempt. Missing or older evidence is reported as unavailable; this read starts no job.
+- `userland recoveries get --view import-progress-summary`: request only recovery identity, status and bounded importer progress for the current restore attempt. Use `--view import-progress` to include full recovery metadata. Missing or older telemetry is reported as unavailable; neither read starts a job, and unavailable telemetry does not prove that no work occurred.
 - `userland apps restore`: restore an owned snapshot into isolated resources; publication is separate.
 - `userland apps secrets list|set|delete`: list metadata or use typed generated/protected-entry/copy intents. Native secret values are never accepted as command arguments or stdin.
 - `userland accounts members list|invite|role|remove` and `userland accounts invitations list|accept|revoke`: manage platform Account access, separate from app visitor login.

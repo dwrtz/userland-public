@@ -144,6 +144,7 @@ describe("public CLI", () => {
     expect(result.stdout).toContain("userland --version");
     for(const command of ["userland context","userland apps apply","userland apps get","userland apps run","userland operations get"])expect(result.stdout).toContain(command);
     for(const command of ["userland apps snapshot","userland recoveries list","userland recoveries get","userland recoveries resume","userland recoveries cancel"])expect(result.stdout).toContain(command);
+    expect(result.stdout).toContain("[--view import-progress|import-progress-summary]");
     expect(result.stdout).toContain("--transfer-file <JSON file>");
     for(const command of ["userland validate","userland apps publish","userland support","userland apps export"])expect(result.stdout).not.toContain(command);
     expect(result.stdout).not.toContain("userland " + "ops");
@@ -175,6 +176,22 @@ describe("public CLI", () => {
       "POST /v1/apps/app_one/recoveries", "GET /v1/apps/app_one/recoveries", "GET /v1/recoveries/recovery_one",
       "POST /v1/recoveries/recovery_one/resume", "POST /v1/recoveries/recovery_one/cancel"
     ]);
+  });
+
+  test.each(["import-progress", "import-progress-summary"])("requests the explicit %s recovery view without changing its response", async view => {
+    const requests: RequestRecord[] = [];
+    const summary = { recovery_id: "recovery_one", account_id: "acct_team", app_id: "app_one", environment: "production", kind: "restore", operation_id: "op_one", status: "running", import_progress: { state: "unavailable", progress: null } };
+    const response = view === "import-progress" ? { ...summary, resources: [{ source_resource_id: "nres_one" }] } : summary;
+    const route = `GET /v1/recoveries/recovery_one?view=${view}`;
+    const api = await startMockApi(requests, { [route]: response });
+    const result = await runCli(["recoveries", "get", "recovery_one", "--account", "acct_team", "--view", view, "--json"], api.baseUrl, { accountId: "acct_previous" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(response);
+    expect(requests).toHaveLength(1);
+    expect(`${requests[0].method} ${requests[0].url}`).toBe(route);
+    expect(requests[0].accountId).toBe("acct_team");
+    expect(requests[0].authorization).toBe("Bearer test_api_key");
+    expect(requests[0].body).toBeUndefined();
   });
 
   test("prints the CLI package version", async () => {

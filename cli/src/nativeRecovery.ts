@@ -24,7 +24,7 @@ export async function nativeRecoveryCommand(command: string, args: string[], cli
   }
   if (positional.length !== 1) throw new Error(snapshot || action === "list" ? "Pass one exact app ID." : "Pass one exact recovery ID.");
   for (const name of allowed) if (name !== "view" && !values[name]) throw new Error(`--${name} is required.`);
-  if (values.view !== undefined && values.view !== "import-progress") throw new Error("--view must be import-progress.");
+  if (values.view !== undefined && !["import-progress", "import-progress-summary"].includes(values.view)) throw new Error("--view must be import-progress or import-progress-summary.");
 
   let apiPath: string, method: "GET" | "POST" = "GET", body: string | undefined;
   if (snapshot || action === "list") {
@@ -45,7 +45,7 @@ export async function nativeRecoveryCommand(command: string, args: string[], cli
     }
   } else {
     apiPath = `/v1/recoveries/${client.pathSegment(positional[0], "recovery ID")}${action === "get" ? "" : `/${action}`}`;
-    if (action === "get" && values.view) apiPath += "?view=import-progress";
+    if (action === "get" && values.view) apiPath += `?view=${encodeURIComponent(values.view)}`;
     if (action !== "get") method = "POST";
   }
   const result = await client.apiFetch(apiPath, { method, ...(body ? { body } : {}) }, { accountId: values.account, accountScoped: true, raw: json });
