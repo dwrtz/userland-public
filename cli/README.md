@@ -4,10 +4,10 @@ Build and manage native Cloudflare Worker apps with the same operation contracts
 
 ## Install or build
 
-Use version 0.15.1 for native operations, including snapshot creation, recovery management and optional import-progress metadata. The older 0.13.x packages use the retired runtime contract.
+Use version 0.15.2 for native operations, including snapshot creation, recovery management and optional full or compact import-progress metadata. The older 0.13.x packages use the retired runtime contract.
 
 ```sh
-npm install -g @userland.fun/cli@0.15.1
+npm install -g @userland.fun/cli@0.15.2
 userland --version
 ```
 
