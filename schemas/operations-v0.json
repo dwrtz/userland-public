@@ -2561,7 +2561,7 @@
       "area": "apps",
       "kind": "api",
       "effect": "write",
-      "summary": "Attach an owned custom production hostname. DNS and certificate verification continue automatically in a separate operation without blocking app work. Host cookies stay isolated; owned_site requires additional exclusive site ownership proof.",
+      "summary": "Attach a customer-owned domain or, when offered by context_get, claim a friendly production address. Poll the route operation for verification. Friendly addresses use host-only cookies. Custom domains require DNS and certificate verification.",
       "cli": {
         "command": "routes set",
         "aliases": [],
@@ -2596,7 +2596,7 @@
           "role": "input",
           "mcp_input": "hostname",
           "api_field": "hostname",
-          "description": "Exact customer-owned DNS hostname."
+          "description": "Full friendly hostname under the advertised apps domain, or a customer-owned DNS hostname."
         },
         {
           "cli": "--environment",
@@ -2636,7 +2636,7 @@
           "role": "input",
           "mcp_input": "cookie_policy",
           "api_field": "cookie_policy",
-          "description": "host (default), or owned_site with additional site proof.",
+          "description": "host (required for friendly addresses), or owned_site for a custom domain with additional site proof.",
           "mcp_schema": {
             "type": "string",
             "enum": [
@@ -2687,7 +2687,7 @@
       "area": "apps",
       "kind": "api",
       "effect": "write",
-      "summary": "Stop admission on an exact owned custom hostname and reconcile its provider removal. Generated app addresses remain available.",
+      "summary": "Remove an exact production address. Check the Account reclaim period in context_get before releasing a friendly name. Customer-owned domains have separate provider cleanup.",
       "cli": {
         "command": "routes remove",
         "aliases": [],
@@ -2722,7 +2722,7 @@
           "role": "input",
           "mcp_input": "hostname",
           "api_field": "hostname",
-          "description": "Exact customer-owned DNS hostname."
+          "description": "Full friendly hostname under the advertised apps domain, or a customer-owned DNS hostname."
         },
         {
           "cli": "--environment",
