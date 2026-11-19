@@ -12,5 +12,10 @@ describe("selected native example catalog",()=>{
  it("rejects legacy runtime and plan claims in metadata",()=>{for(const changed of [{...entry,required_plan:"free"},{...entry,userland_api_version:"v0"},{...entry,capabilities:["data"]}])expect(()=>assertNativeExample(changed)).toThrow();});
  it("rejects metadata drift and missing Worker entrypoints",async()=>{const root=await fixture();await writeFile(path.join(root,entry.path,"example.json"),JSON.stringify({...entry,title:"Other"}));await expect(validateNativeCatalog(root)).rejects.toThrow("differs");await writeFile(path.join(root,entry.path,"example.json"),JSON.stringify(entry));await rm(path.join(root,entry.path,"worker.js"));await expect(validateNativeCatalog(root)).rejects.toThrow("entrypoint");});
  it("does not advertise a custom runtime dependency as a native reference",async()=>{const root=await fixture();await writeFile(path.join(root,entry.path,"worker.js"),"import helper from '@userland/runtime'");await expect(validateNativeCatalog(root)).rejects.toThrow("retired runtime");});
+ it("rejects a retired example directory even when it has no Worker configuration", async () => {
+   const root = await fixture();
+   await mkdir(path.join(root, "examples", "retired"));
+   await expect(validateNativeCatalog(root)).rejects.toThrow("Unlisted example: retired");
+ });
  it("rejects native folders missing from the selected catalog",async()=>{const root=await fixture();await mkdir(path.join(root,"examples/extra"));await writeFile(path.join(root,"examples/extra/wrangler.jsonc"),"{}");await expect(validateNativeCatalog(root)).rejects.toThrow("Unlisted");});
 });

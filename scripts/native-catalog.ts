@@ -22,6 +22,8 @@ export async function validateNativeCatalog(root:string):Promise<NativeExample[]
   if(Object.hasOwn(pkg.files,"manifest.userland.json")||Object.values(pkg.files).some(text=>/@userland\/(?:runtime|sdk)|ctx\.(?:data|auth|files|secrets)\b/u.test(text)))throw new Error("Native reference contains a retired runtime dependency.");
   for(const file of ["README.md","AGENT.md"])if(!Object.hasOwn(pkg.files,file))throw new Error("Missing native example guidance.");
  }
- for(const entry of await readdir(path.join(root,"examples"),{withFileTypes:true})){if(!entry.isDirectory())continue;try{await readFile(path.join(root,"examples",entry.name,"wrangler.jsonc"));if(!seen.has(entry.name))throw new Error("Unlisted native example: "+entry.name);}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}}
+ for (const folder of await readdir(path.join(root, "examples"), { withFileTypes: true })) {
+   if (folder.isDirectory() && !seen.has(folder.name)) throw new Error("Unlisted example: " + folder.name);
+ }
  return entries;
 }
