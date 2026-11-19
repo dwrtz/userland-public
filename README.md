@@ -12,5 +12,3 @@ Start with https://docs.userland.fun/native-guide.md. The five core operations a
 The source CLI can be built with the repository toolchain. Current CI runs Node.js22; use that version for the supported source workflow. Other Node versions are not claimed verified by this repository. The native CLI release is versioned separately from plugin and marketplace distribution. Source changes do not themselves publish any artifact; use the CLI README for its version and installation instructions.
 
 Read-only connections can inspect permitted metadata and source. Raw browser diagnostics, runtime logs and data queries need full publishing access. Secret values use protected entry or generated requirements, never model transcripts. Disconnecting a connector does not revoke independent API keys.
-
-Archived materials are historical implementation references, not supported examples or active agent instructions. They must not be used to infer native capabilities.
