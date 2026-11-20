@@ -6,6 +6,7 @@ export const NATIVE_PACKAGE_MAX_FILES = 128;
 export type NativeLocalFile=string|{base64:string};
 const EXCLUDED = new Set([".git", "node_modules", ".wrangler"]);
 const PRIVATE_NAME = /^(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|\.npmrc|\.netrc|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?)$|\.(?:pem|key|p12|pfx)$/iu;
+export const privateNativePathSegment = (name: string) => EXCLUDED.has(name) || PRIVATE_NAME.test(name) || name === ".userland" || name === "manifest.userland.json";
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/u;
 
 /** Package a clean prebuilt folder without following links or leaking local credential files. */
@@ -24,7 +25,7 @@ export async function readNativePackage(directory: string,options={maximumBytes:
       if (EXCLUDED.has(entry.name)) continue;
       const full = path.join(folder, entry.name), relative = path.relative(root, full).split(path.sep).join("/");
       if (relative.length > 200 || relative.split("/").some((segment) => !segment || segment === "." || segment === "..") || /[\\\u0000-\u001f?#%]/u.test(relative)) throw new Error(`Unsafe package path: ${relative}`);
-      if (PRIVATE_NAME.test(entry.name) || entry.name === ".userland" || entry.name === "manifest.userland.json") throw new Error(`Do not include credentials, private keys or a legacy Userland manifest in a native package: ${relative}`);
+      if (privateNativePathSegment(entry.name)) throw new Error(`Do not include credentials, private keys or a legacy Userland manifest in a native package: ${relative}`);
       const info = await fs.lstat(full);
       if (info.isSymbolicLink()) throw new Error(`Native packages cannot contain symlinks: ${relative}`);
       if (info.isDirectory()) { await walk(full); continue; }

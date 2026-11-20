@@ -9,22 +9,26 @@ const bytes=(value:NativeLocalFile)=>typeof value==="string"?Buffer.from(value,"
 const digest=(value:Uint8Array)=>"sha256:v1:"+createHash("sha256").update(value).digest("hex");
 
 /** A full-size encoded part exceeds Linux's per-argument limit; read bounded JSON from a stable regular file. */
-export async function readNativeTransferFile(filename:string):Promise<string>{
+export function readNativeTransferFile(filename: string): Promise<string> {
+  return readNativeJsonFile(filename, "--transfer-file", NATIVE_TRANSFER_JSON_MAX_BYTES);
+}
+
+export async function readNativeJsonFile(filename:string, flag:string, maxBytes:number):Promise<string>{
   const chosen=path.resolve(filename),before=await fs.lstat(chosen);
-  if(!before.isFile()||before.isSymbolicLink())throw new Error("--transfer-file must name a regular file, not a symlink.");
-  if(before.size>NATIVE_TRANSFER_JSON_MAX_BYTES)throw new Error("A source transfer part exceeds the encoded request limit.");
+  if(!before.isFile()||before.isSymbolicLink())throw new Error(`${flag} must name a regular file, not a symlink.`);
+  if(before.size>maxBytes)throw new Error(`${flag} exceeds the encoded request limit.`);
   const resolved=await fs.realpath(chosen);
   // NONBLOCK also prevents a file replaced by a FIFO before open from hanging the CLI.
   const handle=await fs.open(chosen,constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0));
   try{
     const opened=await handle.stat();
-    if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino||opened.size>NATIVE_TRANSFER_JSON_MAX_BYTES)throw new Error("The transfer file changed while opening it.");
-    const buffer=Buffer.alloc(Math.min(opened.size+1,NATIVE_TRANSFER_JSON_MAX_BYTES+1));let offset=0;
+    if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino||opened.size>maxBytes)throw new Error("The input file changed while opening it.");
+    const buffer=Buffer.alloc(Math.min(opened.size+1,maxBytes+1));let offset=0;
     while(offset<buffer.length){const read=await handle.read(buffer,offset,buffer.length-offset,offset);if(!read.bytesRead)break;offset+=read.bytesRead;}
     const held=await handle.stat(),after=await fs.lstat(chosen);
-    if(offset!==opened.size||held.size!==opened.size||held.mtimeMs!==opened.mtimeMs||held.ctimeMs!==opened.ctimeMs||after.isSymbolicLink()||after.dev!==opened.dev||after.ino!==opened.ino||await fs.realpath(chosen)!==resolved)throw new Error("The transfer file changed while reading it.");
+    if(offset!==opened.size||held.size!==opened.size||held.mtimeMs!==opened.mtimeMs||held.ctimeMs!==opened.ctimeMs||after.isSymbolicLink()||after.dev!==opened.dev||after.ino!==opened.ino||await fs.realpath(chosen)!==resolved)throw new Error("The input file changed while reading it.");
     try{return new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(buffer.subarray(0,offset));}
-    catch{throw new Error("--transfer-file must contain UTF-8 JSON.");}
+    catch{throw new Error(`${flag} must contain UTF-8 JSON.`);}
   }finally{await handle.close();}
 }
 export function needsNativeTransfer(files:Record<string,NativeLocalFile>,encodedBytes:number){return encodedBytes>768*1024||Object.values(files).reduce((sum,value)=>sum+bytes(value).length,0)>512*1024;}

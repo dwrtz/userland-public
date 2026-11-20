@@ -1,5 +1,6 @@
+import { transferPreparedRelease } from "./nativeRelease.js";
 import { readNativePackage } from "./nativePackage.js";
-import {needsNativeTransfer,transferNativePackage,readNativeTransferFile,NATIVE_TRANSFER_JSON_MAX_BYTES} from "./nativeTransfer.js";
+import {needsNativeTransfer,transferNativePackage,readNativeTransferFile,readNativeJsonFile,NATIVE_TRANSFER_JSON_MAX_BYTES} from "./nativeTransfer.js";
 
 export interface NativeClient {
   apiFetch<T>(apiPath: string, init: RequestInit, options?: { accountId?: string; accountScoped?: boolean; raw?: boolean }): Promise<T>;
@@ -17,9 +18,9 @@ export async function nativeCommand(command: string, args: string[], client: Nat
   const lifecycle = command === "apps" && ["stop", "resume", "delete"].includes(action);
   const operation = command === "operations" && ["get", "resume", "cancel"].includes(action);
   if (action !== "context" && !getApp && !apply && !run && !operation && !lifecycle) throw new Error("Use context, apps get|apply|run|stop|resume|delete, or operations get|resume|cancel.");
-  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key", "operation", "transfer-json", "transfer-file", "manifest-json"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "verification-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "deployment-id", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
+  const allowed = apply ? ["account", "name", "app", "expected-revision", "environment", "mode", "audience", "format", "secret-requirements-json", "patch-json", "build-artifact", "candidate-deployment", "source-revision", "configuration-digest", "idempotency-key", "operation", "transfer-json", "transfer-file", "manifest-json", "release-manifest-file", "release-root"] : run ? ["account", "expected-revision", "source-revision", "argv-json", "verification-json", "deployment", "evidence-paths-json", "environment", "duration-ms", "transfer-bytes", "idempotency-key"] : lifecycle ? action === "delete" ? ["account", "expected-revision", "retention", "idempotency-key"] : ["account", "environment", "expected-epoch", "idempotency-key", ...(action === "stop" ? ["scope"] : [])] : getApp ? ["account", "environment", "view", "deployment-id", "source-revision", "path", "cursor"] : action === "context" ? ["account", "cursor"] : operation && action === "get" ? ["account", "view", "path"] : ["account"];
   const options = parseOptions(rest, allowed), values = options.values;
-  if (options.positional.length !== (action === "context" || apply && (values["patch-json"] || values["build-artifact"] || values["candidate-deployment"] || values.operation || values["manifest-json"]) ? 0 : 1)) throw new Error(action === "context" ? "context takes flags, not a positional argument." : "Pass exactly one prebuilt directory, app ID or operation ID.");
+  if (options.positional.length !== (action === "context" || apply && (values["patch-json"] || values["build-artifact"] || values["candidate-deployment"] || values.operation || values["manifest-json"] || values["release-manifest-file"]) ? 0 : 1)) throw new Error(action === "context" ? "context takes flags, not a positional argument." : "Pass exactly one prebuilt directory, app ID or operation ID.");
   if(apply&&values.operation){
     if(!values.account||Boolean(values["transfer-json"])===Boolean(values["transfer-file"])||Object.keys(values).some(key=>!["account","operation","transfer-json","transfer-file"].includes(key)))throw new Error("Continue a staged operation with only --account, --operation and exactly one of --transfer-json or --transfer-file.");
     const encoded=values["transfer-file"]?await readNativeTransferFile(values["transfer-file"]):values["transfer-json"];
@@ -38,7 +39,7 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     if (!values.account) throw new Error("--account is required. Start with userland context to choose the Account explicitly.");
     if (Boolean(values.name) === Boolean(values.app)) throw new Error("Choose exactly one of --name (create) or --app (update).");
     if (!values["idempotency-key"] || values["idempotency-key"].length > 128) throw new Error("--idempotency-key is required, at most 128 characters. Reuse the exact key for retries of this intent.");
-    if (!["production", "preview"].includes(values.environment ?? "") || !["publish", "preview"].includes(values.mode ?? "")) throw new Error("Use explicit --environment production|preview and --mode publish|preview.");
+    if (!["production", "preview"].includes(values.environment ?? "") || !["publish", "preview", "prepare"].includes(values.mode ?? "")) throw new Error("Use explicit --environment production|preview and --mode publish|preview|prepare.");
     if (values.audience && !["public", "private"].includes(values.audience)) throw new Error("--audience must be public or private.");
     let app: { create: { name: string } } | { id: string; expected_revision: number };
     if (values.app) {
@@ -54,7 +55,17 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     if (promoted && (values["patch-json"] || values["manifest-json"] || values.format || values["secret-requirements-json"] || Boolean(values["build-artifact"]) === Boolean(values["candidate-deployment"]))) throw new Error("Choose exactly one artifact or candidate; promotion cannot replace source, format or secret requirements.");
     let source: unknown;
     if (values["manifest-json"] && values["patch-json"]) throw new Error("Choose a manifest or a source patch.");
-    if (values["manifest-json"]) {
+    if (values.mode === "prepare" || values["release-manifest-file"] || values["release-root"]) {
+      const allowed = ["account", "app", "expected-revision", "environment", "mode", "release-manifest-file", "release-root", "idempotency-key"];
+      if (values.mode !== "prepare" || !values.app || !values["release-manifest-file"] || Object.keys(values).some(key => !allowed.includes(key)))
+        throw new Error("Use --mode prepare with an existing app revision and --release-manifest-file.");
+      const json = await readNativeJsonFile(values["release-manifest-file"], "--release-manifest-file", 512 * 1024);
+      let manifest;
+      try { manifest = JSON.parse(json); }
+      catch { throw new Error("--release-manifest-file must contain a version 1 JSON object."); }
+      if (manifest?.version !== 1 || !Array.isArray(manifest.files)) throw new Error("Expected a version 1 release manifest with a files array.");
+      source = {release_manifest: manifest};
+    } else if (values["manifest-json"]) {
       if(values["manifest-json"].length>128*1024)throw new Error("The source manifest is too large.");
       let manifest:unknown;try{manifest=JSON.parse(values["manifest-json"]);}catch{throw new Error("--manifest-json must contain a staged file manifest array.");}
       if(!Array.isArray(manifest)||manifest.length<2||manifest.length>128)throw new Error("Declare two to128 source files.");
@@ -76,6 +87,11 @@ export async function nativeCommand(command: string, args: string[], client: Nat
     body = JSON.stringify({ account_id: values.account, app, ...(promoted ? { ...(values["build-artifact"] ? { build_artifact_id: values["build-artifact"] } : { candidate_deployment_id: values["candidate-deployment"] }), source_revision: values["source-revision"], configuration_digest: values["configuration-digest"] } : { source }), ...(secrets !== undefined ? { secret_requirements: secrets } : {}), target: { environment: values.environment, mode: values.mode, ...(values.audience ? { audience: values.audience } : {}) }, idempotency_key: values["idempotency-key"] });
     if(source&&typeof source==="object"&&"files" in source&&needsNativeTransfer((source as Awaited<ReturnType<typeof readNativePackage>>).files,Buffer.byteLength(body,"utf8"))){const result=await transferNativePackage(client,JSON.parse(body),(source as Awaited<ReturnType<typeof readNativePackage>>).files,values.account,options.json===true);client.print(JSON.stringify(result,null,2));return;}
     if (Buffer.byteLength(body, "utf8") > 768 * 1024) throw new Error("The encoded native request exceeds its bounded request limit.");
+    if (values["release-root"]) {
+      const result = await transferPreparedRelease(client, body, values["release-root"], values.account, options.json === true);
+      client.print(JSON.stringify(result, null, 2));
+      return;
+    }
     apiPath = "/v1/apps/apply"; method = "POST";
   } else if (run) {
     if (!values.account) throw new Error("--account is required. Start with userland context to choose the Account explicitly.");
