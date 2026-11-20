@@ -1156,7 +1156,7 @@
           "source": "flag",
           "required": false,
           "takes_value": true,
-          "role": "files",
+          "role": "interface",
           "description": "Local build directory for automatically verifying and sending missing file parts. Requires --release-manifest-file."
         },
         {
