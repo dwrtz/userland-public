@@ -217,3 +217,29 @@ userland apps restore app_example --account acct_example --recovery recovery_exa
 ```
 
 Restore does not replace live bindings or undo code. Restored app authentication/session rows can make old sessions usable again; current secrets do not prove session invalidation. Invalidate sessions explicitly when needed, without automatically rotating data encryption keys. Inspect the returned isolated resource IDs, then explicitly apply code with those bindings after compatibility checks. Old code always resolves current allowed resources and secret revisions. Unsupported or uncertain restore outcomes keep their resource reservation; they never count as successful rollback.
+
+
+## Prepare an incremental release
+
+The source CLI supports manifest negotiation when the selected Account advertises `capabilities.release_preparation` in `userland context --account <account> --json`. This capability is operator-gated. Build the CLI from this revision to use the new flag.
+
+```sh
+userland apps apply --account "$ACCOUNT" --app "$APP" --expected-revision "$REVISION" \
+  --environment preview --mode prepare --release-manifest-file ./release.json \
+  --idempotency-key "$KEY" --json
+```
+
+Supply a version 1 JSON object with `main`, `assets_directory` and a `files` array. Each entry declares its relative `path`, raw `bytes` and full `sha256:v1:` digest. Static assets also declare `delivery`, for example `{"content_type":"application/wasm","encoding":"identity","cache":"immutable","range":"full"}`. Include the Worker entrypoint and `wrangler.jsonc`. The connector accepts the same object in `apps_apply.source.release_manifest`.
+
+Add `--release-root ./dist` to the same command to finish the preparation automatically. The CLI checks requested files against the manifest, sends missing ranges as bounded raw PUTs, verifies the complete files and commits. Rerunning with the same key resumes the operation. With the flag omitted, use manual transfer or the connector.
+
+Read the returned operation ID and `missing` list. For each requested inclusive part range, submit a JSON transfer file containing `action` set to `put`, the requested `path`, the zero-based `part`, the raw part’s `sha256` and its `base64`. The default part size is 256 KiB. The last part takes the remaining bytes.
+
+```sh
+userland apps apply --account "$ACCOUNT" --operation "$OPERATION" --transfer-file ./part.json --json
+userland apps apply --account "$ACCOUNT" --operation "$OPERATION" --transfer-json '{"action":"verify","path":"public/app.wasm"}' --json
+userland apps apply --account "$ACCOUNT" --operation "$OPERATION" --transfer-json '{"action":"status"}' --json
+userland apps apply --account "$ACCOUNT" --operation "$OPERATION" --transfer-json '{"action":"commit"}' --json
+```
+
+Use the returned `next_cursor` as `after` on `status` to read another page. An empty part list on a returned path means that file is ready for verification. The `release_prepared` receipt identifies the verified manifest. Preparation leaves the app’s current deployment serving. A new preparation for the same app can reuse its retained content.

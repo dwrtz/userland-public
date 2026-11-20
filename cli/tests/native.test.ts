@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -205,6 +206,49 @@ describe("native CLI contract", () => {
     expect(Buffer.concat(parts.map(call=>Buffer.from(call.init.body as Uint8Array)))).toEqual(binary);
     expect(parts.every(call=>Buffer.byteLength(call.init.body as Uint8Array)<=256*1024)).toBe(true);
     expect(parts.every(call=>String((call.init.headers as Record<string,string>)["x-userland-sha256"]).startsWith("sha256:v1:"))).toBe(true);
+  });
+  it("submits release metadata for an exact existing app and prints the negotiation receipt", async () => {
+    const directory = await packageDir(), file = path.join(directory, "release.json"), {context, calls, lines} = client();
+    const manifest = {version:1, main:"worker.js", assets_directory:"public", files:[
+      {path:"worker.js", bytes:1, sha256:"sha256:v1:"+"a".repeat(64)}, {path:"wrangler.jsonc",bytes:2,sha256:"sha256:v1:"+"b".repeat(64)}
+    ]};
+    await fs.writeFile(file, JSON.stringify(manifest));
+    const args = ["apply","--release-manifest-file",file,"--account","acct_team","--app","app_1","--expected-revision","2","--environment","preview","--mode","prepare","--idempotency-key","prep"];
+    await nativeCommand("apps",args,context);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({account_id:"acct_team",app:{id:"app_1",expected_revision:2},
+      target:{mode:"prepare",environment:"preview"},source:{release_manifest:manifest},idempotency_key:"prep"});
+    expect(JSON.parse(lines[0]).operation_id).toBe("nop_1");
+    await expect(nativeCommand("apps",[...args,"--audience","public"],context)).rejects.toThrow("prepare");
+    await fs.writeFile(file, " ".repeat(512*1024+1));
+    await expect(nativeCommand("apps",args,context)).rejects.toThrow("encoded request limit");
+    expect(calls).toHaveLength(1);
+  });
+  it("uploads only missing ranges from the build directory and rejects unexpected or changed files", async () => {
+    const dir=await packageDir(), filename=path.join(dir,"release.json"), data=Buffer.alloc(700000,41);
+    await fs.writeFile(path.join(dir,"art.bin"),data);
+    const hash=(b:Buffer)=>"sha256:v1:"+createHash("sha256").update(b).digest("hex");
+    const asset={path:"art.bin",bytes:data.length,sha256:hash(data)};
+    const manifest={version:1,main:"worker.js",assets_directory:"assets",files:[asset]};
+    await fs.writeFile(filename,JSON.stringify(manifest));
+    const args=["apply","--release-root",dir,"--release-manifest-file",filename,"--app","app_1","--account","acct_team",
+      "--expected-revision","1","--mode","prepare","--environment","preview","--idempotency-key","resume"];
+    const received:Buffer[]=[], actions:string[]=[];
+    let requested={...asset,missing_parts:[[1,2]]};
+    const ctx:NativeClient={...client().context,async apiFetch<T>(url:string,init:RequestInit) {
+      if(init.method==="PUT"){
+        expect(url).toContain("/v1/operations/relup_1/source/parts/");const bytes=Buffer.from(init.body as Uint8Array);
+        expect(new Headers(init.headers).get("x-userland-sha256")).toBe(hash(bytes));received.push(bytes);return {} as T;
+      }
+      const value=JSON.parse(String(init.body));if(value.transfer)actions.push(value.transfer.action);
+      return {operation_id:"relup_1",stage:value.transfer?.action==="commit"?"release_prepared":"awaiting_release_content",missing:[requested],next_cursor:null} as T;
+    }};
+    await nativeCommand("apps",args,ctx);
+    expect(Buffer.concat(received).equals(data.subarray(256*1024))).toBe(true);expect(actions).toEqual(["verify","commit"]);
+    requested={...requested,path:"../outside"};
+    await expect(nativeCommand("apps",args,ctx)).rejects.toThrow("outside the submitted");
+    requested={...requested,path:asset.path};await fs.writeFile(path.join(dir,"art.bin"),Buffer.alloc(data.length,42));
+    await expect(nativeCommand("apps",args,ctx)).rejects.toThrow("differs");
+    expect(received).toHaveLength(2);
   });
   it("starts a manifest transfer without a local directory",async()=>{
     const {context,calls}=client(),manifest=[{path:"wrangler.jsonc",bytes:2,sha256:"sha256:v1:"+"a".repeat(64),encoding:"utf8"},{path:"worker.js",bytes:1,sha256:"sha256:v1:"+"b".repeat(64),encoding:"utf8"}];
